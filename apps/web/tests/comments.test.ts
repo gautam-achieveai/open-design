@@ -77,6 +77,27 @@ describe('preview comment attachment helpers', () => {
     ]);
   });
 
+  it('preserves embedded browser identity in saved comment attachments', () => {
+    const [attachment] = commentsToAttachments([
+      comment({
+        id: 'browser-comment',
+        metadata: {
+          browser: {
+            tabId: 'browser-1',
+            webContentsId: 42,
+          },
+        },
+      }),
+    ]);
+
+    expect(attachment?.metadata).toEqual({
+      browser: {
+        tabId: 'browser-1',
+        webContentsId: 42,
+      },
+    });
+  });
+
   it('keeps saved comment images in send payloads even when the note is empty', () => {
     const [attachment] = commentsToAttachments([
       comment({
@@ -93,6 +114,25 @@ describe('preview comment attachment helpers', () => {
     });
     expect(messageContentWithCommentAttachments('', attachment ? [attachment] : []))
       .toContain('image.1: uploads/reference.png | reference.png');
+  });
+
+  it('keeps bounded browser ancestors in the web-side agent context', () => {
+    const [attachment] = buildBoardCommentAttachments({
+      target: {
+        filePath: 'browser:https://app.example.test',
+        elementId: 'action', selector: 'main section button', label: 'button',
+        text: '', position: { x: 1, y: 2, width: 30, height: 20 }, htmlHint: 'button',
+        ancestors: [{ tag: 'section', selector: 'main > section:nth-of-type(2)', role: 'region' }],
+        style: { color: 'rgb(20, 30, 40)' },
+      },
+      notes: ['Improve button'],
+    });
+    expect(attachment?.ancestors).toEqual([
+      { tag: 'section', selector: 'main > section:nth-of-type(2)', role: 'region' },
+    ]);
+    const context = messageContentWithCommentAttachments('', attachment ? [attachment] : []);
+    expect(context).toContain('ancestors (nearest first): section[role=region] main > section:nth-of-type(2)');
+    expect(context).toContain('color: rgb(20, 30, 40)');
   });
 
   it('keeps the task query out of context when a comment is promoted to message text', () => {

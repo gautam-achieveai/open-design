@@ -7,10 +7,12 @@ import '../src/index.css';
 import '../src/styles/home/index.css';
 // These hosts render from the client-only App entry. Keep their layout CSS in
 // the root route stylesheet so Turbopack does not leave the lazy chunk as a
-// preload-only resource after the host mounts.
+// preload-only resource after the host mounts. The Edge pairing popover also
+// lives in that chunk; without its module CSS it expands the Browser toolbar.
 import '../src/components/TestCampaignModal.module.css';
 import '../src/components/HoverTouchpointOverlay.module.css';
 import '../src/components/ProductionCampaignBadge.module.css';
+import '../src/components/EdgeAnnotationsPanel.module.css';
 import '../src/components/OnboardingWelcome.module.css';
 
 export const metadata: Metadata = {

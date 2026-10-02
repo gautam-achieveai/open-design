@@ -351,6 +351,46 @@ const BRAND_BOOLEAN_FLAGS = new Set([
 ]);
 const AGENT_STRING_FLAGS = new Set(['daemon-url']);
 const AGENT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
+const BROWSER_STRING_FLAGS = new Set([
+  'daemon-url',
+  'project',
+  'tab',
+  'selector',
+  'text',
+  'text-file',
+  'prompt-file',
+  'delta-x',
+  'delta-y',
+  'url',
+  'timeout',
+  'limit',
+  'request-id',
+  'level',
+  'format',
+  'quality',
+  'output',
+  'resource-type',
+  'wait-until',
+  'button',
+  'click-count',
+  'conversation',
+  'annotation',
+  'message',
+  'extension-id',
+  'screenshot',
+  'context-file',
+  'event-id',
+  'workspace',
+  'workspace-member',
+]);
+const BROWSER_BOOLEAN_FLAGS = new Set([
+  'help',
+  'h',
+  'json',
+  'approve',
+  'full-page',
+  'clear',
+]);
 const STRATEGY_STRING_FLAGS = new Set(['daemon-url']);
 const STRATEGY_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 // Hoisted because `runAutomation` is reachable through the top-of-file
@@ -389,6 +429,7 @@ const PLUGIN_LIST_BOOLEAN_FLAGS = new Set([
 const SUBCOMMAND_MAP = {
   agent: runAgent,
   artifacts: runArtifacts,
+  browser: runBrowser,
   media: runMedia,
   mcp: runMcp,
   amr: runAmr,
@@ -449,6 +490,392 @@ mode alone does not: leaving it unset and saving 'off' produce opposite routes.
 Options:
   --json                   Emit the daemon response as JSON.
   --daemon-url <url>       Override the Open Design daemon HTTP base.`);
+}
+
+function printBrowserHelp() {
+  console.log(`Usage:
+  od browser tabs --project <id> [--json]
+  od browser active <tabId|clear> --project <id> [--json]
+  od browser snapshot --project <id> [--tab <id>] [--json]
+  od browser inspect --project <id> [--tab <id>] --selector <css> [--json]
+  od browser screenshot --project <id> [--tab <id>] [--full-page] [--format png|jpeg] [--output <file>] [--json]
+  od browser console --project <id> [--tab <id>] [--level <level>] [--limit <n>] [--json]
+  od browser network [list|failures|get <requestId>] --project <id> [--tab <id>] [--json]
+  od browser click --project <id> [--tab <id>] --selector <css> --approve [--json]
+  od browser type --project <id> [--tab <id>] --selector <css>
+                  (--text <value> | --text-file <path|-> | --prompt-file <path|->) --approve [--clear] [--json]
+  od browser scroll --project <id> [--tab <id>] --delta-y <n> [--delta-x <n>] [--selector <css>] --approve [--json]
+  od browser navigate --project <id> [--tab <id>] --url <https://...> --approve [--json]
+  od browser edge pair --project <id> --conversation <id> [--extension-id <id>] [--workspace <id> --workspace-member <id>] [--json]
+  od browser edge status --project <id> --conversation <id> [--workspace <id> --workspace-member <id>] [--json]
+  od browser edge draft --project <id> --conversation <id> --url <url> --prompt-file <path|-> [--screenshot <png>] [--context-file <json>] [--event-id <id>] [--workspace <id> --workspace-member <id>] [--json]
+  od browser edge pending --project <id> --conversation <id> [--workspace <id> --workspace-member <id>] [--json]
+  od browser edge context --project <id> --conversation <id> --message <id> --annotation <id> [--workspace <id> --workspace-member <id>] [--json]
+  od browser edge post --project <id> --conversation <id> --url <url> --prompt-file <path|-> [--screenshot <png>] [--context-file <json>] [--event-id <id>] [--workspace <id> --workspace-member <id>] [--json]
+  od browser edge image --project <id> --conversation <id> --message <id> --output <png> [--workspace <id> --workspace-member <id>] [--json]
+  od browser edge messages --project <id> --conversation <id> [--workspace <id> --workspace-member <id>] [--json]
+
+The first commands target the renderer-registered embedded tab. The Edge commands
+pair a separately signed-in Edge/Chrome tab through the Open Design Clipper;
+that tab remains in the browser's managed work profile. No public CDP port is opened.
+When --tab is omitted, the project's active embedded tab is used. click, type,
+scroll, and navigate are consequential and are refused without --approve.
+
+Options:
+  --daemon-url <url>       Override daemon discovery.
+  --timeout <ms>           Bounded wait for the renderer result (maximum 60000).
+  --json                   Emit the exact daemon response as JSON.`);
+}
+
+async function readBrowserText(flags) {
+  const file = flags['text-file'] ?? flags['prompt-file'];
+  if (typeof file === 'string' && file.length > 0) {
+    if (file === '-') {
+      return await new Promise((resolve, reject) => {
+        let value = '';
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', (chunk) => { value += chunk; });
+        process.stdin.on('end', () => resolve(value));
+        process.stdin.on('error', reject);
+      });
+    }
+    const { readFile } = await import('node:fs/promises');
+    return await readFile(file, 'utf8');
+  }
+  if (typeof flags.text !== 'string') return '';
+  if (flags.text.startsWith('@') && flags.text.length > 1) {
+    const { readFile } = await import('node:fs/promises');
+    return await readFile(flags.text.slice(1), 'utf8');
+  }
+  return flags.text;
+}
+
+function browserNumberFlag(flags, name, fallback) {
+  if (flags[name] === undefined) return fallback;
+  const value = Number(flags[name]);
+  if (!Number.isFinite(value)) {
+    console.error(`--${name} must be a finite number`);
+    process.exit(2);
+  }
+  return value;
+}
+
+function browserTarget(flags, required = false) {
+  if (typeof flags.selector === 'string' && flags.selector.trim()) {
+    return { selector: flags.selector.trim() };
+  }
+  if (required) {
+    console.error('a target is required: use --selector <css>');
+    process.exit(2);
+  }
+  return undefined;
+}
+
+async function runBrowser(args) {
+  const flags = parseFlags(args, {
+    string: BROWSER_STRING_FLAGS,
+    boolean: BROWSER_BOOLEAN_FLAGS,
+  });
+  const positional = positionalArgs(args, BROWSER_STRING_FLAGS);
+  const sub = positional[0];
+  if (!sub || flags.help || flags.h) {
+    printBrowserHelp();
+    return;
+  }
+  const projectId = typeof flags.project === 'string' ? flags.project.trim() : '';
+  if (!projectId) {
+    console.error('od browser requires --project <id>');
+    process.exit(2);
+  }
+  const base = await cliDaemonBaseUrl(flags);
+  const projectPath = `${base}/api/projects/${encodeURIComponent(projectId)}/browser`;
+
+  try {
+    if (sub === 'edge') {
+      const action = positional[1];
+      const endpoint = `${base}/api/projects/${encodeURIComponent(projectId)}/edge-annotations`;
+      const workspaceHeaders = workspaceHeadersFromExplicitFlags(flags) ?? {};
+      let response;
+      if (action === 'pair') {
+        if (typeof flags.conversation !== 'string' || !flags.conversation.trim()
+          || (flags['extension-id'] !== undefined && (typeof flags['extension-id'] !== 'string' || !/^[a-p]{32}$/.test(flags['extension-id'])))) {
+          console.error('od browser edge pair requires --conversation <id> [--extension-id <id>]');
+          process.exit(2);
+        }
+        response = await fetch(`${endpoint}/pair`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...workspaceHeaders },
+          body: JSON.stringify({ conversationId: flags.conversation.trim(), extensionId: flags['extension-id'] }),
+        });
+      } else if (action === 'status') {
+        if (typeof flags.conversation !== 'string' || !flags.conversation.trim()) {
+          console.error('od browser edge status requires --conversation <id>');
+          process.exit(2);
+        }
+        response = await fetch(`${endpoint}?conversationId=${encodeURIComponent(flags.conversation.trim())}`, {
+          headers: workspaceHeaders,
+        });
+      } else if (action === 'pending') {
+        if (typeof flags.conversation !== 'string' || !flags.conversation.trim()) {
+          console.error('od browser edge pending requires --conversation <id>');
+          process.exit(2);
+        }
+        response = await fetch(`${endpoint}/pending?conversationId=${encodeURIComponent(flags.conversation.trim())}`, {
+          headers: workspaceHeaders,
+        });
+      } else if (action === 'context') {
+        if (typeof flags.conversation !== 'string' || !flags.conversation.trim()
+          || typeof flags.message !== 'string' || !flags.message.trim()
+          || typeof flags.annotation !== 'string' || !flags.annotation.trim()) {
+          console.error('od browser edge context requires --conversation <id> --message <id> --annotation <id>');
+          process.exit(2);
+        }
+        response = await fetch(`${base}/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(flags.conversation.trim())}/messages/${encodeURIComponent(flags.message.trim())}/annotation-context/${encodeURIComponent(flags.annotation.trim())}`, {
+          headers: workspaceHeaders,
+        });
+      } else if (action === 'messages') {
+        if (typeof flags.conversation !== 'string' || !flags.conversation.trim()) {
+          console.error('od browser edge messages requires --conversation <id>');
+          process.exit(2);
+        }
+        response = await fetch(`${base}/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(flags.conversation.trim())}/messages`, {
+          headers: workspaceHeaders,
+        });
+      } else if (action === 'image') {
+        if (typeof flags.message !== 'string' || !flags.message.trim()
+          || typeof flags.conversation !== 'string' || !flags.conversation.trim()
+          || typeof flags.output !== 'string' || !flags.output.trim()) {
+          console.error('od browser edge image requires --conversation <id> --message <id> --output <png>');
+          process.exit(2);
+        }
+        response = await fetch(`${base}/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(flags.conversation.trim())}/messages/${encodeURIComponent(flags.message.trim())}/edge-image`, {
+          headers: workspaceHeaders,
+        });
+        if (!response.ok) return structuredHttpFailure(response);
+        if (!response.headers.get('content-type')?.startsWith('image/png')) throw new Error('chat image response was not PNG');
+        const data = Buffer.from(await response.arrayBuffer());
+        if (!data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error('chat image was not PNG');
+        writeFileSync(flags.output, data);
+        process.stdout.write(flags.json ? JSON.stringify({ path: flags.output, bytes: data.length }, null, 2) + '\n' : flags.output + '\n');
+        return;
+      } else if (action === 'post' || action === 'draft') {
+        if (typeof flags.conversation !== 'string' || !flags.conversation.trim()
+          || typeof flags.url !== 'string' || !flags.url.trim()
+          || typeof flags['prompt-file'] !== 'string' || !flags['prompt-file'].trim()) {
+          console.error(`od browser edge ${action} requires --conversation <id> --url <url> --prompt-file <path|-> [--screenshot <png>] [--context-file <json>]`);
+          process.exit(2);
+        }
+        const note = (await readBrowserText(flags)).trim();
+        const image = typeof flags.screenshot === 'string' ? readFileSync(flags.screenshot) : undefined;
+        if (!note || (image && (!image.length || image.length > 256 * 1024))) {
+          throw new Error('a note is required; optional cropped PNG must be <=256 KiB');
+        }
+        const target = typeof flags['context-file'] === 'string'
+          ? JSON.parse(readFileSync(flags['context-file'], 'utf8')) : undefined;
+        const { randomUUID } = await import('node:crypto');
+        response = await fetch(`${endpoint}/${action}`, {
+          method: 'POST', headers: { 'content-type': 'application/json', ...workspaceHeaders },
+          body: JSON.stringify({ conversationId: flags.conversation.trim(), url: flags.url.trim(), note,
+            eventId: flags['event-id'] || randomUUID(), target,
+            ...(image ? { screenshotDataUrl: `data:image/png;base64,${image.toString('base64')}` } : {}) }),
+        });
+      } else {
+        console.error('unknown Edge annotation action: use pair, status, draft, pending, context, post, messages, or image');
+        process.exit(2);
+      }
+      if (!response.ok) return structuredHttpFailure(response);
+      const data = await response.json();
+      process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      return;
+    }
+    if (sub === 'tabs') {
+      const response = await fetch(`${projectPath}/tabs`);
+      if (!response.ok) return structuredHttpFailure(response);
+      const data = await response.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      for (const tab of data.tabs ?? []) {
+        console.log(`${tab.active ? '*' : ' '}\t${tab.tabId}\t${tab.title || '-'}\t${tab.url}`);
+      }
+      return;
+    }
+
+    if (sub === 'active') {
+      const requested = positional[1];
+      if (!requested) {
+        console.error('Usage: od browser active <tabId|clear> --project <id>');
+        process.exit(2);
+      }
+      const response = await fetch(`${projectPath}/active-tab`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tabId: requested === 'clear' ? null : requested }),
+      });
+      if (!response.ok) return structuredHttpFailure(response);
+      const data = await response.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(data.activeTabId ?? 'none');
+      return;
+    }
+
+    if (sub === 'click' || sub === 'type' || sub === 'scroll' || sub === 'navigate') {
+      if (!flags.approve) {
+        console.error(`od browser ${sub} is consequential; re-run with --approve`);
+        process.exit(2);
+      }
+    }
+
+    let command;
+    switch (sub) {
+      case 'snapshot':
+        command = { operation: 'snapshot' };
+        break;
+      case 'inspect': {
+        const target = browserTarget(flags);
+        command = { operation: 'inspect', ...(target ? { target } : {}) };
+        break;
+      }
+      case 'screenshot':
+        command = {
+          operation: 'screenshot',
+          ...(flags['full-page'] ? { fullPage: true } : {}),
+          ...(typeof flags.format === 'string' ? { format: flags.format } : {}),
+          ...(flags.quality !== undefined
+            ? { quality: browserNumberFlag(flags, 'quality', undefined) }
+            : {}),
+        };
+        break;
+      case 'click':
+        command = {
+          operation: 'click',
+          approved: true,
+          target: browserTarget(flags, true),
+          ...(typeof flags.button === 'string' ? { button: flags.button } : {}),
+          ...(flags['click-count'] !== undefined
+            ? { clickCount: browserNumberFlag(flags, 'click-count', undefined) }
+            : {}),
+        };
+        break;
+      case 'type': {
+        const text = await readBrowserText(flags);
+        if (!text) {
+          console.error('od browser type requires --text, --text-file, or --prompt-file');
+          process.exit(2);
+        }
+        command = {
+          operation: 'type',
+          approved: true,
+          target: browserTarget(flags, true),
+          text,
+          ...(flags.clear ? { clear: true } : {}),
+        };
+        break;
+      }
+      case 'scroll': {
+        const target = browserTarget(flags);
+        command = {
+          operation: 'scroll',
+          approved: true,
+          deltaX: browserNumberFlag(flags, 'delta-x', 0),
+          deltaY: browserNumberFlag(flags, 'delta-y', 0),
+          ...(target ? { target } : {}),
+        };
+        break;
+      }
+      case 'navigate':
+        if (typeof flags.url !== 'string' || !flags.url.trim()) {
+          console.error('od browser navigate requires --url <https://...>');
+          process.exit(2);
+        }
+        command = {
+          operation: 'navigate',
+          approved: true,
+          url: flags.url.trim(),
+          ...(typeof flags['wait-until'] === 'string'
+            ? { waitUntil: flags['wait-until'] }
+            : {}),
+        };
+        break;
+      case 'console':
+        command = {
+          operation: 'console',
+          ...(typeof flags.level === 'string' ? { level: flags.level } : {}),
+          ...(flags.limit !== undefined
+            ? { limit: browserNumberFlag(flags, 'limit', undefined) }
+            : {}),
+        };
+        break;
+      case 'network': {
+        const action = positional[1] ?? 'list';
+        if (action === 'list') {
+          command = {
+            operation: 'network-list',
+            ...(typeof flags['resource-type'] === 'string'
+              ? { resourceType: flags['resource-type'] }
+              : {}),
+            ...(flags.limit !== undefined
+              ? { limit: browserNumberFlag(flags, 'limit', undefined) }
+              : {}),
+          };
+        } else if (action === 'failures') {
+          command = {
+            operation: 'network-failures',
+            ...(flags.limit !== undefined
+              ? { limit: browserNumberFlag(flags, 'limit', undefined) }
+              : {}),
+          };
+        } else if (action === 'get') {
+          const requestId = flags['request-id'] ?? positional[2];
+          if (typeof requestId !== 'string' || !requestId) {
+            console.error('Usage: od browser network get <requestId> --project <id>');
+            process.exit(2);
+          }
+          command = { operation: 'network-get', requestId };
+        } else {
+          console.error(`unknown browser network action: ${action}`);
+          process.exit(2);
+        }
+        break;
+      }
+      default:
+        console.error(`unknown subcommand: od browser ${sub}`);
+        process.exit(2);
+    }
+
+    const timeoutMs = browserNumberFlag(flags, 'timeout', 30_000);
+    const response = await fetch(`${projectPath}/commands`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...(typeof flags.tab === 'string' && flags.tab.trim() ? { tabId: flags.tab.trim() } : {}),
+        timeoutMs,
+        command,
+      }),
+      signal: AbortSignal.timeout(Math.min(Math.max(timeoutMs + 2_000, 2_000), 62_000)),
+    });
+    if (!response.ok) return structuredHttpFailure(response);
+    const data = await response.json();
+    if (
+      sub === 'screenshot'
+      && typeof flags.output === 'string'
+      && typeof data?.result?.data === 'string'
+    ) {
+      const comma = data.result.data.indexOf(',');
+      const base64 = data.result.data.startsWith('data:')
+        ? comma >= 0 ? data.result.data.slice(comma + 1) : ''
+        : data.result.data;
+      if (!base64) throw new Error('browser screenshot returned invalid image data');
+      writeFileSync(flags.output, Buffer.from(base64, 'base64'));
+    }
+    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    if (sub === 'screenshot' && typeof flags.output === 'string') {
+      console.log(flags.output);
+      return;
+    }
+    process.stdout.write(JSON.stringify(data.result, null, 2) + '\n');
+  } catch (error) {
+    surfaceFetchError(error, base);
+    process.exit(1);
+  }
 }
 
 function printStrategyRolloutStatus(status) {
@@ -973,6 +1400,10 @@ function printRootHelp() {
 
   od artifacts create --name <path> --input <file> [--project <id-or-name>]
       Create a normal project artifact through the local daemon.
+
+  od browser <tabs|snapshot|inspect|screenshot|console|network|click|type|scroll|navigate>
+      Control the exact renderer-registered embedded browser tab through the
+      daemon broker. click, type, scroll, and navigate require --approve.
 
   od tools connectors <list|execute|github-design-context> [options]
       Discover and execute configured connectors.

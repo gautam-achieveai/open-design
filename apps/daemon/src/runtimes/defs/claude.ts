@@ -142,6 +142,7 @@ export const claudeAgentDef = {
       args.push('--permission-mode', 'bypassPermissions');
       return args;
     },
+    supportsImagePaths: true,
     promptViaStdin: true,
     promptInputFormat: 'stream-json',
     streamFormat: 'claude-stream-json',

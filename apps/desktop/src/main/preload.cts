@@ -4,6 +4,12 @@ import type {
   OpenDesignHostBridge,
   OpenDesignHostActionResult,
   OpenDesignHostBrowserClearDataOptions,
+  OpenDesignHostBrowserExecuteRequest,
+  OpenDesignHostBrowserExecuteResult,
+  OpenDesignHostBrowserListTargetsResult,
+  OpenDesignHostBrowserRegisterTargetResult,
+  OpenDesignHostBrowserTargetIdentity,
+  OpenDesignHostBrowserTargetRegistration,
   OpenDesignHostCaptureOptions,
   OpenDesignHostCaptureResult,
   OpenDesignHostFailure,
@@ -231,6 +237,40 @@ const browser = {
   clearData: async (options?: OpenDesignHostBrowserClearDataOptions): Promise<OpenDesignHostActionResult> => {
     try {
       return await ipcRenderer.invoke('browser:clear-data', options ?? null);
+    } catch (error) {
+      return actionFailure(reasonFromError(error));
+    }
+  },
+  execute: async (
+    request: OpenDesignHostBrowserExecuteRequest,
+  ): Promise<OpenDesignHostBrowserExecuteResult> => {
+    try {
+      return await ipcRenderer.invoke('browser:execute', request);
+    } catch (error) {
+      return failure(reasonFromError(error));
+    }
+  },
+  listTargets: async (): Promise<OpenDesignHostBrowserListTargetsResult> => {
+    try {
+      return await ipcRenderer.invoke('browser:list-targets');
+    } catch (error) {
+      return failure(reasonFromError(error));
+    }
+  },
+  registerTarget: async (
+    target: OpenDesignHostBrowserTargetRegistration,
+  ): Promise<OpenDesignHostBrowserRegisterTargetResult> => {
+    try {
+      return await ipcRenderer.invoke('browser:register-target', target);
+    } catch (error) {
+      return failure(reasonFromError(error));
+    }
+  },
+  unregisterTarget: async (
+    target: OpenDesignHostBrowserTargetIdentity,
+  ): Promise<OpenDesignHostActionResult> => {
+    try {
+      return await ipcRenderer.invoke('browser:unregister-target', target);
     } catch (error) {
       return actionFailure(reasonFromError(error));
     }

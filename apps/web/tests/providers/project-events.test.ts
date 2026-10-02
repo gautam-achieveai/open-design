@@ -158,6 +158,20 @@ describe('createProjectEventsConnection', () => {
     conn.close();
   });
 
+  it('forwards a chat-message invalidation and ignores malformed payloads', () => {
+    const seen: ProjectEvent[] = [];
+    const conn = createProjectEventsConnection('p1', (evt) => seen.push(evt), {
+      EventSourceCtor: MockEventSource as unknown as typeof EventSource,
+    });
+    const es = MockEventSource.instances[0]!;
+    const event = { type: 'conversation-message-created', projectId: 'p1',
+      conversationId: 'c1', messageId: 'edge-1', at: 123 };
+    es.dispatch('conversation-message-created', { data: JSON.stringify(event) });
+    es.dispatch('conversation-message-created', { data: '{broken' });
+    expect(seen).toEqual([event]);
+    conn.close();
+  });
+
   it('parses conversation-created events emitted by routine reuse runs (#1361)', () => {
     const seen: ProjectEvent[] = [];
     const conn = createProjectEventsConnection(

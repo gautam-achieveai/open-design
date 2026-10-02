@@ -2894,6 +2894,23 @@ body:has(.manual-edit-workspace) .chat-composer-fixed-layer {
   border-radius: var(--radius);
   background: var(--bg);
 }
+.composer-browser-annotations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 96px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+}
+.composer-browser-annotations .staged-comment {
+  max-width: min(100%, 240px);
+}
+.composer-browser-annotation-overflow {
+  margin: 0 0 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
 .staged-comment {
   border-radius: var(--radius-pill);
   padding: 3px 5px 3px 8px;

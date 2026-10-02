@@ -68,6 +68,95 @@ function getAddressDisplay(container: HTMLElement) {
 }
 
 describe('DesignBrowserPanel <webview> navigation', () => {
+  it('captures a value-masked native screenshot when annotating a form field', async () => {
+    const capturePage = vi.fn(async () => ({ ok: true as const, dataUrl: 'data:image/png;base64,AAAA', w: 200, h: 100 }));
+    restoreHost?.();
+    restoreHost = installMockOpenDesignHost({ host: { capture: { page: capturePage } } });
+    const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1"
+      initialUrl="http://localhost:1234/signin" onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+    const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    webview.getBoundingClientRect = () => ({ left: 0, top: 0, right: 300, bottom: 200, width: 300, height: 200, x: 0, y: 0, toJSON() {} } as DOMRect);
+    webview.executeJavaScript = vi.fn(async (script: string) => script.includes('function snapshotFor(el, ev)') ? {
+      elementId: 'dom:body > form > input', selector: 'body > form > input', label: 'input', text: '',
+      htmlHint: 'input', domOutline: 'input', isFormField: true,
+      position: { x: 0, y: 0, width: 100, height: 30 },
+      maskRects: [{ x: 0, y: 0, width: 100, height: 30 }], viewport: { width: 300, height: 200 },
+    } : script.includes('const targets =') ? [{
+      elementId: 'dom:body > form > input', selector: 'body > form > input', label: 'input', text: '',
+      htmlHint: 'input', domOutline: 'input', isFormField: true,
+      position: { x: 0, y: 0, width: 100, height: 30 }, key: 'capture',
+      maskRects: [{ x: 0, y: 0, width: 100, height: 30 }], viewport: { width: 300, height: 200 },
+    }] : null);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    await waitFor(() => expect(capturePage).toHaveBeenCalledTimes(1));
+    expect(screen.getByPlaceholderText('Comment on this element…')).toBeTruthy();
+  });
+
+  it('omits a native screenshot if a field moves between the two geometry checks', async () => {
+    const capturePage = vi.fn(async () => ({ ok: true as const, dataUrl: 'data:image/png;base64,AAAA', w: 200, h: 100 }));
+    restoreHost?.();
+    restoreHost = installMockOpenDesignHost({ host: { capture: { page: capturePage } } });
+    const fetchMock = vi.fn(async (_url: string, _options: { body: string }) => ({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1"
+        initialUrl="http://localhost:1234/signin" onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+      const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+      webview.getBoundingClientRect = () => ({ left: 0, top: 0, right: 300, bottom: 200,
+        width: 300, height: 200, x: 0, y: 0, toJSON() {} } as DOMRect);
+      let measured = 0;
+      const target = { elementId: 'dom:body > input', selector: 'body > input', label: 'input', text: '',
+        htmlHint: 'input', position: { x: 0, y: 0, width: 100, height: 30 },
+        maskRects: [{ x: 0, y: 0, width: 100, height: 30 }], viewport: { width: 300, height: 200 } };
+      webview.executeJavaScript = vi.fn(async (script: string) => script.includes('function snapshotFor(el, ev)')
+        ? target : script.includes('const targets =') ? [{ ...target, key: 'capture',
+          maskRects: script.includes('"key":"capture"') && ++measured > 1
+            ? [{ x: 10, y: 0, width: 90, height: 30 }] : target.maskRects }] : null);
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+      await waitFor(() => expect(capturePage).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(measured).toBeGreaterThanOrEqual(2));
+      const note = screen.getByPlaceholderText('Comment on this element…');
+      fireEvent.change(note, { target: { value: 'Adjust the field layout' } });
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add to chat draft' })); });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body).screenshotDataUrl).toBeUndefined();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('collects one native annotation without screenshot or agent, retaining the event on retry', async () => {
+    const agentSend = vi.fn();
+    const save = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: false }).mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1"
+        initialUrl="http://localhost:1234/demo?view=wide#hero" onOpenFile={() => {}} onRefreshFiles={() => {}}
+        onSendBoardCommentAttachments={agentSend} onSavePreviewComment={save} />);
+      const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+      webview.executeJavaScript = vi.fn(async (script: string) => script.includes('function snapshotFor(el, ev)') ? {
+        elementId: 'hero', selector: '#hero', label: 'div', text: 'Save', htmlHint: '<div id="hero">',
+        domOutline: 'div\n  h1 Save', ancestors: [{ tag: 'body', selector: 'body' }],
+        position: { x: 0, y: 0, width: 100, height: 100 },
+      } : null);
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+      const input = screen.getByPlaceholderText('Comment on this element…');
+      fireEvent.change(input, { target: { value: 'Make Save clearer' } });
+      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add to chat draft' })); });
+      expect((input as HTMLTextAreaElement).value).toBe('Make Save clearer');
+      const first = JSON.parse(fetchMock.mock.calls[0]![1].body);
+      expect(fetchMock.mock.calls[0]![0]).toBe('/api/projects/p1/edge-annotations/draft');
+      expect(first).toMatchObject({ conversationId: 'c1', note: 'Make Save clearer', target: { domOutline: 'div\n  h1 Save' } });
+      expect(first.screenshotDataUrl).toBeUndefined();
+      await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }); });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(fetchMock.mock.calls[1]![1].body)).toEqual(first);
+      expect(screen.queryByPlaceholderText('Comment on this element…')).toBeNull();
+      expect(agentSend).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+      expect(writeProjectTextFile).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('keeps external browser mutation and annotation tools hidden', () => {
     render(
       <DesignBrowserPanel
@@ -92,7 +181,7 @@ describe('DesignBrowserPanel <webview> navigation', () => {
     expect(screen.queryByRole('menuitem', { name: /Edit HTML/ })).toBeNull();
     expect(screen.queryByRole('menuitem', { name: 'Mark' })).toBeNull();
     expect(screen.queryByRole('menuitem', { name: 'Comment' })).toBeNull();
-    expect(screen.getByRole('menuitem', { name: 'Copy Screenshot' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: /Copy screenshot/i })).toBeTruthy();
   });
 
   it('opens the browser menu and highlights Download Page for attention requests', async () => {
@@ -173,7 +262,7 @@ describe('DesignBrowserPanel <webview> navigation', () => {
     expect(screen.getByText(/Saving page snapshot/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Browser menu' }));
-    expect((screen.getByRole('menuitem', { name: 'Copy Screenshot' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('menuitem', { name: /Copy screenshot/i }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole('menuitem', { name: 'Save Page Brief' }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole('menuitem', { name: 'Download Page' }) as HTMLButtonElement).disabled).toBe(true);
 

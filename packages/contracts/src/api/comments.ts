@@ -60,6 +60,17 @@ export interface PreviewCommentAttachment {
   name: string;
 }
 
+export interface PreviewCommentMetadata {
+  browser?: {
+    tabId: string;
+    /**
+     * Electron guest identity for the live desktop session. It may be stale
+     * after an app restart, so callers must validate it before use.
+     */
+    webContentsId: number;
+  };
+}
+
 export interface PreviewCommentMember {
   elementId: string;
   selector: string;
@@ -79,6 +90,8 @@ export interface PreviewCommentTarget {
   position: PreviewCommentPosition;
   htmlHint: string;
   style?: PreviewAnnotationStyle;
+  /** Bounded structural context from an external browser, without ancestor text. */
+  ancestors?: Array<{ tag: string; selector: string; role?: string }>;
   selectionKind?: PreviewCommentSelectionKind;
   memberCount?: number;
   podMembers?: PreviewCommentMember[];
@@ -90,6 +103,7 @@ export interface PreviewCommentTarget {
    * "based on older vN" badge.
    */
   anchoredVersion?: number;
+  metadata?: PreviewCommentMetadata;
 }
 
 export interface PreviewComment {
@@ -154,6 +168,7 @@ export interface PreviewComment {
    * may point somewhere unrelated after the author restructures the HTML.
    */
   lastGoodPosition?: PreviewCommentPosition;
+  metadata?: PreviewCommentMetadata;
 }
 
 export interface PreviewCommentUpsertRequest {

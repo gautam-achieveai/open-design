@@ -19,6 +19,7 @@ import {
   getWorkspaceProject,
   getWorkspaceProjectByProjectId,
   getProject,
+  insertConversation,
   insertProject,
   openDatabase,
 } from '../src/db.js';
@@ -33,6 +34,7 @@ import { createEnforceWorkspaceProjectMutation } from '../src/routes/project/ind
 import { workspaceContextFromDirectoryItem } from '../src/collab/vela-workspace-context.js';
 import { registerRunRoutes } from '../src/routes/runs.js';
 import { connectorService } from '../src/connectors/service.js';
+import { storePendingNativeAnnotation, listPendingEdgeAnnotations } from '../src/services/edge-chat-message.js';
 import { upsertInstalledPlugin } from '../src/plugins/registry.js';
 import { strategyPackageHashFromDigests } from '@open-design/plugin-runtime';
 import {
@@ -376,6 +378,7 @@ async function startServer(opts?: {
   seedImplicitScenarioPlugin?: boolean;
   teamProjectResourceState?: 'active' | 'deleted';
   loadPluginRegistryView?: () => Promise<any>;
+  getAgentDef?: (agentId: string) => any;
 }) {
   createdRunCount = 0;
   lastCreatedRun = null;
@@ -475,7 +478,7 @@ async function startServer(opts?: {
     paths: { PROJECTS_DIR: tempDir, RUNTIME_DATA_DIR: tempDir },
     agents: {
       detectAgents: async () => [],
-      getAgentDef: () => null,
+      getAgentDef: opts?.getAgentDef ?? (() => null),
     },
     chat: { startChatRun: async () => undefined },
     byokCredentials: { has: async (profileId: string) => profileId === 'test-profile' },
@@ -578,6 +581,57 @@ async function startServer(opts?: {
 }
 
 describe('POST /api/runs — workspace mutation gate', () => {
+  it('rejects Pi image selections exceeding its forwarding budget before claiming drafts', async () => {
+    const baseUrl = await startServer({ getAgentDef: (id) => id === 'pi'
+      ? { id, streamFormat: 'pi-rpc', supportsImagePaths: true } : null });
+    const db = openDatabase(tempDir!);
+    insertConversation(db, { id: 'pi-image-budget', projectId: UNBOUND_PROJECT,
+      title: 'Image budget', createdAt: Date.now(), updatedAt: Date.now() });
+    const screenshotDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAICAYAAADwdn+XAAAAFUlEQVR4nGM4ceLEf0oww6gBw8EAACA2q5Dak2CeAAAAAElFTkSuQmCC';
+    const selected = Array.from({ length: 11 }, (_, index) => storePendingNativeAnnotation(db, {
+      projectId: UNBOUND_PROJECT, conversationId: 'pi-image-budget', eventId: `budget-${index}`,
+      url: 'https://example.test/', title: 'Test', note: `Crop ${index}`, screenshotDataUrl,
+    }).id);
+    const response = await fetch(`${baseUrl}/api/runs`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        projectId: UNBOUND_PROJECT, conversationId: 'pi-image-budget', agentId: 'pi',
+        userMessageId: 'pi-budget-user', assistantMessageId: 'pi-budget-assistant',
+        clientRequestId: 'pi-budget-client', message: 'Review these crops', currentPrompt: 'Review these crops',
+        annotationIds: selected, annotationImageIds: selected,
+      }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } });
+    expect(createdRunCount).toBe(0);
+    expect(listPendingEdgeAnnotations(db, UNBOUND_PROJECT, 'pi-image-budget')).toHaveLength(11);
+  });
+
+  it.each([false, true])('rejects frozen OD Next browser evidence before claiming drafts (screenshot: %s)', async (withScreenshot) => {
+    const baseUrl = await startServer({ getAgentDef: (id) => id === 'codex'
+      ? { id, streamFormat: 'stream-json', supportsImagePaths: true } : null });
+    seedAwaitingClarificationTask();
+    const db = openDatabase(tempDir!);
+    const selected = storePendingNativeAnnotation(db, {
+      projectId: PERSONAL_PROJECT, conversationId: 'conversation-strategy', eventId: 'frozen-evidence',
+      url: 'https://example.test/', title: 'Test', note: 'Review evidence',
+      ...(withScreenshot ? { screenshotDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAICAYAAADwdn+XAAAAFUlEQVR4nGM4ceLEf0oww6gBw8EAACA2q5Dak2CeAAAAAElFTkSuQmCC' } : {}),
+    }).id;
+    const response = await fetch(`${baseUrl}/api/runs`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        taskExecutionId: 'task-strategy-clarification', projectId: PERSONAL_PROJECT,
+        conversationId: 'conversation-strategy', agentId: 'codex',
+        userMessageId: 'frozen-evidence-user', assistantMessageId: 'frozen-evidence-assistant',
+        clientRequestId: 'frozen-evidence-client', message: 'Review evidence', currentPrompt: 'Review evidence',
+        annotationIds: [selected], annotationImageIds: withScreenshot ? [selected] : [],
+      }),
+    });
+    const result = await response.json();
+    expect(response.status, JSON.stringify(result)).toBe(400);
+    expect(result).toMatchObject({ error: { code: 'BROWSER_EVIDENCE_UNAVAILABLE' } });
+    expect(createdRunCount).toBe(0);
+    expect(listPendingEdgeAnnotations(db, PERSONAL_PROJECT, 'conversation-strategy')).toHaveLength(1);
+  });
+
   it.each([
     ['/api/runs', 'plan_only'], ['/api/chat', 'plan_only'],
     ['/api/runs', 'produce'], ['/api/chat', 'produce'],

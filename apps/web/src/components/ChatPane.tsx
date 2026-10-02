@@ -97,6 +97,7 @@ import { useLiquidGlass } from '../hooks/useLiquidGlass';
 import { fetchProjectMediaTasks, projectRawUrl } from '../providers/registry';
 import { appendResourceQuery } from '../collab/workspace-identity';
 import { useProjectCollabContext } from '../collab/collab-context';
+import { workspaceResourceUrl } from '../collab/workspace-identity';
 import { takeComposerSeedFor } from '../state/libraryHandoff';
 import {
   formAnswersDisplayBody,
@@ -108,6 +109,7 @@ import type { TodoItem } from '../runtime/todos';
 import type {
   AppliedPluginSnapshot,
   ChatSessionMode,
+  PendingBrowserAnnotation,
   RunContextSelection,
   WorkspaceContextItem,
 } from '@open-design/contracts';
@@ -727,6 +729,7 @@ interface Props {
   shareToOpenDesignBusyMessageId?: string | null;
   forceStreamingMessageIds?: Set<string>;
   initialDraft?: string;
+  annotationDrafts?: PendingBrowserAnnotation[];
   // Product path of the Home recommendation that started this project. When
   // set (and concrete), the empty-conversation starter cards show that path's
   // starters — one-click composer replacements — instead of the generic set.
@@ -1354,6 +1357,7 @@ export function ChatPane({
   shareToOpenDesignBusyMessageId,
   forceStreamingMessageIds,
   initialDraft,
+  annotationDrafts = [],
   onboardingStarterPath = null,
   composerPlaceholder,
   onSubmitQuestionForm,
@@ -4055,6 +4059,8 @@ export function ChatPane({
       sendDisabled={sendDisabled}
       inputDisabled={viewerOnly}
       initialDraft={initialDraft}
+      annotationDrafts={annotationDrafts}
+      conversationId={activeConversationId}
       externalPendingUploads={homeAttachmentUploads}
       onRemoveExternalPendingUpload={onDismissHomeAttachmentUpload}
       composerPlaceholder={composerPlaceholder}
@@ -5389,6 +5395,7 @@ function ChatRows({
         <UserMessage
           message={m}
           projectId={projectId}
+          conversationId={activeConversationId}
           projectFileNames={projectFileNames}
           onRequestOpenFile={onRequestOpenFile}
           t={t}
@@ -5681,7 +5688,8 @@ function tailRenderedUserMessage(items: ChatRenderItem[]): ChatMessage | null {
 function estimateChatRenderItemHeight(item: ChatRenderItem): number {
   const message = item.message;
   const contentLength = message.content?.length ?? 0;
-  const attachmentCount = (message.attachments?.length ?? 0) + (message.commentAttachments?.length ?? 0);
+  const attachmentCount = (message.attachments?.length ?? 0) + (message.commentAttachments?.length ?? 0)
+    + (message.annotationContexts?.length ?? 0);
   const eventCount = message.events?.length ?? 0;
   const fileCount = message.producedFiles?.length ?? 0;
   const base = message.role === 'user' ? 82 : 118;
@@ -6605,6 +6613,7 @@ const UserMessage = memo(UserMessageImpl);
   export function UserMessageImpl({
   message,
   projectId,
+  conversationId,
   projectFileNames,
   onRequestOpenFile,
   t,
@@ -6613,6 +6622,7 @@ const UserMessage = memo(UserMessageImpl);
 }: {
   message: ChatMessage;
   projectId: string | null;
+  conversationId?: string | null;
   projectFileNames?: Set<string>;
   onRequestOpenFile?: (name: string) => void;
   /** 发送失败时那颗常驻的「重试」(稿子第 49 / 50 格) */
@@ -6626,6 +6636,8 @@ const UserMessage = memo(UserMessageImpl);
 }) {
   const { workspaceContext } = useProjectCollabContext();
   const attachments = sortChatAttachmentsForDisplay(message.attachments ?? []);
+  const chatImages = message.chatImages ?? [];
+  const annotationContexts = message.annotationContexts ?? [];
   const commentAttachments = message.commentAttachments ?? [];
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -6685,6 +6697,39 @@ const UserMessage = memo(UserMessageImpl);
           各管各的(#53)。壳子刻意不设 width:100% —— 那样两个孩子会各自按
           自己的百分比算宽度,右边界反而对不上。 */}
       <div className="msg-stack">
+        {chatImages.length > 0 && projectId && conversationId ? (
+          <div className="user-attachments msg-att" data-testid="chat-only-image-row">
+            {chatImages.map((image) => {
+              const imageUrl = workspaceResourceUrl(
+                `/api/projects/${encodeURIComponent(projectId)}/conversations/`
+                  + `${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(message.id)}/edge-image`
+                  + (image.id !== message.id ? `?imageId=${encodeURIComponent(image.id)}` : ''),
+                workspaceContext,
+              );
+              return (
+                <a key={image.id} href={imageUrl} target="_blank" rel="noreferrer"
+                  aria-label={t('chat.edge.openReviewedScreenshot')} className="msg-att-img">
+                  <span className="msg-att-ph">
+                    <img className="msg-att-mini" src={imageUrl} alt={t('chat.edge.reviewedScreenshot')} />
+                  </span>
+                </a>
+              );
+            })}
+          </div>
+        ) : null}
+        {annotationContexts.length > 0 && projectId && conversationId ? (
+          <div className="user-attachments comment-history-attachments" data-testid="chat-annotation-context-row">
+            {annotationContexts.map((attachment) => (
+              <a key={attachment.id} className="user-attachment staged-comment"
+                href={workspaceResourceUrl(
+                  `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(message.id)}/annotation-context/${encodeURIComponent(attachment.id)}`,
+                  workspaceContext,
+                )} target="_blank" rel="noreferrer" aria-label={attachment.name}>
+                <span className="staged-name">{attachment.name}</span>
+              </a>
+            ))}
+          </div>
+        ) : null}
         {attachments.length > 0 ? (
           <UserAttachmentRow
             attachments={attachments}

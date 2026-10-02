@@ -42,6 +42,55 @@ describe('parseSseFrame', () => {
 });
 
 describe('streamViaDaemon', () => {
+  it('settles annotation admission before streaming and never retracts an admitted run', async () => {
+    const handlers = createDaemonHandlers();
+    let releaseEvents: (() => void) | undefined;
+    const eventGate = new Promise<void>((resolve) => { releaseEvents = resolve; });
+    const accepted = vi.fn();
+    const rejected = vi.fn();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/runs') return jsonResponse({ runId: 'run-evidence' });
+      if (String(input) === '/api/runs/run-evidence/events') {
+        await eventGate;
+        return sseResponse('event: end\ndata: {"code":0,"status":"succeeded"}\n\n');
+      }
+      throw new Error(`unexpected fetch ${String(input)}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const run = streamViaDaemon({
+      agentId: 'mock', history: [{ id: 'user-evidence', role: 'user', content: 'Review' }],
+      signal: new AbortController().signal, handlers,
+      annotationIds: ['11111111-1111-4111-8111-111111111111'],
+      annotationImageIds: ['11111111-1111-4111-8111-111111111111'],
+      onAdmissionAccepted: accepted, onAdmissionRejected: rejected,
+    });
+    await vi.waitFor(() => expect(accepted).toHaveBeenCalledTimes(1));
+    expect(rejected).not.toHaveBeenCalled();
+    const [, init] = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      annotationIds: ['11111111-1111-4111-8111-111111111111'],
+      annotationImageIds: ['11111111-1111-4111-8111-111111111111'],
+    });
+    releaseEvents?.();
+    await run;
+    expect(rejected).not.toHaveBeenCalled();
+  });
+
+  it('rejects annotation admission when the run POST fails', async () => {
+    const handlers = createDaemonHandlers();
+    const accepted = vi.fn();
+    const rejected = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('Rejected evidence', { status: 409 })));
+    await streamViaDaemon({
+      agentId: 'mock', history: [{ id: 'user-evidence', role: 'user', content: 'Review' }],
+      signal: new AbortController().signal, handlers,
+      annotationIds: ['11111111-1111-4111-8111-111111111111'],
+      onAdmissionAccepted: accepted, onAdmissionRejected: rejected,
+    });
+    expect(accepted).not.toHaveBeenCalled();
+    expect(rejected).toHaveBeenCalledTimes(1);
+  });
+
   it('sends the latest user turn separately from the full CLI transcript', async () => {
     const handlers = createDaemonHandlers();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {

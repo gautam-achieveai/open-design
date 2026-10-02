@@ -1,3 +1,4 @@
+import { normalizeEdgeAnnotationAncestors } from '@open-design/contracts';
 import type {
   ChatCommentAttachment,
   ChatCommentSelectionKind,
@@ -411,6 +412,7 @@ export function commentToAttachment(
         : undefined,
     podMembers: podMembers.length > 0 ? podMembers : undefined,
     ...(typeof comment.slideIndex === 'number' ? { slideIndex: comment.slideIndex } : {}),
+    ...(comment.metadata ? { metadata: comment.metadata } : {}),
     imageAttachments: imageAttachments.length > 0 ? imageAttachments : undefined,
     source: 'saved-comment',
   };
@@ -485,6 +487,7 @@ export function buildBoardCommentAttachments(input: {
       pagePosition: normalizePosition(input.target.position),
       htmlHint: trimHtmlHint(input.target.htmlHint),
       style: normalizeStyle(input.target.style),
+      ancestors: normalizeEdgeAnnotationAncestors(input.target.ancestors),
       selectionKind,
       memberCount,
       podMembers: podMembers.length > 0 ? podMembers : undefined,
@@ -630,6 +633,12 @@ function renderCommentAttachmentContext(commentAttachments: ChatCommentAttachmen
       `htmlHint: ${trimHtmlHint(item.htmlHint || '') || '(none)'}`,
       `computedStyle: ${formatAnnotationStyle(item.style) || '(none)'}`,
     );
+    const ancestors = normalizeEdgeAnnotationAncestors(item.ancestors);
+    if (ancestors.length > 0) {
+      lines.push(`ancestors (nearest first): ${ancestors.map((ancestor) => (
+        `${ancestor.tag}${ancestor.role ? `[role=${ancestor.role}]` : ''} ${ancestor.selector}`
+      )).join(' > ')}`);
+    }
     if (item.comment && item.commentContext !== 'query') {
       lines.push(`comment: ${item.comment}`);
     }

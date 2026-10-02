@@ -117,6 +117,8 @@ export interface AgentInfo {
   name: string;
   bin: string;
   available: boolean;
+  /** Native screenshot input support; missing means not supported. */
+  supportsImagePaths?: boolean;
   authStatus?: 'ok' | 'missing' | 'unknown';
   authMessage?: string;
   path?: string;

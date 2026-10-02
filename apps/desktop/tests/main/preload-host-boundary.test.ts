@@ -20,6 +20,11 @@ describe("desktop preload host boundary", () => {
     expect(source).toContain("satisfies OpenDesignHostBridge");
     expect(source).toContain("browser");
     expect(source).toContain("browser:clear-data");
+    expect(source).toContain("browser:execute");
+    expect(source).toContain("browser:register-target");
+    expect(source).toContain("browser:unregister-target");
+    expect(source).toContain("browser:list-targets");
+    expect(source).toContain("browser:execute");
     expect(source).toContain("updater");
     // OS locale forwarded from main via webPreferences.additionalArguments
     // is mirrored onto __od__.client.osLocale. Pin the literal prefix

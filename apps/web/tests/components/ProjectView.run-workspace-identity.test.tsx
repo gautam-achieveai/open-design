@@ -32,11 +32,14 @@
 // pre-run balance gate receives the same null and silently prices the run
 // against the ACCOUNT wallet instead of the team's.
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import {
   buildWorkspacePermissions,
   buildWorkspaceSeatSummary,
   type PreviewComment,
+  type PendingBrowserAnnotation,
   type WorkspaceCollabContext,
 } from '@open-design/contracts';
 import type { ComponentProps, ReactNode } from 'react';
@@ -275,6 +278,7 @@ vi.mock('../../src/components/Loading', () => ({
 vi.mock('../../src/components/ChatPane', () => ({
   ChatPane: (props: {
     activeConversationId?: string | null;
+    annotationDrafts?: PendingBrowserAnnotation[];
     conversations?: Conversation[];
     loading?: boolean;
     messages?: ChatMessage[];
@@ -1663,6 +1667,60 @@ describe('a Home auto-send observes a project billing scope that settles after m
     expect(mockedCheckAmrBalanceGate).not.toHaveBeenCalled();
     expect(mockedStreamViaDaemon.mock.calls[0]?.[0].workspaceContext).toBeNull();
     expect(window.sessionStorage.getItem(`od:auto-send-first:${PROJECT_ID}`)).toBeNull();
+  });
+
+  it('refreshes browser annotations when a conversation becomes active after the project event callback mounts', async () => {
+    const source = readFileSync(resolve('src/components/ProjectView.tsx'), 'utf8');
+    const callback = source.slice(source.indexOf('const handleProjectEvent = useCallback('),
+      source.indexOf('// A bound project must not open a headerless EventSource'));
+    expect(callback).toMatch(/\}, \[[\s\S]*?\bactiveConversationId\b[\s\S]*?\]\);$/m);
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    workspaceScopeMocks.ambientContext = null;
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: { kind: 'unbound', projectId: PROJECT_ID, workspaceId: null, context: null },
+    };
+    mockedListConversations.mockResolvedValue([
+      { ...conversation(PROJECT_ID), id: 'conv-first' },
+      { ...conversation(PROJECT_ID), id: 'conv-second', createdAt: 2, updatedAt: 2 },
+    ]);
+    const pendingPath = `/api/projects/${PROJECT_ID}/edge-annotations/pending?conversationId=conv-second`;
+    const note: PendingBrowserAnnotation = {
+      id: '11111111-1111-4111-8111-111111111111',
+      projectId: PROJECT_ID,
+      conversationId: 'conv-second',
+      eventId: 'event-one',
+      text: 'Inspect this card',
+      hasScreenshot: false,
+      createdAt: 1,
+    };
+    let pending: PendingBrowserAnnotation[] = [];
+    const originalFetch = globalThis.fetch;
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => String(input) === pendingPath
+      ? new Response(JSON.stringify({ annotations: pending }), { status: 200 })
+      : originalFetch(input));
+    vi.stubGlobal('fetch', fetchSpy);
+    renderProjectView({ project: { ...project(), workspaceId: undefined, pendingPrompt: '' } });
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0].activeConversationId).toBe('conv-first'));
+    const firstHandler = mockedUseProjectFileEvents.mock.calls.at(-1)?.[2];
+    await act(async () => {
+      chatPaneSpy.mock.calls.at(-1)?.[0].onSelectConversation?.('conv-second');
+    });
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0].activeConversationId).toBe('conv-second'));
+    await waitFor(() => expect(fetchSpy.mock.calls.some(([input]) => String(input) === pendingPath)).toBe(true));
+    expect(chatPaneSpy.mock.calls.at(-1)?.[0].annotationDrafts).toEqual([]);
+
+    pending = [note];
+    expect(mockedUseProjectFileEvents.mock.calls.at(-1)?.[2]).not.toBe(firstHandler);
+    fetchSpy.mockClear();
+    await act(async () => {
+      mockedUseProjectFileEvents.mock.calls.at(-1)?.[2]?.({
+        type: 'annotation-draft-available', projectId: PROJECT_ID,
+        conversationId: note.conversationId, at: Date.now(),
+      });
+    });
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0].annotationDrafts).toEqual([note]));
+    expect(fetchSpy.mock.calls.filter(([input]) => String(input) === pendingPath)).toHaveLength(1);
   });
 
   it('reconciles files and comments with the exact Team scope when the project event stream becomes ready', async () => {

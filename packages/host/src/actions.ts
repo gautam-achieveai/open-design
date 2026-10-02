@@ -2,6 +2,12 @@ import { OPEN_DESIGN_HOST_UPDATER_ACTIONS } from "./protocol.js";
 import type {
   OpenDesignHostActionResult,
   OpenDesignHostBrowserClearDataOptions,
+  OpenDesignHostBrowserExecuteRequest,
+  OpenDesignHostBrowserExecuteResult,
+  OpenDesignHostBrowserListTargetsResult,
+  OpenDesignHostBrowserRegisterTargetResult,
+  OpenDesignHostBrowserTargetIdentity,
+  OpenDesignHostBrowserTargetRegistration,
   OpenDesignHostCaptureOptions,
   OpenDesignHostCaptureResult,
   OpenDesignHostFailure,
@@ -76,6 +82,77 @@ export async function clearHostBrowserData(
   if (host == null) return unavailable("OpenDesign host is not available");
   try {
     return await host.browser.clearData(options);
+  } catch (error) {
+    return unavailable(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Register an approved embedded Design Browser guest with the desktop host. */
+export async function registerHostBrowserTarget(
+  target: OpenDesignHostBrowserTargetRegistration,
+  scope: OpenDesignHostGlobalScope = globalThis,
+): Promise<OpenDesignHostBrowserRegisterTargetResult> {
+  const host = getOpenDesignHost(scope);
+  if (host == null) return unavailable("OpenDesign host is not available");
+  const registerTarget = host.browser.registerTarget;
+  if (typeof registerTarget !== "function") {
+    return unavailable("host build does not support embedded browser targets");
+  }
+  try {
+    return await registerTarget(target);
+  } catch (error) {
+    return unavailable(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Unregister a renderer tab identity from its embedded browser guest. */
+export async function unregisterHostBrowserTarget(
+  target: OpenDesignHostBrowserTargetIdentity,
+  scope: OpenDesignHostGlobalScope = globalThis,
+): Promise<OpenDesignHostActionResult> {
+  const host = getOpenDesignHost(scope);
+  if (host == null) return unavailable("OpenDesign host is not available");
+  const unregisterTarget = host.browser.unregisterTarget;
+  if (typeof unregisterTarget !== "function") {
+    return unavailable("host build does not support embedded browser targets");
+  }
+  try {
+    return await unregisterTarget(target);
+  } catch (error) {
+    return unavailable(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** List currently registered and still-attached Design Browser targets. */
+export async function listHostBrowserTargets(
+  scope: OpenDesignHostGlobalScope = globalThis,
+): Promise<OpenDesignHostBrowserListTargetsResult> {
+  const host = getOpenDesignHost(scope);
+  if (host == null) return unavailable("OpenDesign host is not available");
+  const listTargets = host.browser.listTargets;
+  if (typeof listTargets !== "function") {
+    return unavailable("host build does not support embedded browser targets");
+  }
+  try {
+    return await listTargets();
+  } catch (error) {
+    return unavailable(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Execute one bounded typed browser operation against a registered tab. */
+export async function executeHostBrowserOperation(
+  request: OpenDesignHostBrowserExecuteRequest,
+  scope: OpenDesignHostGlobalScope = globalThis,
+): Promise<OpenDesignHostBrowserExecuteResult> {
+  const host = getOpenDesignHost(scope);
+  if (host == null) return unavailable("OpenDesign host is not available");
+  const execute = host.browser.execute;
+  if (typeof execute !== "function") {
+    return unavailable("host build does not support embedded browser control");
+  }
+  try {
+    return await execute(request);
   } catch (error) {
     return unavailable(error instanceof Error ? error.message : String(error));
   }

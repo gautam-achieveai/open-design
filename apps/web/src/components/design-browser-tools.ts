@@ -75,8 +75,76 @@ export interface BrowserElementSnapshot {
   position: { x: number; y: number; width: number; height: number };
   hoverPoint?: { x: number; y: number };
   htmlHint: string;
+  domOutline?: string;
+  ancestors?: Array<{ tag: string; selector: string }>;
   style?: PreviewAnnotationStyle;
   selectionKind?: 'element';
+  isFormField?: boolean;
+  maskRects?: Array<{ x: number; y: number; width: number; height: number; textHidden?: boolean }> | null;
+  viewport?: { width: number; height: number };
+}
+
+type BrowserRect = { x: number; y: number; width: number; height: number; textHidden?: boolean };
+
+export function browserAnnotationPixelMasks(
+  element: BrowserRect,
+  frame: BrowserRect,
+  image: { w: number; h: number },
+  masks: BrowserRect[],
+): BrowserRect[] | null {
+  const clipped = {
+    x: Math.max(0, element.x),
+    y: Math.max(0, element.y),
+    right: Math.min(frame.width, element.x + element.width),
+    bottom: Math.min(frame.height, element.y + element.height),
+  };
+  const width = clipped.right - clipped.x;
+  const height = clipped.bottom - clipped.y;
+  if (![element.x, element.y, element.width, element.height, frame.width, frame.height,
+    image.w, image.h].every(Number.isFinite) || width <= 0 || height <= 0
+    || image.w <= 0 || image.h <= 0 || masks.length > 200) return null;
+  const sx = image.w / width;
+  const sy = image.h / height;
+  const result: BrowserRect[] = [];
+  for (const mask of masks) {
+    if (![mask.x, mask.y, mask.width, mask.height].every(Number.isFinite)
+      || mask.width <= 0 || mask.height <= 0) return null;
+    const x0 = Math.max(0, Math.floor((element.x + mask.x - clipped.x) * sx));
+    const y0 = Math.max(0, Math.floor((element.y + mask.y - clipped.y) * sy));
+    const x1 = Math.min(image.w, Math.ceil((element.x + mask.x + mask.width - clipped.x) * sx));
+    const y1 = Math.min(image.h, Math.ceil((element.y + mask.y + mask.height - clipped.y) * sy));
+    if (x1 > x0 && y1 > y0) result.push({ x: x0, y: y0, width: x1 - x0, height: y1 - y0,
+      ...(mask.textHidden === true ? { textHidden: true } : {}) });
+  }
+  return result;
+}
+
+export function browserAnnotationTextPaintScript(hide: boolean, verifyOnly = false): string {
+  return `(() => {
+    const selector = 'input:not([type]),input[type="text"],input[type="email"],input[type="password"],input[type="search"],input[type="tel"],input[type="url"],textarea';
+    const visit = (root) => {
+      root.querySelectorAll('style[data-od-annotation-text]').forEach((style) => style.remove());
+      if (${hide}) {
+        const style = document.createElement('style');
+        style.setAttribute('data-od-annotation-text', '');
+        style.textContent = 'input,textarea,input::placeholder,textarea::placeholder{color:transparent!important;-webkit-text-fill-color:transparent!important;text-shadow:none!important;caret-color:transparent!important}';
+        (root === document ? document.documentElement : root).appendChild(style);
+        setTimeout(() => style.remove(), 5000);
+      }
+      for (const node of root.querySelectorAll('*')) if (node.shadowRoot) visit(node.shadowRoot);
+    };
+    if (!${verifyOnly}) visit(document);
+    const verify = (root) => {
+      for (const node of root.querySelectorAll(selector)) {
+        const style = getComputedStyle(node);
+        if (style.display !== 'none' && style.visibility !== 'hidden'
+          && (!['transparent', 'rgba(0, 0, 0, 0)'].includes(style.webkitTextFillColor) || style.textShadow !== 'none')) return false;
+      }
+      for (const node of root.querySelectorAll('*')) if (node.shadowRoot && !verify(node.shadowRoot)) return false;
+      return true;
+    };
+    return ${hide} ? verify(document) : true;
+  })()`;
 }
 
 export interface BrowserMeasureTargetRequest {
@@ -352,13 +420,6 @@ export function browserElementPickerScript(filePath: string): string {
   let hovered = null;
   let finished = false;
 
-  function escIdent(value) {
-    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(value));
-    return String(value).replace(/[^a-zA-Z0-9_-]/g, function(ch) { return '\\\\' + ch; });
-  }
-  function escAttr(value) {
-    return String(value).replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
-  }
   function visibleRect(el) {
     const rect = el.getBoundingClientRect();
     if (!rect || rect.width <= 0 || rect.height <= 0) return null;
@@ -378,10 +439,6 @@ export function browserElementPickerScript(filePath: string): string {
     let node = el;
     while (node && node.nodeType === 1 && node !== document.documentElement) {
       const tag = node.tagName.toLowerCase();
-      if (node.id) {
-        parts.unshift(tag + '#' + escIdent(node.id));
-        break;
-      }
       let index = 1;
       let prev = node.previousElementSibling;
       while (prev) {
@@ -394,12 +451,57 @@ export function browserElementPickerScript(filePath: string): string {
     return parts.join(' > ') || 'body';
   }
   function selectorFor(el) {
-    const odId = el.getAttribute('data-od-id');
-    if (odId) return { elementId: odId, selector: '[data-od-id="' + escAttr(odId) + '"]' };
-    const screenLabel = el.getAttribute('data-screen-label');
-    if (screenLabel) return { elementId: screenLabel, selector: '[data-screen-label="' + escAttr(screenLabel) + '"]' };
     const selector = domSelectorFor(el);
     return { elementId: 'dom:' + selector, selector };
+  }
+  function maskRectsFor(rect) {
+    const masks = [];
+    const visit = (root) => {
+      for (const node of root.querySelectorAll('*')) {
+        if (node.closest('[hidden],[inert],[aria-hidden="true"]')) continue;
+        const style = window.getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const box = node.getBoundingClientRect();
+        const x = Math.max(rect.left, box.left);
+        const y = Math.max(rect.top, box.top);
+        const right = Math.min(rect.right, box.right);
+        const bottom = Math.min(rect.bottom, box.bottom);
+        if (right <= x || bottom <= y) continue;
+        if (node.matches('iframe,object,embed,[data-sensitive]')
+          || (node.localName.includes('-') && !node.shadowRoot)) return false;
+        if (node.matches('input,textarea,select,[contenteditable]')) {
+          masks.push({ x: x - rect.left, y: y - rect.top,
+            width: right - x, height: bottom - y,
+            ...(node.matches('textarea,input:not([type]),input[type="text"],input[type="email"],input[type="password"],input[type="search"],input[type="tel"],input[type="url"]') ? { textHidden: true } : {}) });
+          if (masks.length > 200) return false;
+        }
+        if (node.shadowRoot && !visit(node.shadowRoot)) return false;
+      }
+      return true;
+    };
+    return visit(document) ? masks : null;
+  }
+  function safeText(el) {
+    let length = 0;
+    const parts = [];
+    const visit = (node) => {
+      if (length >= 240) return;
+      if (node.nodeType === 3) {
+        const text = String(node.nodeValue || '').replace(/\\s+/g, ' ').trim();
+        if (text && !/(?:eyJ[A-Za-z0-9_-]{8,}\\.eyJ|bearer\\s+\\S+|(?:password|secret|token|api[_-]?key|credential)(?:\\s*=\\s*\\S{6,}|\\s*:\\s*\\S{6,}(?=\\s*(?:$|[\\n;,]))))/i.test(text)) {
+          const bounded = text.slice(0, 240 - length);
+          parts.push(bounded); length += bounded.length;
+        }
+        return;
+      }
+      if (node.nodeType !== 1 || node.matches('input,textarea,select,[contenteditable],[data-sensitive],[hidden],[inert],[aria-hidden="true"],iframe,object,embed,script,style')
+        || node.closest('[contenteditable],[data-sensitive],[hidden],[inert],[aria-hidden="true"]')) return;
+      const style = window.getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') return;
+      for (const child of node.childNodes) visit(child);
+    };
+    visit(el);
+    return parts.join(' ').slice(0, 240);
   }
   function styleSnapshot(el) {
     const s = window.getComputedStyle(el);
@@ -422,20 +524,14 @@ export function browserElementPickerScript(filePath: string): string {
     const rect = el.getBoundingClientRect();
     const identity = selectorFor(el);
     const tag = el.tagName ? el.tagName.toLowerCase() : 'element';
-    const cls = typeof el.className === 'string' && el.className.trim()
-      ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.')
-      : '';
-    let htmlHint = '';
-    try {
-      const match = String(el.outerHTML || '').replace(/\\s+/g, ' ').match(/^<[^>]+>/);
-      htmlHint = match ? match[0] : '';
-    } catch (_) {}
+    const field = el.matches('input,textarea,select');
+    const htmlHint = tag;
     return {
       filePath,
       elementId: identity.elementId,
       selector: identity.selector,
-      label: tag + cls,
-      text: String(el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 240),
+      label: tag,
+      text: field ? '' : safeText(el),
       position: {
         x: Math.round(rect.x),
         y: Math.round(rect.y),
@@ -443,9 +539,28 @@ export function browserElementPickerScript(filePath: string): string {
         height: Math.round(rect.height)
       },
       hoverPoint: ev ? { x: Math.round(ev.clientX), y: Math.round(ev.clientY) } : undefined,
+      domOutline: field ? tag : [el, ...Array.from(el.querySelectorAll('*')).slice(0, 30)]
+        .filter(node => !node.matches('script,style,input,textarea,select,[contenteditable],[data-sensitive],[hidden],[inert],[aria-hidden="true"],iframe,object,embed')
+          && !node.closest('[contenteditable],[data-sensitive],[hidden],[inert],[aria-hidden="true"]'))
+        .map(node => node.localName + ' ' + Array.from(node.childNodes)
+          .filter(child => child.nodeType === 3).map(child => {
+            const text = String(child.nodeValue || '').replace(/\\s+/g, ' ').trim();
+            return /(?:eyJ[A-Za-z0-9_-]{8,}\\.eyJ|bearer\\s+\\S+|(?:password|secret|token|api[_-]?key|credential)(?:\\s*=\\s*\\S{6,}|\\s*:\\s*\\S{6,}(?=\\s*(?:$|[\\n;,]))))/i.test(text) ? '' : text;
+          }).join(' ').trim().slice(0, 160))
+        .join('\\n').slice(0, 8000),
+      ancestors: (() => {
+        const parents = [];
+        for (let node = el.parentElement; node && node !== document.documentElement && parents.length < 8; node = node.parentElement) {
+          parents.push({ tag: node.localName, selector: domSelectorFor(node) });
+        }
+        return parents;
+      })(),
       htmlHint: htmlHint.slice(0, 220),
       style: styleSnapshot(el),
-      selectionKind: 'element'
+      selectionKind: 'element',
+      isFormField: field,
+      maskRects: maskRectsFor(rect),
+      viewport: { width: window.innerWidth, height: window.innerHeight }
     };
   }
   function setHover(el) {
@@ -501,6 +616,55 @@ export function browserMeasureTargetsScript(
     if (!rect || rect.width <= 0 || rect.height <= 0) return null;
     return rect;
   }
+  function maskRectsFor(rect) {
+    const masks = [];
+    const visit = (root) => {
+      for (const node of root.querySelectorAll('*')) {
+        if (node.closest('[hidden],[inert],[aria-hidden="true"]')) continue;
+        const style = window.getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const box = node.getBoundingClientRect();
+        const x = Math.max(rect.left, box.left);
+        const y = Math.max(rect.top, box.top);
+        const right = Math.min(rect.right, box.right);
+        const bottom = Math.min(rect.bottom, box.bottom);
+        if (right <= x || bottom <= y) continue;
+        if (node.matches('iframe,object,embed,[data-sensitive]')
+          || (node.localName.includes('-') && !node.shadowRoot)) return false;
+        if (node.matches('input,textarea,select,[contenteditable]')) {
+          masks.push({ x: x - rect.left, y: y - rect.top,
+            width: right - x, height: bottom - y,
+            ...(node.matches('textarea,input:not([type]),input[type="text"],input[type="email"],input[type="password"],input[type="search"],input[type="tel"],input[type="url"]') ? { textHidden: true } : {}) });
+          if (masks.length > 200) return false;
+        }
+        if (node.shadowRoot && !visit(node.shadowRoot)) return false;
+      }
+      return true;
+    };
+    return visit(document) ? masks : null;
+  }
+  function safeText(el) {
+    let length = 0;
+    const parts = [];
+    const visit = (node) => {
+      if (length >= 240) return;
+      if (node.nodeType === 3) {
+        const text = String(node.nodeValue || '').replace(/\\s+/g, ' ').trim();
+        if (text && !/(?:eyJ[A-Za-z0-9_-]{8,}\\.eyJ|bearer\\s+\\S+|(?:password|secret|token|api[_-]?key|credential)(?:\\s*=\\s*\\S{6,}|\\s*:\\s*\\S{6,}(?=\\s*(?:$|[\\n;,]))))/i.test(text)) {
+          const bounded = text.slice(0, 240 - length);
+          parts.push(bounded); length += bounded.length;
+        }
+        return;
+      }
+      if (node.nodeType !== 1 || node.matches('input,textarea,select,[contenteditable],[data-sensitive],[hidden],[inert],[aria-hidden="true"],iframe,object,embed,script,style')
+        || node.closest('[contenteditable],[data-sensitive],[hidden],[inert],[aria-hidden="true"]')) return;
+      const style = window.getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') return;
+      for (const child of node.childNodes) visit(child);
+    };
+    visit(el);
+    return parts.join(' ').slice(0, 240);
+  }
   function styleSnapshot(el) {
     const s = window.getComputedStyle(el);
     return {
@@ -524,21 +688,15 @@ export function browserMeasureTargetsScript(
     const rect = visibleRect(el);
     if (!el || !rect) return null;
     const tag = el.tagName ? el.tagName.toLowerCase() : 'element';
-    const cls = typeof el.className === 'string' && el.className.trim()
-      ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.')
-      : '';
-    let htmlHint = '';
-    try {
-      const match = String(el.outerHTML || '').replace(/\\s+/g, ' ').match(/^<[^>]+>/);
-      htmlHint = match ? match[0] : '';
-    } catch (_) {}
+    const field = el.matches('input,textarea,select');
+    const htmlHint = tag;
     return {
       key: String(target.key || ''),
       filePath,
       elementId: String(target.elementId || ''),
       selector: String(target.selector || ''),
-      label: tag + cls,
-      text: String(el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 240),
+      label: tag,
+      text: field ? '' : safeText(el),
       position: {
         x: Math.round(rect.x),
         y: Math.round(rect.y),
@@ -547,7 +705,10 @@ export function browserMeasureTargetsScript(
       },
       htmlHint: htmlHint.slice(0, 220),
       style: styleSnapshot(el),
-      selectionKind: 'element'
+      selectionKind: 'element',
+      isFormField: field,
+      maskRects: maskRectsFor(rect),
+      viewport: { width: window.innerWidth, height: window.innerHeight }
     };
   }
   return targets.map(snapshotFor).filter(Boolean);
@@ -600,8 +761,28 @@ export function browserSnapshotFromUnknown(
     position,
     hoverPoint: normalizePoint(record.hoverPoint),
     htmlHint: String(record.htmlHint || ''),
+    ...(typeof record.domOutline === 'string' ? { domOutline: record.domOutline.slice(0, 8000) } : {}),
+    ...(Array.isArray(record.ancestors) ? { ancestors: record.ancestors.slice(0, 8)
+      .filter((item): item is { tag: string; selector: string } => Boolean(item)
+        && typeof item.tag === 'string' && typeof item.selector === 'string')
+      .map((item) => ({ tag: item.tag.slice(0, 64), selector: item.selector.slice(0, 4096) })) } : {}),
     style: normalizeAnnotationStyle(record.style),
     selectionKind: 'element',
+    isFormField: record.isFormField === true,
+    ...(record.maskRects === null ? { maskRects: null }
+      : Array.isArray(record.maskRects) && record.maskRects.length <= 200
+        && record.maskRects.every((item) => Boolean(item) && typeof item === 'object'
+          && ['x', 'y', 'width', 'height'].every((key) => Number.isFinite((item as Record<string, number>)[key]))
+          && (item as { width: number; height: number }).width > 0
+          && (item as { width: number; height: number }).height > 0)
+        ? { maskRects: (record.maskRects as BrowserRect[])
+          .map((item) => ({ x: item.x, y: item.y, width: item.width, height: item.height,
+            ...(item.textHidden === true ? { textHidden: true } : {}) })) } : {}),
+    ...(record.viewport && typeof record.viewport === 'object'
+      && Number.isFinite((record.viewport as { width?: number }).width)
+      && Number.isFinite((record.viewport as { height?: number }).height)
+      ? { viewport: { width: (record.viewport as { width: number }).width,
+        height: (record.viewport as { height: number }).height } } : {}),
   };
 }
 

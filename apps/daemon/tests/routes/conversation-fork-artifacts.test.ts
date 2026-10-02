@@ -13,6 +13,7 @@ import {
   insertProject, listConversations, listMessages, openDatabase, updateConversation,
   updateProject, upsertMessage,
 } from '../../src/db.js';
+import { appendReviewedEdgeChatMessage, claimPendingEdgeAnnotations, claimedEdgeAnnotationContext, edgeChatImageForMessage, storePendingNativeAnnotation } from '../../src/services/edge-chat-message.js';
 import {
   registerProjectConversationRoutes,
   type RegisterProjectConversationRoutesDeps,
@@ -66,14 +67,14 @@ function application() {
     ids: { randomId: randomUUID },
     appConfig: { readAppConfig: async () => ({}) },
     agents: { getAgentDef: () => null },
-    design: { runs: { get: () => null } },
+    design: { runs: { get: () => null, list: () => [] } },
   } as unknown as RegisterProjectConversationRoutesDeps);
   return app;
 }
 
 // Run the production Express routes and response serialization without a
 // listening server. The transport supplies the already-decoded JSON body.
-function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+function request<T>(method: string, url: string, body?: unknown, status = 200): Promise<T> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     const socket = new Duplex({
@@ -92,7 +93,7 @@ function request<T>(method: string, url: string, body?: unknown): Promise<T> {
     res.on('finish', () => {
       try {
         const wire = Buffer.concat(chunks).toString();
-        expect(res.statusCode).toBe(200);
+        expect(res.statusCode).toBe(status);
         resolve(JSON.parse(wire.slice(wire.indexOf('\r\n\r\n') + 4)) as T);
       } catch (error) {
         reject(error);
@@ -125,6 +126,79 @@ beforeEach(() => {
 afterEach(() => {
   closeDatabase();
   rmSync(dataDir, { recursive: true, force: true });
+});
+
+it('forks message-owned browser images independently and protects reviewed evidence from stale PUTs', async () => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==', 'base64');
+  const posted = appendReviewedEdgeChatMessage(db, {
+    grant: { grantId: 'grant-1', projectId, conversationId: sourceId, tabId: 1,
+      documentId: 'doc-1', origin: 'https://app.example.test', createdAt: 1, expiresAt: Date.now() + 100_000 },
+    eventId: 'event-1', url: 'https://app.example.test/page', title: 'Example', note: 'Make Save clearer',
+    target: { selector: 'button', label: 'button', text: 'Save', domOutline: 'button Save',
+      htmlHint: 'button', position: { x: 1, y: 2, width: 10, height: 10 } },
+    screenshot: { data: png, metadata: { mimeType: 'image/png', bytes: png.length, width: 1, height: 1 } },
+  });
+  const original = getMessage(db, posted.messageId, sourceId)!;
+  const stale = await request<{ error: { code: string } }>(
+    'PUT', `/api/projects/${projectId}/conversations/${sourceId}/messages/${posted.messageId}`,
+    { id: posted.messageId, role: 'user', content: 'replace the reviewed evidence' },
+    409,
+  );
+  expect(stale.error.code).toBe('CONFLICT');
+  expect(getMessage(db, posted.messageId, sourceId)?.content).toBe(original.content);
+  expect(edgeChatImageForMessage(db, projectId, sourceId, posted.messageId)?.data).toEqual(png);
+
+  const created = await request<{ conversation: { id: string } }>(
+    'POST', `/api/projects/${projectId}/conversations`,
+    { seedFromConversationId: sourceId, forkAfterMessageId: posted.messageId },
+  );
+  const forkId = created.conversation.id;
+  const copied = (await history(forkId)).at(-1)!;
+  expect(copied.id).not.toBe(posted.messageId);
+  expect(copied.content).toBe(original.content);
+  expect(copied.chatImages).toEqual(original.chatImages.map((image) => ({ ...image, id: copied.id })));
+  expect(edgeChatImageForMessage(db, projectId, forkId, copied.id)?.data).toEqual(png);
+  expect(edgeChatImageForMessage(db, projectId, sourceId, copied.id)).toBeNull();
+
+  await request('DELETE', `/api/projects/${projectId}/conversations/${sourceId}`);
+  expect(edgeChatImageForMessage(db, projectId, sourceId, posted.messageId)).toBeNull();
+  expect(edgeChatImageForMessage(db, projectId, forkId, copied.id)?.data).toEqual(png);
+});
+
+it('keeps claimed annotation JSON attached to a forked user message', async () => {
+  const draft = storePendingNativeAnnotation(db, {
+    projectId, conversationId: sourceId, eventId: 'fork-annotation',
+    url: 'https://app.example.test/page', note: 'Clarify the Save button',
+    target: { selector: 'body > button', label: 'Save', text: 'Save', htmlHint: 'button',
+      position: { x: 1, y: 2, width: 10, height: 10 } },
+  });
+  upsertMessage(db, sourceId, { id: 'annotated-user', role: 'user', content: draft.note! });
+  claimPendingEdgeAnnotations(db, projectId, sourceId, 'annotated-user', [draft.id], []);
+  expect((await history(sourceId)).at(-1)?.annotationContexts?.map(({ id }) => id)).toEqual([draft.id]);
+
+  const created = await request<{ conversation: { id: string } }>(
+    'POST', `/api/projects/${projectId}/conversations`,
+    { seedFromConversationId: sourceId, forkAfterMessageId: 'annotated-user' },
+  );
+  const forkId = created.conversation.id;
+  const copied = (await history(forkId)).at(-1)!;
+  expect(copied.id).not.toBe('annotated-user');
+  expect(copied.content).toBe(draft.note);
+  expect(copied.annotationContexts?.map(({ id }) => id)).toEqual([draft.id]);
+  expect(claimedEdgeAnnotationContext(db, projectId, forkId, copied.id, draft.id))
+    .toMatchObject({ url: 'https://app.example.test/page', target: { selector: 'body > button' } });
+  const stale = await request<{ error: { code: string } }>(
+    'PUT', `/api/projects/${projectId}/conversations/${forkId}/messages/${copied.id}`,
+    { id: copied.id, role: 'user', content: 'overwrite the annotation' }, 409,
+  );
+  expect(stale.error.code).toBe('CONFLICT');
+
+  await request('DELETE', `/api/projects/${projectId}/conversations/${sourceId}`);
+  closeDatabase();
+  db = openDatabase(dataDir, { dataDir });
+  expect((await history(forkId)).at(-1)?.annotationContexts?.map(({ id }) => id)).toEqual([draft.id]);
+  expect(claimedEdgeAnnotationContext(db, projectId, forkId, copied.id, draft.id))
+    .toMatchObject({ url: 'https://app.example.test/page' });
 });
 
 // OPEND-2994: production reports six artifact paths but only one display

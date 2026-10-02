@@ -170,6 +170,13 @@ export const API_ERROR_CODES = [
   // written to the conversation; the caller should send it as a new turn.
   // Not retryable against the same run.
   'RUN_STEERING_CLOSED',
+  'BROWSER_TAB_NOT_FOUND',
+  'BROWSER_LEASE_CONFLICT',
+  'BROWSER_LEASE_EXPIRED',
+  'BROWSER_COMMAND_NOT_FOUND',
+  'BROWSER_COMMAND_TIMEOUT',
+  'BROWSER_COMMAND_CANCELED',
+  'BROWSER_COMMAND_FAILED',
   // A design-system enrichment ("AI Optimize") run was requested while the
   // same conversation already has a non-terminal run. The enrichment turn is
   // a hidden seeded prompt that refines the registered design system in

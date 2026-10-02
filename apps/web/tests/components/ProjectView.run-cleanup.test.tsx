@@ -230,7 +230,7 @@ async function waitForReadyChatPaneProps() {
       url?: string;
     }) => Promise<{ ok: boolean; action?: string; message?: string } | void> | { ok: boolean; action?: string; message?: string } | void;
     onContinueBrandExtraction?: () => void;
-    onSend?: (prompt: string, attachments: unknown[], comments: unknown[]) => Promise<void>;
+    onSend?: (prompt: string, attachments: unknown[], comments: unknown[], meta?: { annotationIds?: string[]; annotationImageIds?: string[] }) => Promise<unknown>;
     initialDraft?: string;
   };
 }
@@ -2087,6 +2087,118 @@ describe('ProjectView daemon cleanup', () => {
         !call[2]?.runId,
     );
     expect(phantomSave).toBeUndefined();
+  });
+
+  it('shows a claimed JSON attachment as soon as annotation admission succeeds', async () => {
+    listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
+    listMessages.mockResolvedValue([]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+    let acceptAdmission: (() => void) | null = null;
+    streamViaDaemon.mockImplementation(async (options: { onAdmissionAccepted?: () => void }) => {
+      acceptAdmission = () => options.onAdmissionAccepted?.();
+      return new Promise<void>(() => {});
+    });
+    chatPaneSpy.mockClear();
+
+    render(<ProjectView
+      project={{ id: 'project-annotation', name: 'Project', skillId: null, designSystemId: null } as never}
+      routeFileName={null}
+      config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+      agents={[{ id: 'agent-1', name: 'OpenCode', models: [] } as never]}
+      skills={[]} designTemplates={[]} designSystems={[]} daemonLive
+      onModeChange={() => {}} onAgentChange={() => {}} onAgentModelChange={() => {}}
+      onRefreshAgents={() => {}} onOpenSettings={() => {}} onBack={() => {}}
+      onClearPendingPrompt={() => {}} onTouchProject={() => {}} onProjectChange={() => {}}
+      onProjectsRefresh={() => {}}
+    />);
+    const sendProps = await waitForReadyChatPaneProps();
+    const annotationId = '11111111-1111-4111-8111-111111111111';
+    const send = sendProps.onSend!('Only the note', [], [], { annotationIds: [annotationId] });
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
+    const user = chatPaneSpy.mock.calls.at(-1)?.[0]?.messages?.find((message: ChatMessage) => message.role === 'user');
+    expect(user).toMatchObject({ content: 'Only the note', annotationContexts: [{
+      id: annotationId, name: 'annotation-context.json', mimeType: 'application/json',
+    }] });
+    listMessages.mockResolvedValue([{ ...user, annotationContexts: user.annotationContexts }]);
+    acceptAdmission!();
+    await expect(send).resolves.toBeUndefined();
+    await waitFor(() => expect(listMessages.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it('returns a selected browser annotation to the composer when run admission fails', async () => {
+    listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
+    listMessages.mockResolvedValue([]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+    let rejectAdmission: (() => void) | null = null;
+    streamViaDaemon.mockImplementation(async (options: {
+      handlers: { onError: (error: Error) => void };
+      onAdmissionRejected?: (error: Error) => void;
+    }) => {
+      rejectAdmission = () => {
+        const error = new Error('browser annotation is unavailable for this conversation');
+        options.handlers.onError(error);
+        options.onAdmissionRejected?.(error);
+      };
+      return new Promise<void>(() => {});
+    });
+    chatPaneSpy.mockClear();
+
+    render(
+      <ProjectView
+        project={{ id: 'project-annotation', name: 'Project', skillId: null, designSystemId: null } as never}
+        routeFileName={null}
+        config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+        agents={[{ id: 'agent-1', name: 'OpenCode', models: [], supportsImagePaths: true } as never]}
+        skills={[]}
+        designTemplates={[]}
+        designSystems={[]}
+        daemonLive
+        onModeChange={() => {}}
+        onAgentChange={() => {}}
+        onAgentModelChange={() => {}}
+        onRefreshAgents={() => {}}
+        onOpenSettings={() => {}}
+        onBack={() => {}}
+        onClearPendingPrompt={() => {}}
+        onTouchProject={() => {}}
+        onProjectChange={() => {}}
+        onProjectsRefresh={() => {}}
+      />,
+    );
+
+    const sendProps = await waitForReadyChatPaneProps();
+    const annotationId = '11111111-1111-4111-8111-111111111111';
+    const send = sendProps.onSend!('Keep existing draft and browser note', [], [], {
+      annotationIds: [annotationId], annotationImageIds: [annotationId],
+    });
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
+    expect(streamViaDaemon.mock.calls[0]?.[0]).toMatchObject({
+      annotationIds: [annotationId], annotationImageIds: [annotationId],
+    });
+    expect(saveMessage.mock.calls.some((call) => call[2]?.role === 'user')).toBe(false);
+    rejectAdmission!();
+
+    await expect(send).resolves.toBe('restore-draft');
+    await waitFor(() => {
+      const latest = chatPaneSpy.mock.calls.at(-1)?.[0];
+      expect(latest.messages).toEqual([]);
+      expect(latest.error).toBe('browser annotation is unavailable for this conversation');
+    });
+    expect(saveMessage.mock.calls.some((call) => call[2]?.role === 'user')).toBe(false);
   });
 
   it('persists a daemon assistant row as failed after an AMR auth error returns post-run creation', async () => {

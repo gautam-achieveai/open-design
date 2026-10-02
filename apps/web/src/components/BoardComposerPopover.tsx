@@ -430,12 +430,14 @@ export function BoardComposerPopover({
   onDeleteComment,
   onViewAllComments,
   images = [],
+  imageDisclosure,
   existingImages = [],
   onAttachImages,
   onRemoveImage,
   onPreviewImage,
   sending,
   queueOnSend = false,
+  postOnly = false,
   sendDisabled = false,
   sendDisabledReason,
   canEditComment = true,
@@ -466,6 +468,7 @@ export function BoardComposerPopover({
   onViewAllComments?: (returnFocusTarget?: HTMLElement | null) => void;
   /** Object-URL thumbnails for images the user attached to this comment. */
   images?: { file: File; url: string }[];
+  imageDisclosure?: string;
   /** Already-saved attachment thumbnails (read-only) for a re-opened comment. */
   existingImages?: { url: string; name: string }[];
   onAttachImages?: (files: File[]) => void;
@@ -473,6 +476,8 @@ export function BoardComposerPopover({
   onPreviewImage?: (index: number) => void;
   sending: boolean;
   queueOnSend?: boolean;
+  /** Browser feedback posts directly rather than saving a separate comment. */
+  postOnly?: boolean;
   sendDisabled?: boolean;
   sendDisabledReason?: string;
   /**
@@ -622,12 +627,14 @@ export function BoardComposerPopover({
   const hasSaveContent = Boolean(trimmedDraft) || hasAnyImage;
   const existingChanged = existing ? trimmedDraft !== existingNote || hasFreshImage : true;
   const saveDisabled = !hasSaveContent || !existingChanged || sending;
-  // Queue-on-send swaps the primary label to the annotation-queue wording.
+  // Native browser collection names the draft; other queue-on-send surfaces keep their queue label.
   const primaryLabel = sending
     ? t('chat.comments.sending')
-    : queueOnSend
-      ? t('chat.annotationQueue')
-      : t('chat.comments.sendToChat');
+    : postOnly && queueOnSend
+      ? t('designBrowser.comment.sendToChat')
+      : queueOnSend
+        ? t('chat.annotationQueue')
+        : t('chat.comments.sendToChat');
   function pickImages(list: FileList | null) {
     const imgs = Array.from(list ?? []).filter((f) => f.type.startsWith('image/'));
     if (imgs.length > 0) onAttachImages?.(imgs);
@@ -782,12 +789,13 @@ export function BoardComposerPopover({
                 ))}
               </div>
             ) : null}
+            {images.length > 0 && imageDisclosure ? <p role="status">{imageDisclosure}</p> : null}
             <Textarea
               data-testid="comment-popover-input"
               className={!canEditComment ? 'composer-note--readonly' : undefined}
               value={draft}
               autoFocus={canEditComment}
-              readOnly={!canEditComment}
+              readOnly={!canEditComment || postOnly && sending}
               aria-label={t('chat.comments.placeholder')}
               placeholder={t('chat.comments.placeholder')}
               onChange={(event) => onDraft(event.target.value)}
@@ -810,7 +818,7 @@ export function BoardComposerPopover({
                   // selections, send-to-chat for pod selections. Respect the same
                   // permission gates as the visible buttons so Enter can't perform
                   // an action whose button is hidden.
-                  if (isPodSelection) {
+                  if (isPodSelection || postOnly) {
                     if (canSendToAgent && !sendBlocked) void onSendBatch();
                   } else if (canEditComment && !saveDisabled) {
                     void onSaveComment();
@@ -902,7 +910,7 @@ export function BoardComposerPopover({
                     canEditComment; send-to-chat by canSendToAgent. */}
                 {canSendToAgent && allowSendToChat ? (
                   <Button
-                    variant="ghost"
+                    variant={postOnly ? 'primary' : 'ghost'}
                     data-testid="comment-add-send"
                     disabled={sendBlocked}
                     title={sendDisabled ? sendDisabledReason : undefined}
@@ -911,7 +919,7 @@ export function BoardComposerPopover({
                     {primaryLabel}
                   </Button>
                 ) : null}
-                {canEditComment ? (
+                {canEditComment && !postOnly ? (
                   <Button
                     variant="primary"
                     data-testid="comment-popover-save"

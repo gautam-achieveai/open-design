@@ -35,7 +35,13 @@ import type { OdNativeEvent } from '@open-design/agui-adapter';
 import { newInsertId, readAnalyticsContext } from '../analytics.js';
 import type { AnalyticsContext } from '../analytics.js';
 import { spawnEnvForAgent } from '../agents.js';
+import {
+  claimPendingEdgeAnnotations,
+  PendingAnnotationClaimError,
+  selectPendingEdgeAnnotations,
+} from '../services/edge-chat-message.js';
 import { agentCliEnvForAgent, readAppConfig } from '../app-config.js';
+import { MAX_IMAGE_COUNT } from '../agent-protocol/pi-rpc/index.js';
 import type { AuthorizeProjectRequest } from '../collab/project-request-authority.js';
 import {
   workspaceResourceContextFromRequest,
@@ -2570,6 +2576,45 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         );
       }
     }
+    const annotationIds = requestBody.annotationIds === undefined ? [] : requestBody.annotationIds;
+    const annotationImageIds = requestBody.annotationImageIds === undefined ? [] : requestBody.annotationImageIds;
+    if (!Array.isArray(annotationIds) || !Array.isArray(annotationImageIds)
+      || annotationIds.some((id) => typeof id !== 'string')
+      || annotationImageIds.some((id) => typeof id !== 'string')) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'invalid browser annotation selection');
+    }
+    const selectedAnnotationIds = annotationIds as string[];
+    const selectedImageIds = annotationImageIds as string[];
+    if (selectedAnnotationIds.length || selectedImageIds.length) {
+      const projectId = typeof meta.projectId === 'string' ? meta.projectId : '';
+      const conversationId = typeof meta.conversationId === 'string' ? meta.conversationId : '';
+      const userMessageId = typeof meta.userMessageId === 'string' ? meta.userMessageId : '';
+      const imageAgent = typeof meta.agentId === 'string' ? getAgentDef(meta.agentId) : null;
+      if (!projectId || !conversationId || !userMessageId) {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'browser evidence needs an exact user turn');
+      }
+      if (selectedImageIds.length && !imageAgent?.supportsImagePaths) {
+        return sendApiError(res, 400, 'IMAGE_AGENT_UNSUPPORTED',
+          'Selected agent cannot receive browser screenshots. Switch to an image-capable agent or remove the crops.');
+      }
+      if (selectedImageIds.length && imageAgent?.streamFormat === 'pi-rpc'
+        && selectedImageIds.length + (Array.isArray(requestBody.imagePaths) ? requestBody.imagePaths.length : 0) > MAX_IMAGE_COUNT) {
+        return sendApiError(res, 400, 'BAD_REQUEST',
+          'Pi can receive at most ten images per turn. Remove browser crops or other images before sending.');
+      }
+      try {
+        selectPendingEdgeAnnotations(db, projectId, conversationId,
+          selectedAnnotationIds, selectedImageIds, userMessageId);
+        if (!runProject) throw new PendingAnnotationClaimError('browser evidence project is unavailable');
+      } catch (error) {
+        if (error instanceof PendingAnnotationClaimError) {
+          return sendApiError(res, 409, 'ANNOTATION_UNAVAILABLE', error.message);
+        }
+        throw error;
+      }
+      meta.annotationIds = selectedAnnotationIds;
+      meta.annotationImageIds = selectedImageIds;
+    }
     let runUserSeed: {
       id: string;
       conversationId: string;
@@ -2647,6 +2692,11 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       if (typeof meta.projectId === 'string' && meta.projectId) {
         updateProject(db, meta.projectId, {});
       }
+    };
+    const claimBrowserEvidence = () => {
+      if (!selectedAnnotationIds.length || !runUserSeed || !meta.projectId || !meta.conversationId) return;
+      claimPendingEdgeAnnotations(db, meta.projectId, meta.conversationId, runUserSeed.id,
+        selectedAnnotationIds, selectedImageIds);
     };
     const fallbackAutomaticBeforeStart = async (error: unknown): Promise<boolean> => {
       if (
@@ -2730,6 +2780,11 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       automaticSnapshotPreparationError
       && !await fallbackAutomaticBeforeStart(automaticSnapshotPreparationError)
     ) return;
+    if (selectedAnnotationIds.length && (meta.odNextTaskInputSnapshot
+      || strategyRolloutDecision?.effectiveMode === 'active')) {
+      return sendApiError(res, 400, 'BROWSER_EVIDENCE_UNAVAILABLE',
+        'This run freezes its input before browser annotations can be attached. Choose an ordinary run or remove the annotations.');
+    }
     let frozenSkillPackage: FrozenSkillPackageV1 | undefined;
     if (
       !clarificationContinuation
@@ -2885,7 +2940,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     try {
       preparedRun = internalRuns.prepare({
         meta,
-        ...((runUserSeed || clarificationTask || strategyRolloutDecision?.effectiveMode === 'active')
+        ...((runUserSeed || selectedAnnotationIds.length || clarificationTask || strategyRolloutDecision?.effectiveMode === 'active')
           ? {
               beforeClaimCommit: (candidate) => {
                 if (!clarificationContinuation && createdTaskInputSnapshot) {
@@ -2898,6 +2953,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
                   design.runs.persistState(candidate);
                 }
                 seedRunUserMessage();
+                claimBrowserEvidence();
                 if (clarificationContinuation && !clarificationContinuation.retry) {
                   beginStrategyClarification(db, {
                     taskExecutionId: clarificationContinuation.task.taskExecutionId,
@@ -2987,7 +3043,10 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         if (!await fallbackAutomaticBeforeStart(error.preparationCause)) return;
         preparedRun = internalRuns.prepare({
           meta,
-          ...(runUserSeed ? { beforeClaimCommit: () => seedRunUserMessage() } : {}),
+          ...(runUserSeed ? { beforeClaimCommit: () => {
+            seedRunUserMessage();
+            claimBrowserEvidence();
+          } } : {}),
           resume: {
             requested: requestBody.resume === true,
             canResume: (candidate) =>
@@ -3000,6 +3059,9 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           },
         });
       } else {
+      if (error instanceof PendingAnnotationClaimError) {
+        return sendApiError(res, 409, 'ANNOTATION_UNAVAILABLE', error.message);
+      }
       if (error instanceof OdNextTaskInputSnapshotError) {
         return sendApiError(res, 400, error.code, error.message);
       }

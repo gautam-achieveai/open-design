@@ -30,6 +30,7 @@ export type PiRpcSessionOptions = {
   send: SendAgentEvent;
   imagePaths?: string[];
   uploadRoot?: string;
+  browserImageRoot?: string;
   parentSession?: string;
 };
 /** Handle returned by `attachPiRpcSession` for querying run state and requesting abort. */
@@ -186,6 +187,7 @@ export function attachPiRpcSession({
   send,
   imagePaths,
   uploadRoot,
+  browserImageRoot,
   parentSession,
 }: PiRpcSessionOptions): PiRpcSession {
   const stdin = child.stdin;
@@ -275,8 +277,14 @@ export function attachPiRpcSession({
         // check (under UPLOAD_DIR) could be a symlink pointing to a file
         // outside UPLOAD_DIR, and we'd read/base64-forward it to pi.
         if (uploadRoot) {
-          const resolvedRoot = fs.realpathSync(uploadRoot);
-          if (realPath !== resolvedRoot && !realPath.startsWith(resolvedRoot + path.sep)) continue;
+          const roots = [uploadRoot, browserImageRoot].filter((root): root is string => Boolean(root));
+          const allowed = roots.some((root) => {
+            try {
+              const resolvedRoot = fs.realpathSync(root);
+              return realPath === resolvedRoot || realPath.startsWith(resolvedRoot + path.sep);
+            } catch { return false; }
+          });
+          if (!allowed) continue;
         }
 
         const ext = path.extname(realPath).toLowerCase();

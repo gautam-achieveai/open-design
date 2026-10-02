@@ -150,6 +150,183 @@ export type OpenDesignHostBrowserClearDataOptions = {
   storage?: boolean;
 };
 
+export type OpenDesignHostBrowserTargetRegistration = {
+  projectId: string;
+  tabId: string;
+  title?: string;
+  url: string;
+  webContentsId: number;
+};
+
+export type OpenDesignHostBrowserTargetIdentity = {
+  tabId: string;
+};
+
+export type OpenDesignHostBrowserTarget = OpenDesignHostBrowserTargetRegistration & {
+  attached: boolean;
+  title: string;
+};
+
+export type OpenDesignHostBrowserRegisterTargetResult =
+  | { ok: true; target: OpenDesignHostBrowserTarget }
+  | OpenDesignHostFailure;
+
+export type OpenDesignHostBrowserListTargetsResult =
+  | { ok: true; targets: OpenDesignHostBrowserTarget[] }
+  | OpenDesignHostFailure;
+
+export type OpenDesignHostBrowserDomNode = {
+  attributes: Record<string, string>;
+  backendNodeId: number;
+  childNodeCount: number;
+  children?: OpenDesignHostBrowserDomNode[];
+  localName: string;
+  nodeName: string;
+  nodeType: number;
+  nodeValue: string;
+};
+
+export type OpenDesignHostBrowserBoxModel = {
+  border: number[];
+  content: number[];
+  height: number;
+  margin: number[];
+  padding: number[];
+  width: number;
+};
+
+export type OpenDesignHostBrowserInspectedElement = {
+  attributes: Record<string, string>;
+  backendNodeId: number;
+  boxModel?: OpenDesignHostBrowserBoxModel;
+  childNodeCount: number;
+  localName: string;
+  nodeName: string;
+  nodeValue: string;
+  selector: string;
+};
+
+export type OpenDesignHostBrowserConsoleEntry = {
+  level: string;
+  source: string;
+  text: string;
+  timestamp: number;
+};
+
+export type OpenDesignHostBrowserNetworkRequest = {
+  failed?: {
+    blockedReason?: string;
+    canceled: boolean;
+    errorText: string;
+  };
+  finishedAt?: number;
+  method: string;
+  requestBody?: string;
+  requestHeaders: Record<string, string>;
+  requestId: string;
+  resourceType?: string;
+  responseHeaders?: Record<string, string>;
+  responseBody?: string;
+  responseStatus?: number;
+  responseStatusText?: string;
+  startedAt: number;
+  url: string;
+};
+
+export type OpenDesignHostBrowserSnapshotOperation = {
+  depth?: number;
+  kind: "snapshot";
+};
+
+export type OpenDesignHostBrowserInspectOperation = {
+  kind: "inspect";
+  selector: string;
+};
+
+export type OpenDesignHostBrowserScreenshotOperation = {
+  format?: "jpeg" | "png" | "webp";
+  fullPage?: boolean;
+  kind: "screenshot";
+  quality?: number;
+};
+
+export type OpenDesignHostBrowserClickOperation = {
+  approved: true;
+  button?: "left" | "middle" | "right";
+  clickCount?: number;
+  kind: "click";
+  selector: string;
+};
+
+export type OpenDesignHostBrowserTypeOperation = {
+  approved: true;
+  clear?: boolean;
+  kind: "type";
+  selector: string;
+  text: string;
+};
+
+export type OpenDesignHostBrowserScrollOperation = {
+  approved: true;
+  deltaX?: number;
+  deltaY: number;
+  kind: "scroll";
+  selector?: string;
+};
+
+export type OpenDesignHostBrowserNavigateOperation = {
+  approved: true;
+  kind: "navigate";
+  url: string;
+  waitUntil?: "load" | "domcontentloaded" | "networkidle";
+};
+
+export type OpenDesignHostBrowserConsoleOperation = {
+  kind: "console";
+  level?: "all" | "debug" | "info" | "warning" | "error";
+  limit?: number;
+};
+
+export type OpenDesignHostBrowserNetworkOperation = {
+  failuresOnly?: boolean;
+  kind: "network";
+  limit?: number;
+  requestId?: string;
+  resourceType?: string;
+};
+
+export type OpenDesignHostBrowserOperation =
+  | OpenDesignHostBrowserSnapshotOperation
+  | OpenDesignHostBrowserInspectOperation
+  | OpenDesignHostBrowserScreenshotOperation
+  | OpenDesignHostBrowserClickOperation
+  | OpenDesignHostBrowserTypeOperation
+  | OpenDesignHostBrowserScrollOperation
+  | OpenDesignHostBrowserNavigateOperation
+  | OpenDesignHostBrowserConsoleOperation
+  | OpenDesignHostBrowserNetworkOperation;
+
+export type OpenDesignHostBrowserExecuteRequest = {
+  expiresAt?: number;
+  operation: OpenDesignHostBrowserOperation;
+  tabId: string;
+};
+
+export type OpenDesignHostBrowserExecuteSuccess =
+  | { ok: true; operation: "snapshot"; tabId: string; value: { document: OpenDesignHostBrowserDomNode; truncated: boolean } }
+  | { ok: true; operation: "inspect"; tabId: string; value: OpenDesignHostBrowserInspectedElement | null }
+  | { ok: true; operation: "screenshot"; tabId: string; value: { dataUrl: string; format: "jpeg" | "png" | "webp" } }
+  | { ok: true; operation: "click"; tabId: string; value: { x: number; y: number } }
+  | { ok: true; operation: "type"; tabId: string; value: { inserted: number } }
+  | { ok: true; operation: "scroll"; tabId: string; value: { deltaX: number; deltaY: number } }
+  | { ok: true; operation: "navigate"; tabId: string; value: { frameId?: string; url: string } }
+  | { ok: true; operation: "console"; tabId: string; value: { entries: OpenDesignHostBrowserConsoleEntry[] } }
+  | { ok: true; operation: "network"; tabId: string; value: { requests: OpenDesignHostBrowserNetworkRequest[] } };
+
+export type OpenDesignHostBrowserExecuteResult =
+  | OpenDesignHostBrowserExecuteSuccess
+  | OpenDesignHostFailure;
+
 /**
  * App theme values the renderer may pin the host window appearance to.
  * `light`/`dark` force the native window material (macOS under-window
@@ -380,6 +557,14 @@ export type OpenDesignHostBridge = {
   };
   browser: {
     clearData(options?: OpenDesignHostBrowserClearDataOptions): Promise<OpenDesignHostActionResult>;
+    // Optional so version-2 web bundles continue to recognize older desktop
+    // hosts; callers must feature-detect the shared embedded-browser control.
+    execute?(request: OpenDesignHostBrowserExecuteRequest): Promise<OpenDesignHostBrowserExecuteResult>;
+    listTargets?(): Promise<OpenDesignHostBrowserListTargetsResult>;
+    registerTarget?(
+      target: OpenDesignHostBrowserTargetRegistration,
+    ): Promise<OpenDesignHostBrowserRegisterTargetResult>;
+    unregisterTarget?(target: OpenDesignHostBrowserTargetIdentity): Promise<OpenDesignHostActionResult>;
   };
   capture: {
     page(options?: OpenDesignHostCaptureOptions): Promise<OpenDesignHostCaptureResult>;

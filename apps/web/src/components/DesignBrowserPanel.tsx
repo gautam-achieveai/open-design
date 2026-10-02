@@ -15,6 +15,7 @@ import {
   isOpenDesignHostAvailable,
 } from '@open-design/host';
 import type { TrackingReferenceBoardCategory } from '@open-design/contracts/analytics';
+import type { BrowserAnnotationPostRequest } from '@open-design/contracts';
 import { useAnalytics } from '../analytics/provider';
 import {
   trackReferenceBoardClick,
@@ -29,8 +30,6 @@ import {
 import { useT } from '../i18n';
 import type { Dict } from '../i18n/types';
 import {
-  commentSendCompleted,
-  commentSendSucceeded,
   type CommentSendResult,
 } from './comment-send-result';
 import {
@@ -38,8 +37,16 @@ import {
   type BrandBrowserHandle,
   type BrandBrowserPageSnapshotResult,
 } from '../runtime/brand-browser-bridge';
+import {
+  createEmbeddedBrowserControlSession,
+  executeEmbeddedBrowserOperation,
+  readBrowserControlMetadata,
+  withBrowserControlMetadata,
+  type EmbeddedBrowserControlSession,
+  type EmbeddedBrowserControlStatus,
+  type EmbeddedBrowserTarget,
+} from '../runtime/embedded-browser-control';
 import { captureHostRegionSnapshot } from '../runtime/exports';
-import { buildBoardCommentAttachments, commentsToAttachments } from '../comments';
 import type {
   ChatAttachment,
   ChatCommentAttachment,
@@ -61,6 +68,8 @@ import {
   browserApplyTextScript,
   browserCommentFilePath,
   browserElementPickerScript,
+  browserAnnotationPixelMasks,
+  browserAnnotationTextPaintScript,
   browserMeasureTargetsScript,
   browserSnapshotFromUnknown,
   isProjectHtmlBrowserUrl,
@@ -76,9 +85,11 @@ import {
 } from './design-browser-storage';
 import { Icon } from './Icon';
 import { BoardComposerPopover } from './BoardComposerPopover';
+import { EdgeAnnotationsPanel } from './EdgeAnnotationsPanel';
 import { PreviewDrawOverlay } from './PreviewDrawOverlay';
 import { RemixIcon } from './RemixIcon';
 import { useProjectCollabContext } from '../collab/collab-context';
+import { workspaceProjectHeaders } from '../collab/workspace-identity';
 
 export {
   removeDesignBrowserProjectCache,
@@ -191,6 +202,40 @@ type PageBrief = {
 
 type BrowserTool = 'comment' | 'inspect' | 'edit';
 type BrowserSavingAction = 'archive' | 'brief' | 'screenshot';
+type BrowserDiagnosticNetworkEntry = {
+  failed?: boolean;
+  method?: string;
+  requestId?: string;
+  responseStatus?: number;
+  url?: string;
+};
+type BrowserDiagnosticConsoleEntry = {
+  level?: string;
+  text?: string;
+};
+type BrowserDiagnostics = {
+  consoleEntries: BrowserDiagnosticConsoleEntry[];
+  networkEntries: BrowserDiagnosticNetworkEntry[];
+};
+
+function isBrowserDiagnosticNetworkEntry(value: unknown): value is BrowserDiagnosticNetworkEntry {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isBrowserDiagnosticConsoleEntry(value: unknown): value is BrowserDiagnosticConsoleEntry {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function browserDiagnosticUrlLabel(value: string | undefined): string {
+  if (!value) return '';
+  try {
+    const parsed = new URL(value);
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return value;
+  }
+}
+
 type BrowserStatusMessage = string | {
   actionFileName?: string;
   actionLabel?: string;
@@ -221,6 +266,7 @@ type WebviewElement = HTMLElement & {
   executeJavaScript<T = unknown>(code: string, userGesture?: boolean): Promise<T>;
   getTitle(): string;
   getURL(): string;
+  getWebContentsId(): number;
   goBack(): void;
   goForward(): void;
   isLoading(): boolean;
@@ -273,6 +319,7 @@ interface DesignBrowserPanelProps {
   navigateRequest?: { url: string; nonce: number };
   attentionRequest?: { action: 'download-page'; nonce: number };
   projectId: string;
+  conversationId?: string | null;
   resolvedDir?: string | null;
   onOpenFile: (name: string) => void;
   onOpenDesignFiles?: () => void;
@@ -290,6 +337,7 @@ interface DesignBrowserPanelProps {
    *  brand-browser bridge so the chat can read the rendered DOM (e.g. to
    *  re-extract a brand after the user clears an anti-bot wall). */
   browserTabId?: string;
+  browserTabActive?: boolean;
 }
 
 export interface BrowserPageInfo {
@@ -916,6 +964,7 @@ export function DesignBrowserPanel({
   navigateRequest,
   attentionRequest,
   projectId,
+  conversationId = null,
   resolvedDir,
   onOpenFile,
   onOpenDesignFiles,
@@ -924,12 +973,12 @@ export function DesignBrowserPanel({
   previewComments = EMPTY_PREVIEW_COMMENTS,
   onSavePreviewComment,
   onRemovePreviewComment,
-  onSendBoardCommentAttachments,
   onAddImageToChat,
   onRequestBrowserUsePrompt,
   onPageSnapshotToast,
   sendDisabled = false,
   browserTabId,
+  browserTabActive = true,
 }: DesignBrowserPanelProps) {
   const t = useT();
   const { workspaceContext } = useProjectCollabContext();
@@ -952,8 +1001,19 @@ export function DesignBrowserPanel({
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [browserUseOpen, setBrowserUseOpen] = useState(false);
+  const [edgeAnnotationsOpen, setEdgeAnnotationsOpen] = useState(false);
+  const [browserDiagnosticsOpen, setBrowserDiagnosticsOpen] = useState(false);
+  const [browserDiagnosticsLoading, setBrowserDiagnosticsLoading] = useState(false);
+  const [browserDiagnosticsError, setBrowserDiagnosticsError] = useState<string | null>(null);
+  const [browserDiagnostics, setBrowserDiagnostics] = useState<BrowserDiagnostics>({
+    consoleEntries: [],
+    networkEntries: [],
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [webviewNode, setWebviewNode] = useState<WebviewElement | null>(null);
+  const [webContentsId, setWebContentsId] = useState<number | null>(null);
+  const [browserControlStatus, setBrowserControlStatus] =
+    useState<EmbeddedBrowserControlStatus>('unavailable');
   const [drawOverlayOpen, setDrawOverlayOpen] = useState(false);
   const [viewport, setViewportState] = useState<BrowserViewportId>(() => loadBrowserViewport(projectId));
   const setViewport = useCallback((nextViewport: BrowserViewportId) => {
@@ -962,6 +1022,9 @@ export function DesignBrowserPanel({
   }, [projectId]);
   const [activeTool, setActiveTool] = useState<BrowserTool | null>(null);
   const [activeCommentTarget, setActiveCommentTarget] = useState<BrowserElementSnapshot | null>(null);
+  const browserPostRef = useRef<{ key: string; request: BrowserAnnotationPostRequest } | null>(null);
+  const browserPostingRef = useRef(false);
+  const annotationUrlRef = useRef('');
   const [activePreviewCommentId, setActivePreviewCommentId] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState('');
   const [queuedCommentNotes, setQueuedCommentNotes] = useState<string[]>([]);
@@ -994,6 +1057,7 @@ export function DesignBrowserPanel({
   const archiveRunRef = useRef<{ controller: AbortController; id: number; startedAt: number } | null>(null);
   const pageSnapshotToastRef = useRef(onPageSnapshotToast);
   const browserTabIdRef = useRef(browserTabId ?? '');
+  const browserControlSessionRef = useRef<EmbeddedBrowserControlSession | null>(null);
   const archiveSaving = savingActions.archive;
   const briefSaving = savingActions.brief;
   const screenshotSaving = savingActions.screenshot;
@@ -1045,6 +1109,7 @@ export function DesignBrowserPanel({
     // in the desktop host). The attribute must still reach Electron's <webview>
     // as a present string so the guest page may open popups.
     if (node) node.setAttribute('allowpopups', 'true');
+    if (!node) setWebContentsId(null);
     setWebviewNode(node as WebviewElement | null);
   }, []);
 
@@ -1123,17 +1188,18 @@ export function DesignBrowserPanel({
   }, [archiveSaving]);
 
   useEffect(() => {
-    if (!menuOpen && !suggestionsOpen && !browserUseOpen) return;
+    if (!menuOpen && !suggestionsOpen && !browserUseOpen && !browserDiagnosticsOpen) return;
     const onPointerDown = (event: PointerEvent) => {
       const chrome = chromeRef.current;
       if (chrome && event.target instanceof Node && chrome.contains(event.target)) return;
       setMenuOpen(false);
       setSuggestionsOpen(false);
       setBrowserUseOpen(false);
+      setBrowserDiagnosticsOpen(false);
     };
     document.addEventListener('pointerdown', onPointerDown);
     return () => document.removeEventListener('pointerdown', onPointerDown);
-  }, [browserUseOpen, menuOpen, suggestionsOpen]);
+  }, [browserDiagnosticsOpen, browserUseOpen, menuOpen, suggestionsOpen]);
 
   const commitHistory = useCallback((url: string, meta: { title?: string; iconUrl?: string } = {}, options: { countVisit?: boolean } = {}) => {
     if (!isHistoryUrl(url)) return;
@@ -1368,6 +1434,10 @@ export function DesignBrowserPanel({
       setIsLoading(false);
       syncFromWebview(undefined, undefined, { recordVisit: false });
     };
+    const onDomReady = () => {
+      setWebContentsId(safeGetWebContentsId(node));
+      onStop();
+    };
     const onNavigate = (event: Event) => {
       const navigationEvent = event as WebviewNavigationEvent;
       if (navigationEvent.isMainFrame === false) return;
@@ -1401,7 +1471,8 @@ export function DesignBrowserPanel({
     node.addEventListener('page-title-updated', onTitle);
     node.addEventListener('page-favicon-updated', onFavicon);
     node.addEventListener('did-fail-load', onFail);
-    node.addEventListener('dom-ready', onStop);
+    node.addEventListener('dom-ready', onDomReady);
+    setWebContentsId(safeGetWebContentsId(node));
     updateLoadingState(node);
     return () => {
       node.removeEventListener('did-start-loading', onStart);
@@ -1411,7 +1482,7 @@ export function DesignBrowserPanel({
       node.removeEventListener('page-title-updated', onTitle);
       node.removeEventListener('page-favicon-updated', onFavicon);
       node.removeEventListener('did-fail-load', onFail);
-      node.removeEventListener('dom-ready', onStop);
+      node.removeEventListener('dom-ready', onDomReady);
     };
   }, [addressEditing, commitHistory, recordNavigation, updateCurrentNavigationTitle, updateLoadingState, webviewNode]);
 
@@ -1450,13 +1521,111 @@ export function DesignBrowserPanel({
   const pageHistoryEntry = history.find((entry) => sameUrl(entry.url, currentUrl));
   const pageTitle = pageHistoryEntry?.title || restoredTitleRef.current || labelFromUrl(currentUrl);
   const pageIconUrl = pageHistoryEntry?.iconUrl || restoredIconUrlRef.current || faviconUrl(currentUrl);
+  // Drive the start-page/webview branch off the load target, not the committed
+  // URL, so a transient about:blank navigation event can't unmount the webview.
+  const isBlank = loadUrl === EMPTY_URL;
+  const browserControlTarget = useMemo<EmbeddedBrowserTarget | null>(() => (
+    desktopHostAvailable && browserTabId && webContentsId
+      ? {
+          active: browserTabActive,
+          projectId,
+          tabId: browserTabId,
+          title: isBlank ? 'Browser' : pageTitle,
+          url: isBlank ? EMPTY_URL : currentUrl,
+          webContentsId,
+        }
+      : null
+  ), [
+    browserTabActive,
+    browserTabId,
+    currentUrl,
+    desktopHostAvailable,
+    isBlank,
+    pageTitle,
+    projectId,
+    webContentsId,
+  ]);
+  const browserControlIdentity = browserControlTarget
+    ? {
+        tabId: browserControlTarget.tabId,
+        webContentsId: browserControlTarget.webContentsId,
+      }
+    : null;
+
+  const refreshBrowserDiagnostics = useCallback(async () => {
+    if (!browserControlTarget || browserControlStatus !== 'connected') return;
+    setBrowserDiagnosticsLoading(true);
+    setBrowserDiagnosticsError(null);
+    try {
+      const options = {
+        ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
+        tabId: browserControlTarget.tabId,
+        timeoutMs: 10_000,
+      };
+      const [network, consoleResult] = await Promise.all([
+        executeEmbeddedBrowserOperation(
+          projectId,
+          { operation: 'network-list', limit: 50 },
+          options,
+        ),
+        executeEmbeddedBrowserOperation(
+          projectId,
+          { operation: 'console', level: 'all', limit: 50 },
+          options,
+        ),
+      ]);
+      setBrowserDiagnostics({
+        networkEntries: network.result.operation === 'network-list'
+          ? network.result.entries.filter(isBrowserDiagnosticNetworkEntry)
+          : [],
+        consoleEntries: consoleResult.result.operation === 'console'
+          ? consoleResult.result.entries.filter(isBrowserDiagnosticConsoleEntry)
+          : [],
+      });
+    } catch (error) {
+      setBrowserDiagnosticsError(
+        error instanceof Error ? error.message : 'Browser diagnostics failed.',
+      );
+    } finally {
+      setBrowserDiagnosticsLoading(false);
+    }
+  }, [browserControlStatus, browserControlTarget, projectId, workspaceContext]);
+
+  useEffect(() => {
+    if (!browserControlTarget) {
+      setBrowserControlStatus('unavailable');
+      return undefined;
+    }
+    const session = createEmbeddedBrowserControlSession({
+      ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
+      target: browserControlTarget,
+      onStatus: setBrowserControlStatus,
+    });
+    browserControlSessionRef.current = session;
+    return () => {
+      if (browserControlSessionRef.current === session) {
+        browserControlSessionRef.current = null;
+      }
+      void session.stop();
+    };
+    // Mutable page metadata is renewed through updateTarget below; replacing
+    // the session is reserved for a new physical guest/lease identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    browserControlTarget?.projectId,
+    browserControlTarget?.tabId,
+    browserControlTarget?.webContentsId,
+    workspaceContext,
+  ]);
+
+  useEffect(() => {
+    if (!browserControlTarget) return;
+    browserControlSessionRef.current?.updateTarget(browserControlTarget);
+  }, [browserControlTarget]);
   const addressDisplayParts = addressEditing
     ? { url: '' }
     : formatAddressDisplayParts(currentUrl, pageTitle);
   const shownAddressValue = addressEditing ? addressValue : '';
-  // Drive the start-page/webview branch off the load target, not the committed
-  // URL, so a transient about:blank navigation event can't unmount the webview.
-  const isBlank = loadUrl === EMPTY_URL;
   const browserFilePath = isBlank ? browserCommentFilePath(EMPTY_URL) : browserCommentFilePath(currentUrl, resolvedDir);
   const editableProjectHtml = !isBlank && isProjectHtmlBrowserUrl(currentUrl, resolvedDir);
   const browserUseContext = useMemo<BrowserUsePromptContext>(() => ({
@@ -1578,7 +1747,7 @@ export function DesignBrowserPanel({
     setTextDraft('');
     void cancelBrowserPicker();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [browserFilePath]);
+  }, [browserFilePath, projectId, conversationId]);
 
   async function handleAddressSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1703,6 +1872,90 @@ export function DesignBrowserPanel({
       };
     } catch {
       return null;
+    }
+  }
+
+  async function captureBrowserElementAnnotation(
+    target: BrowserElementSnapshot,
+  ): Promise<File | null> {
+    const node = webviewNode;
+    if (!node || !target.maskRects || !target.viewport) return null;
+    const initialUrl = node.getURL?.() || currentUrl;
+    const frame = node.getBoundingClientRect();
+    if (Math.abs(frame.width - target.viewport.width) > 1
+      || Math.abs(frame.height - target.viewport.height) > 1) return null;
+    const left = Math.max(frame.left, frame.left + target.position.x);
+    const top = Math.max(frame.top, frame.top + target.position.y);
+    const right = Math.min(frame.right, frame.left + target.position.x + target.position.width);
+    const bottom = Math.min(frame.bottom, frame.top + target.position.y + target.position.height);
+    if (right <= left || bottom <= top) return null;
+
+    const hideText = target.maskRects.some((mask) => mask.textHidden === true);
+    try {
+      if (hideText && await node.executeJavaScript<boolean>(browserAnnotationTextPaintScript(true), true) !== true) return null;
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
+      const before = browserSnapshotFromUnknown(await node.executeJavaScript<unknown>(
+        browserMeasureTargetsScript(target.filePath, [{ elementId: target.elementId,
+          selector: target.selector, key: 'capture' }]), true,
+      ).then((items) => Array.isArray(items) ? items[0] : null).catch(() => null), target.filePath);
+      if (!before?.maskRects || !before.viewport || before.selector !== target.selector
+        || (node.getURL?.() || currentUrl) !== initialUrl
+        || JSON.stringify(before.position) !== JSON.stringify(target.position)
+        || JSON.stringify(before.maskRects) !== JSON.stringify(target.maskRects)
+        || JSON.stringify(before.viewport) !== JSON.stringify(target.viewport)) return null;
+      let snapshot = await captureHostRegionSnapshot({
+        left,
+        top,
+        width: right - left,
+        height: bottom - top,
+      });
+      if (!snapshot) {
+        const page = await captureBrowserSnapshot();
+        if (!page) return null;
+        const scaleX = page.w / Math.max(1, frame.width);
+        const scaleY = page.h / Math.max(1, frame.height);
+        snapshot = await cropDataUrl(
+          page.dataUrl,
+          (left - frame.left) * scaleX,
+          (top - frame.top) * scaleY,
+          (right - left) * scaleX,
+          (bottom - top) * scaleY,
+        );
+      }
+      if (!snapshot) return null;
+      if (hideText && await node.executeJavaScript<boolean>(browserAnnotationTextPaintScript(true, true), true) !== true) return null;
+      const after = browserSnapshotFromUnknown(await node.executeJavaScript<unknown>(
+        browserMeasureTargetsScript(target.filePath, [{ elementId: target.elementId,
+          selector: target.selector, key: 'capture' }]), true,
+      ).then((items) => Array.isArray(items) ? items[0] : null).catch(() => null), target.filePath);
+      if (!after?.maskRects || !after.viewport || after.selector !== target.selector
+        || (node.getURL?.() || currentUrl) !== initialUrl
+        || JSON.stringify(after.position) !== JSON.stringify(before.position)
+        || JSON.stringify(after.maskRects) !== JSON.stringify(before.maskRects)
+        || JSON.stringify(after.viewport) !== JSON.stringify(before.viewport)) return null;
+      const pixelMasks = browserAnnotationPixelMasks(target.position,
+        { x: 0, y: 0, width: frame.width, height: frame.height }, snapshot, target.maskRects);
+      if (!pixelMasks) return null;
+      snapshot = await maskBrowserAnnotationSnapshot(snapshot, pixelMasks);
+      if (!snapshot) return null;
+      // Keep chat crops bounded on high-DPI displays; large images must not turn
+      // an otherwise valid note into a rejected post.
+      for (let maxEdge = 1200; maxEdge >= 150; maxEdge = Math.floor(maxEdge / 2)) {
+        snapshot = await cropDataUrl(snapshot.dataUrl, 0, 0, snapshot.w, snapshot.h, maxEdge);
+        if (!snapshot) return null;
+        if (snapshot.dataUrl.length <= 4 * Math.ceil(256 * 1024 / 3) + 22) break;
+      }
+      if (snapshot.dataUrl.length > 4 * Math.ceil(256 * 1024 / 3) + 22) return null;
+      const blob = await fetch(snapshot.dataUrl).then((response) => response.blob());
+      return new File(
+        [blob],
+        `browser-annotation-${Date.now()}.png`,
+        { type: blob.type || 'image/png' },
+      );
+    } finally {
+      if (hideText) await node.executeJavaScript(browserAnnotationTextPaintScript(false), true).catch(() => {});
     }
   }
 
@@ -2147,9 +2400,22 @@ export function DesignBrowserPanel({
         setActiveTool(null);
         return;
       }
+      annotationUrlRef.current = webviewNode.getURL?.() || currentUrl;
+      browserPostRef.current = null;
       setActiveCommentTarget(snapshot);
       setTextDraft(snapshot.text);
       setActiveTool(tool);
+      if (tool === 'comment') {
+        setCaptureChromeHidden(true);
+        let captureTimeout: ReturnType<typeof setTimeout>;
+        const deadline = new Promise<null>((resolve) => { captureTimeout = setTimeout(() => resolve(null), 1500); });
+        void Promise.race([captureBrowserElementAnnotation(snapshot), deadline]).then((file) => {
+          if (file && pickerRequestIdRef.current === requestId && !browserPostingRef.current && !browserPostRef.current) {
+            setBrowserImages([file]);
+          }
+        }).catch(() => { /* Feedback can be posted without a screenshot. */ })
+          .finally(() => { clearTimeout(captureTimeout); setCaptureChromeHidden(false); });
+      }
       setStatusMessage(
         tool === 'comment'
           ? t('designBrowser.status.addBrowserComment')
@@ -2257,12 +2523,6 @@ export function DesignBrowserPanel({
     setCommentDraft('');
   }
 
-  function addBrowserImages(files: File[]) {
-    const images = files.filter((file) => file.type.startsWith('image/'));
-    if (images.length === 0) return;
-    setBrowserImages((current) => [...current, ...images]);
-  }
-
   function removeBrowserImage(index: number) {
     setBrowserImages((current) => current.filter((_, itemIndex) => itemIndex !== index));
     setBrowserPreviewIndex((current) => {
@@ -2281,7 +2541,12 @@ export function DesignBrowserPanel({
     if (!note && browserImages.length === 0 && (activeSavedComment?.attachments?.length ?? 0) === 0) return;
     setSendingComment(true);
     try {
-      const saved = await onSavePreviewComment(browserTargetFromSnapshot(activeCommentTarget), note, false, browserImages);
+      const saved = await onSavePreviewComment(
+        browserTargetFromSnapshot(activeCommentTarget, browserControlIdentity),
+        note,
+        false,
+        browserImages,
+      );
       if (saved) {
         setActivePreviewCommentId(saved.id);
         setCommentDraft(saved.note);
@@ -2295,67 +2560,52 @@ export function DesignBrowserPanel({
     }
   }
 
-  async function sendBrowserCommentBatch() {
-    if (!activeCommentTarget || !onSendBoardCommentAttachments) {
-      setStatusMessage(t('designBrowser.status.commentSendingUnavailable'));
-      return;
-    }
-    const sendingUnchangedSavedComment = Boolean(
-      activeSavedComment
-      && queuedCommentNotes.length === 0
-      && browserImages.length === 0
-      && commentDraft.trim() === activeSavedComment.note.trim(),
-    );
-    if (activeSavedComment && sendingUnchangedSavedComment) {
-      setSendingComment(true);
-      try {
-        const result = await onSendBoardCommentAttachments(
-          commentsToAttachments([activeSavedComment]),
-        );
-        if (!commentSendCompleted(result, activeSavedComment.id)) return;
-        if (!onRemovePreviewComment) return;
-        const removed = await onRemovePreviewComment(activeSavedComment.id);
-        if (!removed) return;
-        clearBrowserTool();
-      } finally {
-        setSendingComment(false);
-      }
-      return;
-    }
-    const notes = [...queuedCommentNotes];
-    if (commentDraft.trim()) notes.push(commentDraft.trim());
-    if (notes.length === 0 && browserImages.length === 0) return;
+  async function postBrowserAnnotation() {
+    if (!activeCommentTarget || !conversationId || browserPostingRef.current) return;
+    const note = [...queuedCommentNotes, commentDraft.trim()].filter(Boolean).join('\n\n');
+    if (!note) return;
+    const key = JSON.stringify({ projectId, conversationId, url: annotationUrlRef.current, note, selector: activeCommentTarget.selector,
+      images: browserImages.map((file) => [file.name, file.size, file.lastModified]) });
+    const selectionId = pickerRequestIdRef.current;
+    browserPostingRef.current = true;
     setSendingComment(true);
     try {
-      const existingAttachments = activeSavedComment?.attachments ?? [];
-      const attachments = buildBoardCommentAttachments({
-        target: browserTargetFromSnapshot(activeCommentTarget),
-        notes,
-        includeImageOnly: browserImages.length > 0,
-        imageAttachmentCount: browserImages.length,
-      }).map((attachment) => (
-        existingAttachments.length > 0
-          ? { ...attachment, imageAttachments: existingAttachments }
-          : attachment
-      ));
-      const result = await onSendBoardCommentAttachments(
-        attachments,
-        browserImages,
-      );
-      const completedIds = new Set(result.commentIds);
-      const pending = attachments.filter(
-        (attachment) => !completedIds.has(attachment.id),
-      );
-      if (pending.length === 0 && commentSendSucceeded(result)) {
-        clearBrowserTool();
-        return;
+      let request = browserPostRef.current?.key === key ? browserPostRef.current.request : null;
+      if (!request) {
+        const image = browserImages[0];
+        let screenshotDataUrl: string | undefined;
+        if (image && image.type === 'image/png' && image.size <= 256 * 1024) {
+          screenshotDataUrl = await new Promise<string | undefined>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : undefined);
+            reader.onerror = () => resolve(undefined);
+            reader.readAsDataURL(image);
+          });
+        }
+        request = { conversationId, eventId: crypto.randomUUID(),
+          url: annotationUrlRef.current || currentUrl, title: pageTitle, note,
+          target: { selector: activeCommentTarget.selector, label: activeCommentTarget.label,
+            text: activeCommentTarget.text, htmlHint: activeCommentTarget.htmlHint,
+            position: activeCommentTarget.position, style: activeCommentTarget.style,
+            domOutline: activeCommentTarget.domOutline, ancestors: activeCommentTarget.ancestors },
+          ...(screenshotDataUrl ? { screenshotDataUrl } : {}) };
+        if (selectionId !== pickerRequestIdRef.current) return;
+        browserPostRef.current = { key, request };
       }
-      if (completedIds.size === 0) return;
-      setQueuedCommentNotes(pending.map((attachment) => attachment.comment));
-      setCommentDraft('');
-      setBrowserImages([]);
-      setBrowserPreviewIndex(null);
+      const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/edge-annotations/draft`, {
+        method: 'POST', headers: { 'content-type': 'application/json',
+          ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}) },
+        body: JSON.stringify(request),
+      });
+      if (!response.ok) throw new Error(t('designBrowser.status.commentSendingUnavailable'));
+      if (selectionId !== pickerRequestIdRef.current) return;
+      browserPostRef.current = null;
+      clearBrowserTool();
+      setStatusMessage(null);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : t('designBrowser.status.commentSendingUnavailable'));
     } finally {
+      browserPostingRef.current = false;
       setSendingComment(false);
     }
   }
@@ -2409,20 +2659,23 @@ export function DesignBrowserPanel({
       onRemoveQueuedNote={(index) => setQueuedCommentNotes((current) => current.filter((_, itemIndex) => itemIndex !== index))}
       onClose={clearBrowserTool}
       onSaveComment={() => saveBrowserComment()}
-      onSendBatch={() => sendBrowserCommentBatch()}
+      onSendBatch={() => postBrowserAnnotation()}
       onRemoveMember={() => {}}
       onDeleteComment={onRemovePreviewComment}
       images={browserImagePreviews}
+      imageDisclosure={browserImages.some((file) => file.name.startsWith('browser-annotation-'))
+        && activeCommentTarget?.maskRects?.some((mask) => mask.textHidden)
+        ? t('chat.annotationCaptureDisclosure') : undefined}
       existingImages={(activeSavedComment?.attachments ?? []).map((attachment) => ({
         url: projectRawUrl(projectId, attachment.path, workspaceContext),
         name: attachment.name,
       }))}
-      onAttachImages={addBrowserImages}
       onRemoveImage={removeBrowserImage}
       onPreviewImage={setBrowserPreviewIndex}
       sending={sendingComment}
-      queueOnSend={sendDisabled && Boolean(onSendBoardCommentAttachments)}
-      sendDisabled={!onSendBoardCommentAttachments}
+      postOnly
+      queueOnSend
+      sendDisabled={!conversationId || !commentDraft.trim() && queuedCommentNotes.length === 0}
       t={t}
       scale={1}
       bounds={browserPopoverBounds}
@@ -2540,6 +2793,122 @@ export function DesignBrowserPanel({
           ) : null}
         </form>
         <div className="db-actions">
+          {!isBlank ? (
+            <IconTooltipButton
+              label={t('designBrowser.annotate')}
+              wrapperClassName="db-action-item db-action-annotate"
+              className={activeTool === 'comment' ? 'is-active' : ''}
+              aria-pressed={activeTool === 'comment'}
+              onClick={() => {
+                setBrowserDiagnosticsOpen(false);
+                setMenuOpen(false);
+                setBrowserUseOpen(false);
+                setSuggestionsOpen(false);
+                toggleBrowserTool('comment');
+              }}
+            >
+              <RemixIcon name="message-3-line" size={15} />
+            </IconTooltipButton>
+          ) : null}
+          <IconTooltipButton
+            label={t('designBrowser.edge.connect')}
+            wrapperClassName="db-action-item db-action-edge"
+            className={edgeAnnotationsOpen ? 'is-active' : ''}
+            aria-expanded={edgeAnnotationsOpen}
+            onClick={() => {
+              setEdgeAnnotationsOpen((open) => !open);
+              setMenuOpen(false);
+              setBrowserUseOpen(false);
+              setBrowserDiagnosticsOpen(false);
+            }}
+          >
+            <Icon name="external-link" size={15} />
+          </IconTooltipButton>
+          {edgeAnnotationsOpen ? (
+            <EdgeAnnotationsPanel
+              projectId={projectId}
+              conversationId={conversationId}
+              pageUrl={currentUrl}
+              workspaceContext={workspaceContext}
+              onOpenExternal={() => void openCurrentExternally()}
+            />
+          ) : null}
+          {browserControlStatus === 'connected' ? (
+            <IconTooltipButton
+              label={`AI · ${t(browserTabActive ? 'common.active' : 'common.inactive')}`}
+              wrapperClassName="db-action-item db-action-ai"
+              className={`db-ai-control${browserTabActive ? ' is-active' : ''}`}
+              aria-expanded={browserDiagnosticsOpen}
+              onClick={() => {
+                const opening = !browserDiagnosticsOpen;
+                setBrowserDiagnosticsOpen(opening);
+                setMenuOpen(false);
+                setBrowserUseOpen(false);
+                setSuggestionsOpen(false);
+                if (opening) void refreshBrowserDiagnostics();
+              }}
+            >
+              <span className="db-ai-control-dot" aria-hidden />
+            </IconTooltipButton>
+          ) : null}
+          {browserDiagnosticsOpen ? (
+            <div className="db-browser-diagnostics" role="dialog" aria-label="AI browser diagnostics">
+              <div className="db-browser-diagnostics-head">
+                <div>
+                  <strong>AI</strong>
+                  <span>{t('common.active')}</span>
+                </div>
+                <button
+                  type="button"
+                  className="db-browser-diagnostics-refresh"
+                  aria-label={t('designBrowser.reload')}
+                  disabled={browserDiagnosticsLoading}
+                  onClick={() => void refreshBrowserDiagnostics()}
+                >
+                  <Icon name="reload" size={14} />
+                </button>
+              </div>
+              <div className="db-browser-diagnostics-metrics">
+                <span><strong>{browserDiagnostics.networkEntries.length}</strong> HTTP</span>
+                <span><strong>{browserDiagnostics.consoleEntries.length}</strong> LOG</span>
+              </div>
+              {browserDiagnosticsError ? (
+                <div className="db-browser-diagnostics-error" role="alert">
+                  {browserDiagnosticsError}
+                </div>
+              ) : null}
+              <div className="db-browser-diagnostics-list" aria-busy={browserDiagnosticsLoading}>
+                {browserDiagnosticsLoading ? (
+                  <div className="db-browser-diagnostics-loading">•••</div>
+                ) : null}
+                {browserDiagnostics.networkEntries.map((entry, index) => (
+                  <div
+                    className="db-browser-diagnostics-row"
+                    key={entry.requestId ?? `${entry.url ?? 'request'}-${index}`}
+                    title={entry.url}
+                  >
+                    <span className="db-browser-diagnostics-method">{entry.method ?? 'GET'}</span>
+                    <span className="db-browser-diagnostics-value">
+                      {browserDiagnosticUrlLabel(entry.url)}
+                    </span>
+                    <span className={entry.failed ? 'is-error' : undefined}>
+                      {entry.failed ? 'ERR' : entry.responseStatus ?? '…'}
+                    </span>
+                  </div>
+                ))}
+                {browserDiagnostics.consoleEntries.map((entry, index) => (
+                  <div
+                    className="db-browser-diagnostics-row is-console"
+                    key={`${entry.level ?? 'log'}-${entry.text ?? ''}-${index}`}
+                    title={entry.text}
+                  >
+                    <span className="db-browser-diagnostics-method">{entry.level ?? 'log'}</span>
+                    <span className="db-browser-diagnostics-value">{entry.text ?? ''}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {desktopHostAvailable ? (
             <IconTooltipButton
               label={t('fileViewer.screenshot')}
@@ -2675,7 +3044,9 @@ export function DesignBrowserPanel({
       <div className="db-content">
         <PreviewDrawOverlay
           active={drawOverlayOpen}
-          captureTarget={activeCommentTarget ? browserTargetFromSnapshot(activeCommentTarget) : null}
+          captureTarget={activeCommentTarget
+            ? browserTargetFromSnapshot(activeCommentTarget, browserControlIdentity)
+            : null}
           captureViewport={!isBlank}
           captureSnapshot={desktopHostAvailable ? captureBrowserSnapshot : undefined}
           captureFrameRect={() => webviewNode?.getBoundingClientRect() ?? null}
@@ -2708,7 +3079,7 @@ export function DesignBrowserPanel({
                 />
               </div>
             )}
-            {commentComposer}
+            <div style={captureChromeHidden ? { visibility: 'hidden' } : undefined}>{commentComposer}</div>
             {(activeTool === 'inspect' || activeTool === 'edit') && activeCommentTarget ? (
               <BrowserInspectPanel
                 mode={activeTool}
@@ -2904,6 +3275,8 @@ function browserSnapshotsEqual(left: BrowserElementSnapshot, right: BrowserEleme
     left.position.y === right.position.y &&
     left.position.width === right.position.width &&
     left.position.height === right.position.height &&
+    JSON.stringify(left.maskRects ?? null) === JSON.stringify(right.maskRects ?? null) &&
+    JSON.stringify(left.viewport ?? null) === JSON.stringify(right.viewport ?? null) &&
     JSON.stringify(left.style ?? null) === JSON.stringify(right.style ?? null)
   );
 }
@@ -3156,8 +3529,11 @@ function browserSnapshotFromComment(comment: PreviewComment, filePath: string): 
   };
 }
 
-function browserTargetFromSnapshot(snapshot: BrowserElementSnapshot): PreviewCommentTarget {
-  return {
+export function browserTargetFromSnapshot(
+  snapshot: BrowserElementSnapshot,
+  browserIdentity: Pick<EmbeddedBrowserTarget, 'tabId' | 'webContentsId'> | null = null,
+): PreviewCommentTarget {
+  return withBrowserControlMetadata({
     filePath: snapshot.filePath,
     elementId: snapshot.elementId,
     selector: snapshot.selector,
@@ -3167,7 +3543,7 @@ function browserTargetFromSnapshot(snapshot: BrowserElementSnapshot): PreviewCom
     htmlHint: snapshot.htmlHint.trim().slice(0, 500),
     style: snapshot.style,
     selectionKind: 'element',
-  };
+  }, browserIdentity);
 }
 
 function browserOverlayBounds(snapshot: BrowserElementSnapshot) {
@@ -3197,6 +3573,7 @@ function browserCommentsToAttachments(comments: PreviewComment[]): ChatCommentAt
     imageAttachments: comment.attachments && comment.attachments.length > 0
       ? comment.attachments
       : undefined,
+    metadata: comment.metadata,
     source: 'saved-comment',
   }));
 }
@@ -3221,6 +3598,7 @@ function browserBoardCommentAttachments(input: {
       htmlHint: input.target.htmlHint.trim().slice(0, 500),
       style: input.target.style,
       selectionKind: 'element',
+      metadata: input.target.metadata,
       source: 'board-batch',
     }));
 }
@@ -3612,6 +3990,15 @@ function safeGetWebviewTitle(node: WebviewElement): string {
   }
 }
 
+function safeGetWebContentsId(node: WebviewElement): number | null {
+  try {
+    const id = node.getWebContentsId();
+    return Number.isInteger(id) && id > 0 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 function cleanIconUrl(url?: string): string | undefined {
   const value = url?.trim();
   if (!value) return undefined;
@@ -3674,6 +4061,7 @@ function cropDataUrl(
   sy: number,
   sw: number,
   sh: number,
+  maxEdge = Infinity,
 ): Promise<{ dataUrl: string; w: number; h: number } | null> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -3686,21 +4074,53 @@ function cropDataUrl(
         const cw = Math.max(1, Math.min(Math.round(sw), naturalW - cx));
         const ch = Math.max(1, Math.min(Math.round(sh), naturalH - cy));
         const canvas = document.createElement('canvas');
-        canvas.width = cw;
-        canvas.height = ch;
+        const scale = Math.min(1, maxEdge / Math.max(cw, ch));
+        canvas.width = Math.max(1, Math.round(cw * scale));
+        canvas.height = Math.max(1, Math.round(ch * scale));
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           resolve(null);
           return;
         }
-        ctx.drawImage(img, cx, cy, cw, ch, 0, 0, cw, ch);
-        resolve({ dataUrl: canvas.toDataURL('image/png'), w: cw, h: ch });
+        ctx.drawImage(img, cx, cy, cw, ch, 0, 0, canvas.width, canvas.height);
+        resolve({ dataUrl: canvas.toDataURL('image/png'), w: canvas.width, h: canvas.height });
       } catch {
         resolve(null);
       }
     };
     img.onerror = () => resolve(null);
     img.src = dataUrl;
+  });
+}
+
+function maskBrowserAnnotationSnapshot(
+  snapshot: { dataUrl: string; w: number; h: number },
+  masks: NonNullable<BrowserElementSnapshot['maskRects']>,
+): Promise<{ dataUrl: string; w: number; h: number } | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = snapshot.w;
+        canvas.height = snapshot.h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { resolve(null); return; }
+        ctx.drawImage(img, 0, 0, snapshot.w, snapshot.h);
+        ctx.fillStyle = '#7f7f7f';
+        for (const mask of masks) {
+          if (mask.textHidden === true) continue;
+          if (mask.x < 0 || mask.y < 0 || mask.x + mask.width > snapshot.w
+            || mask.y + mask.height > snapshot.h) { resolve(null); return; }
+          ctx.fillRect(Math.floor(mask.x), Math.floor(mask.y),
+            Math.ceil(mask.x + mask.width) - Math.floor(mask.x),
+            Math.ceil(mask.y + mask.height) - Math.floor(mask.y));
+        }
+        resolve({ dataUrl: canvas.toDataURL('image/png'), w: snapshot.w, h: snapshot.h });
+      } catch { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = snapshot.dataUrl;
   });
 }
 

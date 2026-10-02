@@ -53,7 +53,14 @@ describe('preview comment persistence', () => {
       .get() as { name?: string } | undefined;
 
     expect(tableColumnNames(previewColumns)).toEqual(
-      expect.arrayContaining(['selection_kind', 'member_count', 'pod_members_json', 'slide_index', 'slide_key']),
+      expect.arrayContaining([
+        'selection_kind',
+        'member_count',
+        'pod_members_json',
+        'metadata_json',
+        'slide_index',
+        'slide_key',
+      ]),
     );
     expect(critiqueTable?.name).toBe('critique_runs');
   });
@@ -89,6 +96,32 @@ describe('preview comment persistence', () => {
     const [listed] = listPreviewComments(db, 'project-1', 'conversation-1');
     expect(listed?.anchoredVersion).toBe(7);
     expect(listed?.authorMemberId).toBe('member-42');
+  });
+
+  it('round-trips the embedded browser identity for saved annotations', () => {
+    const db = seededDb();
+    const saved = upsertPreviewComment(db, 'project-1', 'conversation-1', {
+      target: target({
+        elementId: 'hero-title',
+        metadata: {
+          browser: {
+            tabId: 'browser-tab-1',
+            webContentsId: 42,
+          },
+        },
+      }),
+      note: 'Inspect this exact browser element',
+    });
+
+    expect(saved?.metadata).toEqual({
+      browser: {
+        tabId: 'browser-tab-1',
+        webContentsId: 42,
+      },
+    });
+    expect(listPreviewComments(db, 'project-1', 'conversation-1')[0]?.metadata).toEqual(
+      saved?.metadata,
+    );
   });
 
   it('writes back resolved anchor state and keeps last-good position on a lost resolve', () => {
@@ -553,6 +586,19 @@ describe('preview comment agent payload', () => {
     expect(hint).toContain('Hard scope: change ONLY');
     expect(hint).toContain('Do NOT modify sibling sub-pages, parent layout, global CSS, design tokens, or unrelated rules');
     expect(hint).toContain('ask the user before proceeding');
+  });
+
+  it('keeps bounded ancestor context and styles in the agent hint', () => {
+    const normalized = normalizeCommentAttachments([commentAttachment({
+      ancestors: [
+        { tag: 'section', selector: 'main > section:nth-of-type(2)', role: 'region' },
+        { tag: 'main', selector: 'main' },
+      ],
+      style: { color: 'rgb(20, 30, 40)', fontSize: '16px' },
+    })]);
+    const hint = renderCommentAttachmentHint(normalized);
+    expect(hint).toContain('ancestors (nearest first): section[role=region] main > section:nth-of-type(2) > main main');
+    expect(hint).toContain('color: rgb(20, 30, 40)');
   });
 
   it('keeps image attachments in saved comment payloads without requiring a note', () => {

@@ -31,7 +31,7 @@ const target: PreviewCommentSnapshot = {
   selectionKind: 'element',
 };
 
-function renderPopover() {
+function renderPopover(images: { file: File; url: string }[] = [], imageDisclosure?: string) {
   return render(
     <BoardComposerPopover
       target={target}
@@ -46,6 +46,8 @@ function renderPopover() {
       onSendBatch={() => {}}
       onRemoveMember={() => {}}
       sending={false}
+      images={images}
+      imageDisclosure={imageDisclosure}
       t={((key: string) => String(key)) as never}
       // A short stage: the card cannot fit below the anchor, so the host clamps
       // its height — the exact condition that used to hide the actions.
@@ -55,6 +57,14 @@ function renderPopover() {
 }
 
 describe('BoardComposerPopover action row', () => {
+  it('discloses modified capture pixels only while an image remains attached', () => {
+    const disclosure = 'Entered text hidden during capture';
+    const view = renderPopover([{ file: new File([], 'capture.png'), url: 'blob:capture' }], disclosure);
+    expect(screen.getByRole('status').textContent).toBe(disclosure);
+    view.unmount();
+    renderPopover([], disclosure);
+    expect(screen.queryByRole('status')).toBeNull();
+  });
   it('renders the action row', () => {
     renderPopover();
     expect(screen.getByTestId('comment-add-send')).toBeTruthy();

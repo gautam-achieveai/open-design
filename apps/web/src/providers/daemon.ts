@@ -562,6 +562,8 @@ export interface DaemonStreamOptions {
   // exist, and stitches them into the user message as `@<path>` hints.
   attachments?: string[];
   commentAttachments?: ChatCommentAttachment[];
+  annotationIds?: string[];
+  annotationImageIds?: string[];
   // Per-CLI model + reasoning / service tier the user picked in the model menu. These are
   // optional; the daemon validates them against the agent's declared
   // options and falls back to the CLI default when missing.
@@ -611,6 +613,9 @@ export interface DaemonStreamOptions {
   taskExecutionId?: string;
   /** Called for the initial Run and every daemon-projected successor Run. */
   onRunCreated?: (runId: string, strategyTask?: StrategyTaskProjectionV2) => void;
+  /** POST rejected before the daemon admitted a run; restore composer-owned evidence. */
+  onAdmissionAccepted?: () => void;
+  onAdmissionRejected?: (error: Error) => void;
   /** Called once the daemon projects the logical strategy task as terminal
    *  (completed / blocked / canceled), with the terminal projection. */
   onStrategyTaskSettled?: (strategyTask: StrategyTaskProjectionV2) => void;
@@ -1047,6 +1052,8 @@ export async function streamViaDaemon({
   designSystemId,
   attachments,
   commentAttachments,
+  annotationIds,
+  annotationImageIds,
   model,
   reasoning,
   serviceTier,
@@ -1061,6 +1068,8 @@ export async function streamViaDaemon({
   workspaceContext,
   initialLastEventId,
   onRunCreated,
+  onAdmissionAccepted,
+  onAdmissionRejected,
   onRunStatus,
   onArtifactPaths,
   onRunEventId,
@@ -1094,6 +1103,8 @@ export async function streamViaDaemon({
     designSystemId: designSystemId ?? null,
     attachments: attachments ?? [],
     commentAttachments: commentAttachments ?? [],
+    ...(annotationIds?.length ? { annotationIds } : {}),
+    ...(annotationImageIds?.length ? { annotationImageIds } : {}),
     model: model ?? null,
     reasoning: reasoning ?? null,
     serviceTier: serviceTier ?? null,
@@ -1108,6 +1119,7 @@ export async function streamViaDaemon({
     ...(analyticsHints ? { analyticsHints } : {}),
   };
   const body = JSON.stringify(request);
+  let admitted = false;
 
   try {
     let createResp: Response;
@@ -1142,13 +1154,18 @@ export async function streamViaDaemon({
       const delayMs = RUN_CREATE_AUTHORITY_RETRY_DELAYS_MS[attempt];
       if (!retryableAuthorityOutage || delayMs === undefined || cancelSignal?.aborted) break;
       await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-      if (cancelSignal?.aborted) return;
+      if (cancelSignal?.aborted) {
+        onAdmissionRejected?.(new Error('Run admission canceled.'));
+        return;
+      }
     }
 
     if (!createResp.ok) {
       const text = await createResp.text().catch(() => '');
+      const rejection = daemonCreateRunError(createResp, text);
       emitRunStatus('failed');
-      handlers.onError(daemonCreateRunError(createResp, text));
+      handlers.onError(rejection);
+      onAdmissionRejected?.(rejection);
       return;
     }
 
@@ -1156,6 +1173,8 @@ export async function streamViaDaemon({
     const runId = created.runId;
     if (created.strategyTask) onRunCreated?.(runId, created.strategyTask);
     else onRunCreated?.(runId);
+    admitted = true;
+    onAdmissionAccepted?.();
     // Start the stuck-run watchdog. trackRunProgress is called inside the
     // SSE consumer below on every event; trackRunTerminal fires when the
     // stream resolves to a terminal state (or errors out).
@@ -1197,9 +1216,14 @@ export async function streamViaDaemon({
       onStrategyTaskSettled,
     });
   } catch (err) {
-    if ((err as Error).name === 'AbortError') return;
+    if ((err as Error).name === 'AbortError') {
+      if (!admitted) onAdmissionRejected?.(new Error('Run admission canceled.'));
+      return;
+    }
+    const failure = err instanceof Error ? err : new Error(String(err));
     emitRunStatus('failed');
-    handlers.onError(err instanceof Error ? err : new Error(String(err)));
+    handlers.onError(failure);
+    if (!admitted) onAdmissionRejected?.(failure);
   }
 }
 

@@ -73,8 +73,10 @@ import { useDesignKit, hostnameOf, type KitColor } from '../runtime/design-kit';
 import { useKitModuleUpload } from '../runtime/kit-upload';
 import {
   appendResourceQuery,
+  workspaceProjectHeaders,
   workspaceIdentityCacheKey,
 } from '../collab/workspace-identity';
+import { setActiveEmbeddedBrowserTarget } from '../runtime/embedded-browser-control';
 import {
   DesignKitView,
   type DesignKitActionFeedbackTone,
@@ -1499,6 +1501,16 @@ export function FileWorkspace({
   const [browserTabs, setBrowserTabs] = useState<BrowserWorkspaceTab[]>(
     () => browserTabsFromState(tabsState.browserTabs),
   );
+
+  useEffect(() => {
+    if (isBrowserTabId(activeTab)) return;
+    void setActiveEmbeddedBrowserTarget(
+      projectId,
+      null,
+      fetch,
+      workspaceContext ? workspaceProjectHeaders(workspaceContext) : undefined,
+    ).catch(() => undefined);
+  }, [activeTab, projectId, workspaceContext]);
   const [browserNavigateRequests, setBrowserNavigateRequests] = useState<
     Record<string, { url: string; nonce: number }>
   >({});
@@ -4295,7 +4307,9 @@ export function FileWorkspace({
           >
             <DesignBrowserPanel
               projectId={projectId}
+              conversationId={activeConversationId}
               browserTabId={browserTab.id}
+              browserTabActive={activeTab === browserTab.id}
               resolvedDir={resolvedDir}
               initialIconUrl={browserTab.iconUrl}
               initialTitle={browserTab.title}

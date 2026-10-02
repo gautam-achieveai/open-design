@@ -10,33 +10,134 @@ extension. The daemon/web TypeScript boundaries are unaffected.
 
 ## Load it
 
-1. Start OpenDesign locally (`pnpm tools-dev`) so the daemon is listening on
-   `http://127.0.0.1:7456` (the default; change it under **Advanced** in the
-   popup if you used a different `--daemon-port`).
+1. Start OpenDesign locally (`pnpm tools-dev`). For project annotations, use
+   **Connect managed Edge → Copy connection URL**; paste it into Clipper’s
+   connection field. It configures the daemon address automatically.
 2. Open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**,
    and select this `clipper/` directory.
    - **Edge:** same steps at `edge://extensions`.
-   - **Firefox:** `about:debugging` → *This Firefox* → *Load Temporary Add-on* →
-     pick `manifest.json` (or run `npx web-ext run --source-dir clipper`).
+   - **Firefox:** prepare an isolated Firefox package with
+     `pnpm exec tsx clipper/prepare-firefox.ts .tmp/clipper-firefox` from the
+     repository root. In `about:debugging` → *This Firefox* → *Load Temporary
+     Add-on*, select `.tmp/clipper-firefox/manifest.json`. Firefox uses
+     `background.scripts`, while Edge/Chrome use `background.service_worker`.
 
-That's it — **no pairing, no codes, no tokens**. The popup shows
-**● Connected** as soon as it detects OpenDesign running, and you can capture
-right away.
+That's it for **Library capture** — no pairing, codes, or tokens. The popup
+shows **● Connected** as soon as it detects OpenDesign running, and you can
+capture right away. Project annotations use a separate, explicit pairing below.
 
-> The manifest carries a cross-browser background block
-> (`service_worker` for Chrome/Edge, `scripts` for Firefox) plus
-> `browser_specific_settings.gecko` for AMO. Chrome logs a harmless
-> "unrecognized key `background.scripts`" warning on dev load — it runs normally,
-> and store users never see it. Store/ASO assets and per-store copy live in
-> [`store/`](store/LISTING.md).
+> The unpacked `clipper/` manifest is for Chrome/Edge and has no Firefox-only
+> `background.scripts` field. `prepare-firefox.ts` copies the extension into a
+> separate ignored directory and replaces only the manifest with
+> `manifest.firefox.json`; do not replace the original manifest in place.
+> Store/ASO assets and per-store copy live in [`store/`](store/LISTING.md).
 
-### Why no login?
+### Why no login for Library capture?
 
 The daemon only listens on loopback (`127.0.0.1`), so only programs on your own
 machine can reach it, and a web page can't impersonate this extension's
-`chrome-extension://` origin. The daemon auto-trusts that origin for the
-`/api/library/*` routes, which is everything the clipper uses. Zero setup,
-nothing to misconfigure.
+`chrome-extension://` origin. The daemon auto-trusts the extension for its
+narrow Library ingest/probe routes. **Project annotations are different:** they
+require a one-use project pairing code and a short-lived capability scoped to
+one browser tab and document. Library trust grants no project-write access.
+
+## Annotate inside Open Design first
+
+In the desktop app, open a project's **Browser** tab, visit a page, click
+**Annotate**, select an element, write a note, and click **Add to chat draft**
+(or press Enter). Only your note enters the composer body; the page and element
+context appear as a chat-owned `annotation-context.json` attachment beside an
+optional cropped screenshot. Form fields can be selected; their values and
+attributes are omitted from context. Supported native text fields hide text paint
+during capture while retaining original design pixels; unsupported controls are
+masked before the screenshot is staged. Collect more annotations, then press the normal
+chat **Send** once. No extension or pairing is needed. Screenshot failure does
+not block a note-only draft. Evidence is not an editable project file.
+
+This browser is Open Design's hosted Chromium session, not your installed
+Edge/Chrome profile. Use the extension below when a website needs that profile.
+
+CLI clients can stage the same note and evidence in the conversation draft,
+then start a Run through the ordinary `od run` command:
+
+```bash
+od browser edge draft --project <id> --conversation <id> --url <url> --prompt-file <path|-> --json
+od browser edge pending --project <id> --conversation <id> --json
+od browser edge context --project <id> --conversation <id> --message <id> --annotation <id> --json
+```
+
+`pending` lists draft IDs; `context` reads a JSON attachment claimed by the
+specified sent message. Optional `--screenshot <png>` attaches a cropped PNG;
+`--context-file <json>` adds element context (`selector`, `label`, `text`,
+`htmlHint`, `position`, and optional `domOutline`, `ancestors`, `style`). Reuse
+`--event-id <id>` when retrying an identical draft to avoid duplicates. The
+legacy `od browser edge post` remains available but posts a chat message
+immediately; it does **not** stage the composer or start an agent.
+
+## Annotate a managed Edge/Chrome site
+
+For sites that require your company's Entra/Intune browser session, sign in in your
+normal Edge or Chrome work profile using Windows Hello. The in-app Electron
+Browser tab does **not** share that profile or its credentials.
+
+1. In the destination Open Design conversation, open **Connect managed Edge** and
+   click **Copy connection URL**. No extension ID is required.
+2. In your website tab, open Clipper, paste the URL into **Open Design connection
+   URL**, and click **Connect**. The URL includes the daemon address and one-use
+   code; there is no separate Advanced setup. The popup names the destination
+   project and conversation.
+3. Choose **Annotate an element**, select an element, review the screenshot
+   when available, add your note, then click **Send to chat**. This stages your
+   note and a structured JSON attachment in the destination composer; it does
+   not post yet. A failed screenshot does not block the note. **View chat** opens
+   the exact destination conversation. Text, email, and password fields can be
+   selected for design feedback; values and attributes are excluded from JSON.
+   Reviewed annotation screenshots temporarily hide text paint in supported
+   native text inputs and textareas without reading or changing entered values.
+   Original borders, backgrounds and layout remain visible. The preview labels
+   this modification. Unsupported controls (including selects and contenteditable)
+   retain opaque masks; opaque embedded surfaces can omit screenshots. Editable
+   controls and iframe/custom-element boundaries remain selectable for notes,
+   without reading entered copy or opaque internals. For permitted HTTP(S) child
+   frames, select the iframe then choose **Pick inside frame**. Open-shadow internals
+   can be picked directly. These selections stage note plus scoped JSON only;
+   screenshots are explicitly unsupported. JSON identifies the child URL or shadow
+   host path so its selector is not mistaken for a top-document selector. Child
+   navigation invalidates the review. Closed-shadow internals, restricted pages,
+   and opaque/sandboxed frame documents are not supported. New JSON evidence records
+   whether a screenshot was captured or not provided. Identity-provider pages remain
+   unavailable. **Pick element**
+   remains Library capture, not chat.
+4. Collect more notes and crops in the same conversation draft. Remove unwanted
+   crops there, then press the normal chat **Send** once. Collection alone does
+   not post a transcript message or start an agent.
+
+The connection lasts up to eight hours and survives extension-worker sleep and
+same-origin page reload/navigation. Screenshots are discarded on navigation.
+Changing sites, restarting the daemon, or ending the browser session may require
+reconnecting. Read-only live inspection of a newly loaded document requires a
+fresh pairing, even when its origin is unchanged. Use Disconnect in Open Design
+to revoke the connection. Tokens stay in extension-only session storage, never
+in website content or local storage. The full connection URL is not saved.
+The optional screenshot is chat evidence, not an editable project file.
+
+Collected annotations are durable pending draft evidence and survive daemon
+restarts. Only the normal chat Send binds selected notes and crops to a message.
+Optional styles and ancestor metadata are filtered and bounded rather than
+rejecting the note. Ordinary long copy is truncated; credential-shaped text is
+omitted. A submission validation/server error preserves the connection and
+reviewed crop so the same annotation can be retried.
+
+Under **Advanced**, enable **Record annotation diagnostics**, reproduce the
+problem, then **Copy sanitized report**. Recording is off by default, bounded
+to 100 operational events, and kept only in extension session storage. The
+report contains event names, timestamps, correlation IDs, success/HTTP status,
+daemon annotation-protocol build and correlation acknowledgment, opaque destination
+and draft IDs, worker build, extension version, and a count of paired tabs. It contains no page
+URLs, DOM, notes, screenshots, connection codes, tokens, or network payloads.
+Disabling recording clears its events. Copying does not send the report anywhere.
+The worker build displayed there helps identify a stale extension after source
+changes; reload the unpacked extension to load new scripts.
 
 ## Capture
 

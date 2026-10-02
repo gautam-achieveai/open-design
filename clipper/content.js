@@ -17,6 +17,8 @@
 
 (function () {
   if (window.__odClipperInjected) return;
+  const topDocument = window === window.top;
+  let childAnnotationArmed = false;
   const I18N = globalThis.OD_CLIPPER_I18N;
   const locale = I18N?.currentLocale ? I18N.currentLocale() : 'en';
   const t = (key, vars) => (I18N?.t ? I18N.t(key, vars, locale) : key);
@@ -70,13 +72,14 @@
       @keyframes odToastSpin { to { transform: rotate(360deg); } }
     </style>
     <div class="toast" id="t"></div>`);
-  document.documentElement.appendChild(toastHost);
+  if (topDocument) document.documentElement.appendChild(toastHost);
   const toastEl = toastShadow.getElementById('t');
   let toastTimer = null;
   // A loading toast (opts.loading) shows a spinner and STAYS until the next
   // toast() call replaces it with the success/failure result — so every
   // operation keeps a visible "working…" state through to its outcome.
   function toast(text, opts) {
+    if (!toastHost.isConnected) document.documentElement.appendChild(toastHost);
     const loading = Boolean(opts && opts.loading);
     toastHost.style.display = '';
     toastEl.textContent = text;
@@ -109,6 +112,7 @@
     region: '<path d="M4 8V5a1 1 0 0 1 1-1h3"/><path d="M16 4h3a1 1 0 0 1 1 1v3"/><path d="M20 16v3a1 1 0 0 1-1 1h-3"/><path d="M8 20H5a1 1 0 0 1-1-1v-3"/>',
     imgs: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.5-3.5a2 2 0 0 0-2.8 0L5 21"/>',
     element: '<circle cx="12" cy="12" r="3.5"/><path d="M12 2v3.5"/><path d="M12 18.5V22"/><path d="M2 12h3.5"/><path d="M18.5 12H22"/>',
+    annotate: '<path d="M4 20h16"/><path d="M7 16 17 6l2 2L9 18H7z"/>',
     close: '<path d="M18 6 6 18"/><path d="M6 6l12 12"/>',
   };
   // `data-tip` drives the custom on-hover tooltip below; `aria-label` keeps the
@@ -255,6 +259,7 @@
         ${btn('region', t('toolbarCaptureRegion'))}
         ${btn('imgs', t('toolbarPickImages'))}
         ${btn('element', t('toolbarPickElement'))}
+        ${btn('annotate', t('annotateElement'))}
       </div>
       <div class="busy" role="status" aria-live="polite">
         <span class="spinner"></span>
@@ -266,7 +271,7 @@
       <span class="sep"></span>
       <button class="close" data-act="close" data-tip="${esc(t('toolbarHide'))}" aria-label="${esc(t('toolbarHide'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON.close}</svg></button>
     </div>`);
-  document.documentElement.appendChild(host);
+  if (topDocument) document.documentElement.appendChild(host);
 
   let toolbarVisible = false;
   let imageHoverEnabled = true; // default-on per-image hover capture badge
@@ -312,8 +317,10 @@
 
   // Delegated per-image hover affordance: one pair of document listeners, gated
   // by `imageHoverEnabled` inside the handler so toggling needs no re-binding.
-  document.addEventListener('mouseover', onDocOver, true);
-  document.addEventListener('scroll', onDocScroll, true);
+  if (topDocument) {
+    document.addEventListener('mouseover', onDocOver, true);
+    document.addEventListener('scroll', onDocScroll, true);
+  }
 
   // Toolbar actions sent straight to the worker (no on-page UI of their own).
   const WORKER_ACTIONS = {
@@ -329,6 +336,7 @@
       if (act === 'close') return setVisible(false, true);
       if (act === 'imgs') return void pickImages();
       if (act === 'element') return void startElementPick();
+      if (act === 'annotate') return void startAnnotationPick();
       if (act === 'region') return void startRegionPick();
 
       const type = WORKER_ACTIONS[act];
@@ -588,6 +596,8 @@
   // Esc / the ✕ cancels. Wheel is forwarded to the page so off-screen elements
   // stay reachable.
   let pickActive = false;
+  let pickMode = 'capture';
+  let annotationHost = null;
   let pickHost = null;
   let pickShadow = null;
   let pickSurface = null;
@@ -662,7 +672,7 @@
       <div class="surface" id="surface"></div>
       <div class="hintbar">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#e8896a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v3.5"/><path d="M12 18.5V22"/><path d="M2 12h3.5"/><path d="M18.5 12H22"/></svg>
-        <span><b>${esc(t('elementPickerTitle'))}</b> &nbsp;·&nbsp; ${esc(t('elementPickerHint'))}</span>
+        <span><b>${esc(t('elementPickerTitle'))}</b> &nbsp;·&nbsp; ${esc(pickMode === 'annotation' ? t('annotationHint') : t('elementPickerHint'))}</span>
         <span class="kbd">Esc</span>
         <button data-act="cancel" type="button" aria-label="${esc(t('cancel'))}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
       </div>
@@ -670,7 +680,7 @@
         <div class="label" id="label"></div>
         <button class="chip" id="chip" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
-          ${esc(t('capture'))}
+          ${esc(pickMode === 'annotation' ? t('annotateElement') : t('capture'))}
         </button>
       </div>`);
     boxEl = pickShadow.getElementById('box');
@@ -687,7 +697,7 @@
     pickShadow.getElementById('chip').addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      void commitCapture(currentTarget);
+      void commitPick(currentTarget);
     });
     const cancel = pickShadow.querySelector('[data-act="cancel"]');
     if (cancel) cancel.addEventListener('click', () => endElementPick());
@@ -709,7 +719,17 @@
       : [document.elementFromPoint(x, y)];
     for (const el of stack) {
       if (!el || isOwnClipperNode(el)) continue; // skip our own surface / overlays
-      return el;
+      let target = el;
+      if (pickMode === 'annotation') {
+        for (let depth = 0; depth < 8 && target.shadowRoot; depth += 1) {
+          const root = target.shadowRoot;
+          const candidates = root.elementsFromPoint?.(x, y) || [root.elementFromPoint?.(x, y)];
+          const inner = candidates.find(node => node?.getRootNode() === root && !isOwnClipperNode(node));
+          if (!inner || inner === target) break;
+          target = inner;
+        }
+      }
+      return target;
     }
     return null;
   }
@@ -744,7 +764,7 @@
     e.preventDefault();
     e.stopPropagation();
     const el = targetAt(e.clientX, e.clientY) || currentTarget;
-    if (el) void commitCapture(el);
+    if (el) void commitPick(el);
   }
 
   function onWheel(e) {
@@ -796,6 +816,492 @@
     return meta;
   }
 
+  function composedParent(el) {
+    return el.assignedSlot || el.parentElement || el.getRootNode()?.host || null;
+  }
+  function composedMatches(el, selector) {
+    for (let node = el; node; node = composedParent(node)) {
+      if (node.matches(selector)) return true;
+      const style = getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return true;
+    }
+    return false;
+  }
+  function annotationConnected(el) {
+    return el?.isConnected && el.ownerDocument === document;
+  }
+  function annotationAllowedElement(el) {
+    return Boolean(el?.tagName && annotationConnected(el)
+      && !composedMatches(el, '[hidden],[inert],[aria-hidden="true"]'));
+  }
+  function annotationScope(el) {
+    const shadowHosts = [];
+    for (let root = el.getRootNode(); root.host; root = root.host.getRootNode()) {
+      if (root.mode !== 'open' || shadowHosts.length >= 8) return null;
+      const selector = annotationSelector(root.host);
+      if (!selector || selector.length > 512) return null;
+      shadowHosts.unshift(selector);
+    }
+    return { frame: topDocument ? 'top' : 'child', url: annotationReviewedUrl(location.href),
+      selectorRoot: shadowHosts.length ? 'open-shadow' : 'document', shadowHosts,
+      screenshot: 'not-supported' };
+  }
+
+  function annotationSelector(el) {
+    const segments = [];
+    for (let node = el; node && node !== document.documentElement && segments.length < 8; node = node.parentElement) {
+      const tag = node.localName;
+      if (!/^[a-z][a-z0-9-]*$/i.test(tag)) return null;
+      const siblings = Array.from((node.parentElement || node.getRootNode()).children || [])
+        .filter((child) => child.localName === tag);
+      segments.unshift(`${tag}${siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(node) + 1})` : ''}`);
+    }
+    const selector = segments.join(' > ');
+    return selector && selector.length <= 1024 ? selector : null;
+  }
+
+  function annotationReviewedUrl(raw) {
+    try {
+      const url = new URL(raw);
+      const allowed = url.protocol === 'https:' || (url.protocol === 'http:'
+        && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname));
+      const authHosts = ['login.microsoftonline.com', 'login.live.com', 'login.windows.net',
+        'login.microsoft.com', 'account.microsoft.com', 'mysignins.microsoft.com',
+        'login.microsoftonline.us', 'login.chinacloudapi.cn', 'accounts.google.com', 'sts.windows.net'];
+      const path = decodeURIComponent(url.pathname);
+      if (/%[0-9a-f]{2}/i.test(path)) return null; // Refuse ambiguous nested encoding.
+      if (!allowed || url.username || url.password || authHosts.some((host) =>
+        url.hostname === host || url.hostname.endsWith(`.${host}`))
+        || /(?:^|\/)(?:oauth2?|authorize|saml2?|callback|token)(?:\/|$)/i.test(path)
+        || /(?:eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+|\b(?:sk-|gh[opsur]_|AKIA)[A-Za-z0-9_-]{16,}\b|bearer\s+\S+)/i.test(path)) return null;
+      const secretKey = /(?:token|code|secret|password|passwd|key|credential|signature|sig|assertion|state|nonce|ticket|sso|authorization|session|jwt|bearer)/i;
+      const secretValue = /(?:eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+|\b(?:sk-|gh[opsur]_|AKIA)[A-Za-z0-9_-]{16,}\b|bearer\s+\S+)/i;
+      const query = [...url.searchParams];
+      if (query.some(([key, value]) => /%[0-9a-f]{2}/i.test(key) || /%[0-9a-f]{2}/i.test(value))) return null;
+      if (query.some(([key, value]) => secretKey.test(key) || secretValue.test(value))) {
+        url.search = '';
+        for (const [key, value] of query) {
+          if (!secretKey.test(key) && !secretValue.test(value)) url.searchParams.append(key, value);
+        }
+      }
+      if (url.hash) {
+        const fragment = decodeURIComponent(url.hash.slice(1));
+        if (/%[0-9a-f]{2}/i.test(fragment)) return null;
+        if (secretValue.test(fragment)) url.hash = '';
+        else if (fragment.includes('=')) {
+          const parts = fragment.split(/[&?]/);
+          if (parts.some((part) => secretKey.test(part.split('=', 1)[0] || ''))) {
+            url.hash = parts.filter((part) => !secretKey.test(part.split('=', 1)[0] || '')).join('&');
+          }
+        } else if (secretKey.test(fragment)) url.hash = '';
+      }
+      return url.href.length <= 8192 ? url.href : null;
+    } catch { return null; }
+  }
+
+  function annotationVisibleText(el) {
+    if (composedMatches(el, '[contenteditable],[data-sensitive],[hidden],[inert],[aria-hidden="true"]')
+      || el.hidden || el.inert || el.getAttribute('aria-hidden') === 'true'
+      || el.matches('input,textarea,select,iframe,[contenteditable],[data-sensitive],'
+        + '[autocomplete="one-time-code"],[autocomplete="current-password"],'
+        + '[autocomplete="new-password"]')) return null;
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return null;
+    return Array.from(el.childNodes).filter((node) => node.nodeType === 3)
+      .map((node) => node.nodeValue || '').join(' ').replace(/\s+/g, ' ').trim();
+  }
+
+  const annotationCredentialText = /(?:eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+|\b(?:sk-|gh[opsur]_|AKIA)[A-Za-z0-9_-]{16,}\b|bearer\s+\S+|(?:password|passwd|passphrase|secret|token|api[_-]?key|authorization|session|credential|otp|one.time|auth.code)(?:\s*=\s*\S{6,}|\s*:\s*\S{6,}(?=\s*(?:$|[\n;,]))))/i;
+  function annotationSafeText(value, limit) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    return annotationCredentialText.test(text) ? '' : text.slice(0, limit);
+  }
+
+  function annotationSafeOutline(el) {
+    let count = 0;
+    let length = 0;
+    const lines = [];
+    const walk = (node, depth) => {
+      if (depth > 4 || count >= 30 || length >= 1200) return;
+      const ownText = annotationVisibleText(node);
+      if (ownText === null) return;
+      const tag = node.localName;
+      if (!/^[a-z][a-z0-9-]*$/.test(tag)) return;
+      const safeText = annotationSafeText(ownText, 160);
+      const line = `${'  '.repeat(depth)}${tag}${safeText ? ` ${safeText}` : ''}`;
+      const remaining = 1200 - length - (lines.length ? 1 : 0);
+      if (line.length > remaining) return;
+      lines.push(line);
+      length += line.length + (lines.length > 1 ? 1 : 0);
+      count += 1;
+      for (const child of node.children) walk(child, depth + 1);
+    };
+    walk(el, 0);
+    return lines.join('\n');
+  }
+
+  function annotationTarget(el) {
+    if (!annotationAllowedElement(el)) return null;
+    const field = el.matches('input,textarea,select,iframe,object,embed,[contenteditable],[data-sensitive]')
+      || composedMatches(el, '[contenteditable],[data-sensitive]');
+    const visibleText = field ? '' : annotationVisibleText(el);
+    if (visibleText === null) return null;
+    const ownText = annotationSafeText(visibleText, 300);
+    const domOutline = field ? el.localName : annotationSafeOutline(el);
+    const selector = annotationSelector(el);
+    const rect = el.getBoundingClientRect();
+    if (!selector || rect.width < 1 || rect.height < 1) return null;
+    const url = annotationReviewedUrl(location.href);
+    const scope = annotationScope(el);
+    if (!url || !scope) return null;
+    const ancestors = [];
+    for (let parent = composedParent(el); parent && ancestors.length < 8; parent = composedParent(parent)) {
+      const tag = parent.localName;
+      const parentSelector = annotationSelector(parent);
+      if (!/^[a-z][a-z0-9-]*$/i.test(tag) || !parentSelector) break;
+      const role = parent.getAttribute('role');
+      ancestors.push({ tag, selector: parentSelector,
+        ...(role && /^[a-z][a-z0-9_-]{0,31}$/i.test(role) ? { role } : {}) });
+    }
+    const computed = getComputedStyle(el);
+    const style = Object.fromEntries([
+      'color', 'backgroundColor', 'fontSize', 'fontWeight', 'lineHeight',
+      'fontFamily', 'textAlign', 'paddingTop', 'paddingRight', 'paddingBottom',
+      'paddingLeft', 'borderRadius',
+    ].flatMap((key) => {
+      const value = computed[key];
+      return typeof value === 'string' && value.length > 0 && value.length <= 160
+        && !/[<>\n\r]/.test(value) ? [[key, value]] : [];
+    }));
+    // Field evidence is design-only: no values, attributes, or child text.
+    return {
+      url,
+      title: document.title.slice(0, 256),
+      selector,
+      ...(!topDocument || scope.shadowHosts.length ? { scope } : {}),
+      ancestors,
+      style,
+      label: el.tagName.toLowerCase(),
+      text: ownText,
+      domOutline,
+      position: {
+        x: Math.max(0, Math.round(rect.x)), y: Math.max(0, Math.round(rect.y)),
+        width: Math.round(rect.width), height: Math.round(rect.height),
+      },
+      htmlHint: el.tagName.toLowerCase(),
+    };
+  }
+
+  let annotationEventId = null;
+  let annotationPickGeneration = 0;
+  let annotationPendingPick = false;
+  function closeAnnotation() {
+    annotationPickGeneration += 1;
+    if (annotationEventId) {
+      void chrome.runtime.sendMessage({ type: 'odAnnotation:discard', eventId: annotationEventId });
+      annotationEventId = null;
+    }
+    annotationHost?.remove();
+    annotationHost = null;
+  }
+
+  function annotationCaptureRect(el, onBlocked) {
+    if (!annotationConnected(el) || !annotationAllowedElement(el)) return null; // Also reject opaque content below.
+    const rect = el.getBoundingClientRect();
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    if (![rect.left, rect.top, rect.width, rect.height, width, height].every(Number.isFinite)
+      || rect.width <= 0 || rect.height <= 0 || width <= 0 || height <= 0) return null;
+    const left = Math.max(0, rect.left - 24);
+    const top = Math.max(0, rect.top - 24);
+    const right = Math.min(width, rect.right + 24);
+    const bottom = Math.min(height, rect.bottom + 24);
+    if (right <= left || bottom <= top) return null;
+    const crop = { x: left, y: top, width: right - left, height: bottom - top };
+    if (annotationHasOpaqueContent(crop)) {
+      onBlocked?.('annotationScreenshotNearbyField');
+      return null;
+    }
+    return crop;
+  }
+
+  function annotationHasOpaqueContent(rect) {
+    const overlaps = (box) => box.left < rect.x + rect.width && box.right > rect.x
+      && box.top < rect.y + rect.height && box.bottom > rect.y;
+    const visit = (root) => {
+      for (const node of root.querySelectorAll('*')) {
+        if (node.id?.startsWith('od-clipper-')) continue;
+        if (node.closest('[hidden],[inert],[aria-hidden="true"]')) continue;
+        const style = getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const box = node.getBoundingClientRect();
+        if (node.localName.includes('-') && !node.shadowRoot) return true;
+        if (box.width > 0 && box.height > 0 && overlaps(box)
+          && node.matches('iframe,object,embed,[data-sensitive]')) return true;
+        if (node.shadowRoot && visit(node.shadowRoot)) return true;
+      }
+      return false;
+    };
+    return visit(document);
+  }
+
+  const annotationTextStyles = [];
+  let annotationTextRestoreTimer = null;
+  function annotationTextControl(node) {
+    return node.matches('textarea,input:not([type]),input[type="text"],input[type="email"],input[type="password"],input[type="search"],input[type="tel"],input[type="url"]');
+  }
+  function suppressAnnotationText() {
+    const visit = (root) => {
+      const style = document.createElement('style');
+      style.textContent = 'input,textarea,input::placeholder,textarea::placeholder{color:transparent!important;-webkit-text-fill-color:transparent!important;text-shadow:none!important;caret-color:transparent!important}';
+      root.appendChild(style);
+      annotationTextStyles.push(style);
+      for (const node of root.querySelectorAll('*')) if (node.shadowRoot) visit(node.shadowRoot);
+    };
+    visit(document.documentElement);
+    clearTimeout(annotationTextRestoreTimer);
+    annotationTextRestoreTimer = setTimeout(restoreAnnotationText, 5000);
+  }
+  function annotationTextSuppressed() {
+    const visit = (root) => {
+      for (const node of root.querySelectorAll('*')) {
+        if (annotationTextControl(node)) {
+          const style = getComputedStyle(node);
+          if (style.display !== 'none' && style.visibility !== 'hidden'
+            && (!['transparent', 'rgba(0, 0, 0, 0)'].includes(style.webkitTextFillColor)
+              || style.textShadow !== 'none')) return false;
+        }
+        if (node.shadowRoot && !visit(node.shadowRoot)) return false;
+      }
+      return true;
+    };
+    return annotationTextStyles.length > 0 && visit(document);
+  }
+  function restoreAnnotationText() {
+    clearTimeout(annotationTextRestoreTimer);
+    annotationTextRestoreTimer = null;
+    for (const style of annotationTextStyles.splice(0)) style.remove();
+  }
+
+  function annotationMaskRects(rect) {
+    const masks = [];
+    const overlaps = (box) => box.left < rect.x + rect.width && box.right > rect.x
+      && box.top < rect.y + rect.height && box.bottom > rect.y;
+    const collect = (root) => {
+      for (const node of root.querySelectorAll('*')) {
+        if (node.id?.startsWith('od-clipper-')) continue;
+        if (node.closest('[hidden],[inert],[aria-hidden="true"]')) continue;
+        const style = getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        if (node.matches('input,textarea,select,[contenteditable]')) {
+          const box = node.getBoundingClientRect();
+          if (box.width > 0 && box.height > 0 && overlaps(box)) {
+            // Mask the whole rendered control, including browser-native text,
+            // placeholder, autofill and option paint. Keep surrounding layout.
+            masks.push({ x: Math.max(rect.x, box.left), y: Math.max(rect.y, box.top),
+              width: Math.min(rect.x + rect.width, box.right) - Math.max(rect.x, box.left),
+              height: Math.min(rect.y + rect.height, box.bottom) - Math.max(rect.y, box.top),
+              ...(annotationTextControl(node) ? { textHidden: true } : {}) });
+          }
+        }
+        if (node.shadowRoot) collect(node.shadowRoot);
+      }
+    };
+    collect(document);
+    return masks.filter((mask) => mask.width > 0 && mask.height > 0);
+  }
+
+  function annotationCaptureFailure(capture) {
+    if (capture?.error === 'Annotation tab is not ready for screenshot'
+      || capture?.error === 'Annotation tab changed') return 'annotationScreenshotTabNotReady';
+    if (capture?.error === 'Page moved during screenshot') return 'annotationScreenshotPageMoved';
+    if (capture?.error === 'Element screenshot is too large') return 'annotationScreenshotTooLarge';
+    return 'annotationScreenshotFailed';
+  }
+
+  function showAnnotation(target, element, eventId, capture, failure) {
+    closeAnnotation();
+    annotationEventId = eventId;
+    annotationHost = document.createElement('div');
+    annotationHost.id = 'od-clipper-annotation';
+    annotationHost.style.cssText = 'position:fixed;z-index:2147483647;inset:0;background:rgba(0,0,0,0.22);display:grid;place-items:center;';
+    // Keep the cropped image URL out of the host page's DOM APIs. The content
+    // script retains the shadow root reference for review controls.
+    const ui = annotationHost.attachShadow({ mode: 'closed' });
+    setHTML(ui, `<style>
+      .card { width:min(430px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;box-sizing:border-box;background:#202020;color:#f5f5f5;padding:20px;border:1px solid #ffffff1c;border-radius:16px;font:14px/1.5 system-ui,sans-serif;box-shadow:0 20px 60px #0008; }
+      .header { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px; }
+      .header strong { font-size:16px;font-weight:650;letter-spacing:-0.02em; }
+      .preview { display:block;width:100%;max-height:min(38vh,260px);object-fit:contain;background:#111;margin:0 0 16px;border-radius:10px; }
+      .preview[hidden] { display:none; }
+      .capture-status,.submit-error { margin:0 0 12px;color:#bebebe;font-size:12px; }
+      .capture-status:empty,.submit-error:empty { display:none; }
+      .submit-error { color:#ffc1b9; }
+      textarea { width:100%;min-height:112px;box-sizing:border-box;resize:vertical;padding:12px;color:#202020;background:#fff;border:1px solid #aaa;border-radius:9px;font:14px/1.5 system-ui,sans-serif; }
+      textarea:focus-visible,button:focus-visible { outline:2px solid #a9ceff;outline-offset:2px; }
+      .actions { display:flex;gap:8px;justify-content:flex-end;margin-top:16px; }
+      button { font:inherit;padding:9px 14px;cursor:pointer;border:0;border-radius:8px; }
+      [data-act="close"] { padding:4px 8px;background:transparent;color:#bebebe;font-size:21px;line-height:1; }
+      [data-act="cancel"] { background:#ffffff18;color:#f5f5f5; }
+      [data-act="send"] { background:#f5f5f5;color:#202020;font-weight:650; }
+      [data-act="send"]:disabled { opacity:.5;cursor:default; }
+    </style><div class="card" role="dialog" aria-modal="true" aria-label="${esc(t('annotateElement'))}">
+      <div class="header"><strong>${esc(t('annotateElement'))}</strong><button data-act="close" type="button" aria-label="${esc(t('close'))}">×</button></div>
+      <img class="preview" alt="${esc(t('annotationScreenshotPreview'))}" hidden />
+      <p class="capture-status" role="status"></p>
+      ${element.localName === 'iframe' ? `<button data-act="inside-frame" type="button">${esc(t('annotationInsideFrame'))}</button>` : ''}
+      <textarea maxlength="2000" aria-label="${esc(t('annotationNote'))}" placeholder="${esc(t('annotationNote'))}"></textarea>
+      <p class="submit-error" role="alert" aria-live="polite"></p>
+      <div class="actions"><button data-act="cancel" type="button">${esc(t('cancel'))}</button><button data-act="send" type="button">${esc(t('annotationSend'))}</button></div>
+    </div>`);
+    document.documentElement.appendChild(annotationHost);
+    const textarea = ui.querySelector('textarea');
+    const send = ui.querySelector('[data-act="send"]');
+    const preview = ui.querySelector('.preview');
+    const status = ui.querySelector('.capture-status');
+    const submitError = ui.querySelector('.submit-error');
+    let crop = capture?.ok ? capture.cropDataUrl : null;
+    let captureFailure = failure || annotationCaptureFailure(capture);
+    let submitting = false;
+    const renderPreview = () => {
+      preview.hidden = !crop;
+      preview.src = crop || '';
+      send.disabled = submitting;
+      status.textContent = crop ? (capture?.textHidden ? t('annotationTextHidden') : '')
+        : t(captureFailure);
+    };
+    renderPreview();
+    const cancel = () => closeAnnotation();
+    ui.querySelector('[data-act="close"]').addEventListener('click', cancel);
+    ui.querySelector('[data-act="cancel"]').addEventListener('click', cancel);
+    // Closed-shadow clicks retarget to the host outside the shadow root.
+    // Do not mistake a click on a dialog button for a backdrop click.
+    ui.addEventListener('click', (event) => event.stopPropagation());
+    annotationHost.addEventListener('click', (event) => {
+      if (event.target === annotationHost) cancel();
+    });
+    textarea.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') cancel();
+    });
+    send.addEventListener('click', async () => {
+      const note = textarea.value.trim();
+      if (!note) {
+        submitError.textContent = t('annotationEmpty');
+        textarea.focus();
+        return;
+      }
+      if (submitting) return;
+      if (!annotationConnected(element)
+        || annotationReviewedUrl(location.href) !== target.url
+        || JSON.stringify(annotationTarget(element)) !== JSON.stringify(target)) {
+        crop = null;
+        captureFailure = 'annotationScreenshotFailed';
+        renderPreview();
+        void chrome.runtime.sendMessage({ type: 'odAnnotation:discard', eventId });
+        submitError.textContent = t('annotationSensitive');
+        return;
+      }
+      submitError.textContent = '';
+      submitting = true;
+      send.disabled = true;
+      const result = await chrome.runtime.sendMessage({ type: 'odAnnotation:submit', eventId, target, note,
+        omitUrlDetails: false, omitScreenshot: !crop }).catch(() => null);
+      if (result?.ok) {
+        closeAnnotation();
+        toast(t('annotationSent', { project: result.projectName || result.projectId,
+          conversation: result.conversationName || result.conversationId }));
+        if (result.chatUrl) {
+          const receipt = document.createElement('div');
+          receipt.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:2147483647;background:#202020;color:white;padding:16px;border-radius:10px;font:14px system-ui;box-shadow:0 4px 24px #0006;';
+          const link = document.createElement('a');
+          link.href = result.chatUrl; link.target = '_blank'; link.rel = 'noopener noreferrer';
+          link.textContent = t('annotationViewChat'); link.style.cssText = 'color:#a9ceff;margin:0 12px;';
+          const label = document.createElement('span');
+          label.textContent = t('annotationSent', { project: result.projectName || result.projectId,
+            conversation: result.conversationName || result.conversationId });
+          const close = document.createElement('button'); close.textContent = '×';
+          close.addEventListener('click', () => receipt.remove());
+          receipt.append(label, link, close); document.documentElement.appendChild(receipt);
+        }
+      } else {
+        submitting = false;
+        renderPreview();
+        submitError.textContent = t('failed', { error: result?.error || t('annotationUnpaired') });
+        textarea.focus();
+      }
+    });
+    ui.querySelector('[data-act="inside-frame"]')?.addEventListener('click', async () => {
+      if (!annotationConnected(element) || !element.contentWindow) return;
+      const requested = await chrome.runtime.sendMessage({ type: 'odAnnotation:frameRequest' }).catch(() => null);
+      if (!requested?.ok) { submitError.textContent = t('annotationFrameUnavailable'); return; }
+      const nonce = requested.nonce;
+      const receive = async (event) => {
+        if (event.source !== element.contentWindow || event.data?.type !== 'odAnnotation:frameAck'
+          || event.data.nonce !== nonce) return;
+        window.removeEventListener('message', receive);
+        clearTimeout(timer);
+        if (!annotationConnected(element)) return;
+        closeAnnotation();
+        const result = await chrome.runtime.sendMessage({ type: 'odAnnotation:frameConfirm', nonce, proof: event.data.proof });
+        if (!result?.ok) toast(t('annotationFramePickContainer'));
+      };
+      const timer = setTimeout(() => { window.removeEventListener('message', receive);
+        submitError.textContent = t('annotationFrameUnavailable'); }, 3000);
+      window.addEventListener('message', receive);
+      element.contentWindow.postMessage({ type: 'odAnnotation:frameChallenge', nonce }, '*');
+    });
+    textarea.focus();
+  }
+
+  async function commitPick(el) {
+    if (pickMode === 'capture') return commitCapture(el);
+    if (annotationPendingPick) return;
+    annotationPendingPick = true;
+    const generation = ++annotationPickGeneration;
+    try {
+      const target = annotationTarget(el);
+      endElementPick();
+      if (!target) return toast(t('annotationSensitive'));
+      const eventId = crypto.randomUUID();
+      let captureFailure = 'annotationScreenshotFailed';
+      const rect = target.scope ? null : annotationCaptureRect(el, (reason) => { captureFailure = reason; });
+      if (target.scope) {
+        captureFailure = 'annotationScopedScreenshot';
+        const reviewed = await chrome.runtime.sendMessage({ type: 'odAnnotation:review', eventId, target });
+        if (!reviewed?.ok) return toast(t('annotationDocumentChanged'));
+      }
+      let capture = null;
+      if (rect) {
+        await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+        try {
+          capture = await chrome.runtime.sendMessage({
+            type: 'odAnnotation:capture', eventId, target,
+            rect, maskRects: annotationMaskRects(rect),
+            viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
+            scrollX: window.scrollX, scrollY: window.scrollY,
+          });
+        } catch { /* Screenshot is optional; the note and context can still enter the draft. */ }
+      }
+      if (generation !== annotationPickGeneration
+        || !annotationConnected(el)
+        || annotationReviewedUrl(location.href) !== target.url
+        || JSON.stringify(annotationTarget(el)) !== JSON.stringify(target)) {
+        void chrome.runtime.sendMessage({ type: 'odAnnotation:discard', eventId });
+        return;
+      }
+      showAnnotation(target, el, eventId, capture, rect ? annotationCaptureFailure(capture) : captureFailure);
+    } finally {
+      annotationPendingPick = false;
+    }
+  }
+
+  async function startAnnotationPick() {
+    if (!topDocument && !childAnnotationArmed) return;
+    const status = await chrome.runtime.sendMessage({ type: 'odAnnotation:status' }).catch(() => null);
+    if (!status?.ok) return toast(t('annotationUnpaired'));
+    startElementPick('annotation');
+  }
+
   // Capture the picked element as ONE self-contained HTML asset (styles + its
   // own images inlined) — no screenshot, no separate markup, so the saved card
   // is a single HTML file that opens and shares as the element. We mark the live
@@ -841,9 +1347,11 @@
     toast(res.deduped ? t('elementAlreadyInLibrary') : t('elementSaved'));
   }
 
-  function startElementPick() {
-    if (pickActive) return;
+  function startElementPick(mode = 'capture') {
+    if (pickActive) endElementPick();
+    closeAnnotation();
     endRegionPick(); // on-page picking surfaces are mutually exclusive
+    pickMode = mode;
     pickActive = true;
     currentTarget = null;
     buildPicker(); // wires mouse/wheel listeners on the surface
@@ -1597,9 +2105,111 @@
     if (hoveredImg) hideImageBadge();
   }
 
+  // Read-only inspection runs in the isolated content world. Never pass a token,
+  // script, expression, or page event through this boundary.
+  const INSPECT_MAX_CHARS = 450 * 1024;
+  const INSPECT_MAX_NODES = 4000;
+  const INSPECT_EXCLUDED = 'script,style,noscript,template,iframe,object,embed,[contenteditable],[data-sensitive],[hidden],[inert],[aria-hidden="true"]';
+  const inspectEscape = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const inspectSecret = /(?:password|passwd|passphrase|secret|token|api[_-]?key|authorization|session|credential|otp|one.time|auth.code|bearer)\s*[:=]|(?:eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+|\b(?:sk-|gh[opsur]_|AKIA)[A-Za-z0-9_-]{16,}\b|bearer\s+\S+)/i;
+
+  function inspectMarkup(root) {
+    let count = 0;
+    let length = 0;
+    let truncated = false;
+    const parts = [];
+    let reservedClosers = 0;
+    const append = (text) => {
+      if (length + reservedClosers + text.length > INSPECT_MAX_CHARS) { truncated = true; return false; }
+      parts.push(text);
+      length += text.length;
+      return true;
+    };
+    const walk = (node, depth) => {
+      if (truncated || count >= INSPECT_MAX_NODES || depth > 24) { truncated = true; return; }
+      if (node.nodeType === Node.TEXT_NODE) {
+        const value = node.nodeValue?.replace(/\s+/g, ' ').trim();
+        if (value && !inspectSecret.test(value)) append(inspectEscape(value.slice(0, 1000)));
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const el = node;
+      if (el.matches(INSPECT_EXCLUDED) || el.closest('[id^="od-clipper-"]')
+        || !/^[a-z][a-z0-9-]*$/.test(el.localName) || el.namespaceURI !== 'http://www.w3.org/1999/xhtml') return;
+      const style = getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return;
+      count += 1;
+      const field = el.matches('input,textarea,select');
+      const attrs = field ? '' : ['id', 'class', 'role'].flatMap((key) => {
+        const value = el.getAttribute(key);
+        return value && value.length <= 128 && !inspectSecret.test(value) && !/[\u0000-\u001f<>]/.test(value)
+          ? [` ${key}="${inspectEscape(value)}"`] : [];
+      }).join('');
+      const open = `<${el.localName}${attrs}>`;
+      const close = `</${el.localName}>`;
+      if (length + reservedClosers + open.length + close.length > INSPECT_MAX_CHARS) {
+        truncated = true;
+        return;
+      }
+      append(open);
+      reservedClosers += close.length;
+      if (!field) for (const child of el.childNodes) walk(child, depth + 1);
+      reservedClosers -= close.length;
+      append(close);
+    };
+    walk(root, 0);
+    return { html: parts.join(''), truncated };
+  }
+
+  function readInspect(message) {
+    if (message.url !== location.href || annotationReviewedUrl(location.href) !== location.href) {
+      return { ok: false, error: 'Document changed' };
+    }
+    if (message.operation !== 'snapshot' && message.operation !== 'inspect') {
+      return { ok: false, error: 'Unsupported read' };
+    }
+    let target = document.documentElement;
+    if (message.operation === 'inspect') {
+      if (typeof message.selector !== 'string' || !message.selector || message.selector.length > 512) {
+        return { ok: false, error: 'Invalid selector' };
+      }
+      try { target = document.querySelector(message.selector); } catch { target = null; }
+      if (!target || target.closest(INSPECT_EXCLUDED) || target.closest('[id^="od-clipper-"]')) {
+        return { ok: false, error: 'Element unavailable' };
+      }
+    }
+    if (message.url !== location.href) return { ok: false, error: 'Document changed' };
+    const result = inspectMarkup(target);
+    if (message.url !== location.href) return { ok: false, error: 'Document changed' };
+    return { ok: true, result: { ...result, url: location.href,
+      title: inspectSecret.test(document.title) ? '' : document.title.slice(0, 256) } };
+  }
+
+  // Discovery alone grants no authority; the worker corroborates both browser senders.
+  window.addEventListener('message', async (event) => {
+    if (topDocument || event.source !== window.parent || event.data?.type !== 'odAnnotation:frameChallenge'
+      || typeof event.data.nonce !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(event.data.nonce)
+      || !annotationReviewedUrl(location.href)) return;
+    const result = await chrome.runtime.sendMessage({ type: 'odAnnotation:frameIdentity',
+      nonce: event.data.nonce, url: location.href }).catch(() => null);
+    if (result?.ok) window.parent.postMessage({ type: 'odAnnotation:frameAck', nonce: event.data.nonce, proof: result.proof }, '*');
+  });
+
   // --- messages from the popup / service worker ----------------------------
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (!topDocument && !['odAnnotation:arm', 'odAnnotation:identify', 'odClipper:ping'].includes(msg?.type)) return false;
     switch (msg && msg.type) {
+      case 'odAnnotation:identify':
+        void chrome.runtime.sendMessage({ type: 'odAnnotation:identity', nonce: msg.nonce, url: location.href })
+          .then(result => sendResponse({ ok: result?.ok === true }));
+        return true;
+      case 'odAnnotation:arm':
+        if (topDocument || !annotationReviewedUrl(location.href)) { sendResponse({ ok: false }); return false; }
+        childAnnotationArmed = true;
+        startElementPick('annotation');
+        sendResponse({ ok: true });
+        return false;
       case 'odClipper:setToolbar':
         setVisible(msg.mode === 'toggle' ? !toolbarVisible : msg.visible, true);
         sendResponse({ ok: true, visible: toolbarVisible });
@@ -1611,6 +2221,9 @@
         startElementPick();
         sendResponse({ ok: true });
         return false;
+      case 'odClipper:annotateElement':
+        void startAnnotationPick().then(() => sendResponse({ ok: true }));
+        return true;
       case 'odClipper:pickImages':
         pickImages();
         sendResponse({ ok: true });
@@ -1629,8 +2242,42 @@
       case 'odClipper:ping':
         // Liveness probe — lets the popup distinguish "no content script" from a
         // genuinely broken page and decide whether a reload is warranted.
-        sendResponse({ ok: true, alive: true });
+        sendResponse({ ok: true, alive: true, build: 'annotation-editable-20260930' });
         return false;
+      case 'odInspect:identify':
+        if (typeof msg.nonce !== 'string' || !/^[a-f0-9-]{36}$/.test(msg.nonce)) return false;
+        void chrome.runtime.sendMessage({ type: 'odInspect:identity', nonce: msg.nonce, url: location.href })
+          .then((result) => sendResponse({ ok: result?.ok === true }))
+          .catch(() => sendResponse({ ok: false }));
+        return true;
+      case 'odInspect:read':
+        sendResponse(readInspect(msg));
+        return false;
+      case 'odInspect:screenshotReady': {
+        const rect = { x: 0, y: 0, width: innerWidth, height: innerHeight };
+        const unsafe = annotationHasOpaqueContent(rect);
+        sendResponse({ ok: msg.url === location.href && !unsafe,
+          ...(unsafe ? { error: 'Screenshot has opaque content' } : {
+            maskRects: annotationMaskRects(rect), viewportWidth: innerWidth, viewportHeight: innerHeight,
+          }) });
+        return false;
+      }
+      case 'odClipper:verifyAfterCapture': {
+        const { url, selector, rect, maskRects, viewportWidth, viewportHeight, scrollX, scrollY } = msg.annotation || {};
+        let element = null;
+        if (typeof selector === 'string' && selector.length <= 1024) {
+          try { element = document.querySelector(selector); } catch { /* A changed selector invalidates the capture. */ }
+        }
+        const current = element && annotationSelector(element) === selector
+          ? annotationCaptureRect(element) : null;
+        sendResponse({ ok: annotationTextSuppressed() && url === location.href && current && rect
+          && current.x === rect.x && current.y === rect.y
+          && current.width === rect.width && current.height === rect.height
+          && innerWidth === viewportWidth && innerHeight === viewportHeight
+          && window.scrollX === scrollX && window.scrollY === scrollY
+          && JSON.stringify(annotationMaskRects(current)) === JSON.stringify(maskRects) });
+        return false;
+      }
       case 'odClipper:hideForCapture': {
         // Pull every piece of our on-page UI out of frame for the screenshot:
         // the bar, the cursor-following image badge, and any visible toast.
@@ -1638,12 +2285,35 @@
         applyVisibility();
         hideImageBadge();
         toastHost.style.display = 'none';
-        requestAnimationFrame(() => requestAnimationFrame(() => sendResponse({ ok: true })));
+        if (annotationHost) annotationHost.style.display = 'none';
+        suppressAnnotationText();
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (msg.annotation) {
+            const { url, selector, rect } = msg.annotation;
+            let element = null;
+            if (typeof selector === 'string' && selector.length <= 1024) {
+              try { element = document.querySelector(selector); } catch { /* Invalid selectors cannot pass paint acknowledgment. */ }
+            }
+            const current = element && annotationSelector(element) === selector
+              ? annotationCaptureRect(element) : null;
+            const maskRects = current ? annotationMaskRects(current) : [];
+            if (!annotationTextSuppressed() || url !== location.href || !current || !rect
+              || current.x !== rect.x || current.y !== rect.y
+              || current.width !== rect.width || current.height !== rect.height
+              || JSON.stringify(maskRects) !== JSON.stringify(msg.annotation.maskRects)) {
+              sendResponse({ ok: false });
+              return;
+            }
+          }
+          sendResponse({ ok: true });
+        }));
         return true; // async response
       }
       case 'odClipper:restoreAfterCapture':
+        restoreAnnotationText();
         hiddenForCapture = false;
         applyVisibility();
+        if (annotationHost) annotationHost.style.display = 'grid';
         sendResponse({ ok: true });
         return false;
       default:

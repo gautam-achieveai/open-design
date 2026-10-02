@@ -1007,6 +1007,33 @@ test('attachPiRpcSession rejects symlink escape outside uploadRoot', async () =>
   }
 });
 
+test('attachPiRpcSession reads browser pixels only inside its scoped image root', async () => {
+  const fsp = await import('node:fs/promises');
+  const root = await fsp.mkdtemp(path.join((await import('node:os')).tmpdir(), 'pi-browser-images-'));
+  const uploadRoot = path.join(root, 'uploads');
+  const browserImageRoot = path.join(root, 'run-images');
+  await fsp.mkdir(uploadRoot);
+  await fsp.mkdir(browserImageRoot);
+  const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const browserFile = path.join(browserImageRoot, '0.png');
+  await fsp.writeFile(browserFile, bytes);
+  try {
+    const child = createMockChild();
+    attachPiRpcSession({ child: child as unknown as ChildProcess, prompt: 'review',
+      send: () => {}, imagePaths: [browserFile], uploadRoot, browserImageRoot });
+    const chunks: string[] = [];
+    child.stdin.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
+    const buffered = child.stdin.read();
+    if (buffered) chunks.push(buffered.toString());
+    const promptLine = chunks.join('').trim().split('\n').find((line) => {
+      try { return parseJsonRecord(line).type === 'prompt'; } catch { return false; }
+    });
+    assert.ok(promptLine);
+    const parsed = parseJsonRecord(promptLine);
+    assert.equal((parsed.images as Array<{ data: string }> | undefined)?.[0]?.data, bytes.toString('base64'));
+  } finally { await fsp.rm(root, { recursive: true, force: true }); }
+});
+
 test('attachPiRpcSession allows symlink inside uploadRoot', async () => {
   const fsp = await import('node:fs/promises');
   const tmpDir = await import('node:os').then((m) => m.tmpdir());

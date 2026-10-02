@@ -11,6 +11,7 @@ import { strategyTaskTurnsForRunIds } from '../../strategies/task-store.js';
 
 import { registerProjectCommentRoutes } from './comments.js';
 import { cancelRunsOwnedBy } from './cancel-owned-runs.js';
+import { copyEdgeChatEvidence, hasEdgeChatEvidence } from '../../services/edge-chat-message.js';
 import {
   compactAdjacentMessageAgentEvents,
   countMessages,
@@ -300,9 +301,10 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
         // position so role/content ordering is preserved. Drop the source's
         // run pointers (runId/lastRunEventId) but keep each turn's verdict —
         // see `settledForkVerdict`.
+        const copiedMessageId = randomId();
         upsertMessage(db, conv.id, {
           ...m,
-          id: randomId(),
+          id: copiedMessageId,
           runId: undefined,
           runStatus: settledForkVerdict(m.runStatus),
           lastRunEventId: undefined,
@@ -312,6 +314,10 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
               ? { title: inheritedTitle, conversationId: seedFromConversationId }
               : undefined,
         });
+        if (sourceConversation && typeof m.id === 'string'
+          && getMessage(db, m.id, sourceConversation.id)?.id === m.id) {
+          copyEdgeChatEvidence(db, m.id, copiedMessageId);
+        }
       });
     }
     res.json({ conversation: conv });
@@ -698,6 +704,9 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     // message with this id exists in ANOTHER conversation, reject rather than
     // rewrite the wrong row through this endpoint (looper review on #6418).
     const existing = getMessage(db, req.params.mid, req.params.cid);
+    if (existing && hasEdgeChatEvidence(db, req.params.mid)) {
+      return sendApiError(res, 409, 'CONFLICT', 'reviewed browser evidence cannot be overwritten');
+    }
     if (existing === null && getMessage(db, req.params.mid) !== null) {
       return res.status(404).json({ error: 'message not found' });
     }

@@ -940,8 +940,13 @@ import { registerRunRoutes } from './routes/runs.js';
 import { registerStrategyRolloutRoutes } from './routes/strategy-rollout.js';
 import { registerTerminalRoutes } from './routes/terminal.js';
 import { registerBrowserSessionRoutes } from './routes/browser-sessions.js';
+import { registerBrowserControlRoutes } from './routes/browser-control.js';
+import { registerEdgeAnnotationRoutes } from './routes/edge-annotations.js';
+import { createEdgeAnnotationBroker } from './services/edge-annotation-broker.js';
+import { appendReviewedCliChatMessage, appendReviewedEdgeChatMessage, claimedEdgeAnnotationContexts, claimedEdgeAnnotationImages, discardPendingEdgeAnnotation, edgeChatImageForMessage, listPendingEdgeAnnotations, pendingEdgeAnnotationContext, pendingEdgeAnnotationImage, claimedEdgeAnnotationContext, storePendingEdgeAnnotation, storePendingNativeAnnotation } from './services/edge-chat-message.js';
 import { createTerminalService } from './terminals.js';
 import { createBrowserSessionService } from './browser-sessions.js';
+import { createBrowserCommandBroker } from './services/browser-command-broker.js';
 import { registerSocialShareRoutes } from './routes/social-share.js';
 import { registerOpenDesignPublicMetadataRoutes } from './routes/open-design-public-metadata.js';
 import { registerWhatsNewRoutes } from './routes/whats-new.js';
@@ -3416,6 +3421,15 @@ export async function startServer({
     // NOTE: `req.path` here is mount-relative (the `/api` prefix is stripped),
     // so the predicate matches `/library/ingest`, not `/api/library/ingest`.
     if (isZeroConfigClipperLibraryRequest(req.method, req.path, req.headers.origin)) {
+      return next();
+    }
+
+    // Pairing gives an extension an expiring project-and-tab capability. Only
+    // these exact operations may reach their own Origin + capability checks;
+    // the Library's zero-config extension trust does not extend to comments.
+    if ((/^\/edge-annotations\/(?:redeem|status|submit|revoke)$/.test(req.path)
+      || /^\/edge-annotations\/inspect\/(?:poll|result)$/.test(req.path))
+      && (req.method === 'POST' || req.method === 'OPTIONS')) {
       return next();
     }
 
@@ -8014,6 +8028,8 @@ export async function startServer({
   // killed on daemon shutdown — see shutdownDaemonRuns below.
   const terminalService = createTerminalService();
   const browserSessionService = createBrowserSessionService();
+  const browserControl = createBrowserCommandBroker();
+  const edgeAnnotations = createEdgeAnnotationBroker();
 
   // Tracks runs whose finalized assistant message has already been forwarded
   // so repeated message updates only enter the reporter once. Terminal
@@ -8638,6 +8654,51 @@ export async function startServer({
     projectStore: projectStoreDeps,
     projectFiles: projectFileDeps,
     authorizeProjectRequest,
+  });
+  registerBrowserControlRoutes(app, {
+    db,
+    http: httpDeps,
+    projectStore: projectStoreDeps,
+    browserControl,
+    authorizeProjectRequest,
+  });
+  registerEdgeAnnotationRoutes(app, {
+    db,
+    broker: edgeAnnotations,
+    getDaemonUrl: () => daemonUrlRef.current,
+    authorizeProjectRequest,
+    sendApiError,
+    verifyWorkspaceContext: (req, projectId) => verifyProjectWorkspaceContextForRequest(
+      req, projectId, { fresh: true },
+    ),
+    appendChatMessage: (input) => appendReviewedEdgeChatMessage(db, input),
+    storePendingAnnotation: (input) => storePendingEdgeAnnotation(db, input),
+    storePendingNativeAnnotation: (input) => storePendingNativeAnnotation(db, input),
+    listPendingAnnotations: (projectId, conversationId) => listPendingEdgeAnnotations(db, projectId, conversationId),
+    discardPendingAnnotation: (projectId, conversationId, id) => discardPendingEdgeAnnotation(db, projectId, conversationId, id),
+    readPendingImage: (projectId, conversationId, id) => pendingEdgeAnnotationImage(db, projectId, conversationId, id),
+    readPendingContext: (projectId, conversationId, id) => pendingEdgeAnnotationContext(db, projectId, conversationId, id),
+    readClaimedContext: (projectId, conversationId, messageId, id) =>
+      claimedEdgeAnnotationContext(db, projectId, conversationId, messageId, id),
+    emitPendingAnnotation: (projectId, conversationId) => emitProjectEvent(projectId, {
+      type: 'annotation-draft-available', projectId, conversationId, at: Date.now(),
+    }),
+    postChatMessage: (input) => appendReviewedCliChatMessage(db, input),
+    readChatImage: (projectId, conversationId, messageId, imageId) =>
+      edgeChatImageForMessage(db, projectId, conversationId, messageId, imageId),
+    verifyPairedWorkspace: async (workspace, projectId) => {
+      const binding = getWorkspaceProjectByProjectId(db, projectId);
+      if (!binding || binding.workspaceId !== workspace.workspaceId || binding.resourceState !== 'active') return false;
+      if (process.env.OD_WORKSPACE_CONTEXT_SOURCE?.trim() !== 'vela') return true;
+      const directory = await fetchFreshMutationWorkspaceDirectory().catch(() => ({ ok: false, items: [] }));
+      return directory.ok && directory.items.some((item) =>
+        item.workspaceId === workspace.workspaceId
+        && item.workspaceMemberId === workspace.workspaceMemberId
+        && item.memberStatus === 'active' && item.lifecycleState === 'active');
+    },
+    emitChatMessage: (projectId, conversationId, messageId) => emitProjectEvent(projectId, {
+      type: 'conversation-message-created', projectId, conversationId, messageId, at: Date.now(),
+    }),
   });
   // OD Library — global asset registry (clipper ingest, grid, pairing, apply).
   registerLibraryRoutes(app, {
@@ -11009,12 +11070,24 @@ export async function startServer({
         odNextTaskInputSnapshot = null;
       }
     };
+    const browserImageDir = path.join(RUNTIME_DATA_DIR, 'browser-evidence', run.id);
+    const cleanupBrowserImages = () => {
+      try { fs.rmSync(browserImageDir, { recursive: true, force: true }); }
+      catch (error) { console.warn('[browser-evidence] image cleanup failed', error); }
+    };
+    const previousBrowserImageFinalizer = run.onFinalize;
+    run.onFinalize = () => {
+      try { previousBrowserImageFinalizer?.(); }
+      finally { cleanupBrowserImages(); }
+    };
     const finishRun = (status, code = null, signal = null) => {
+      cleanupBrowserImages();
       cleanupOdNextRunInputProjection();
       finalizeRunMessageEvents(db, run);
       return design.runs.finish(run, status, code, signal);
     };
     const failRun = (code, message) => {
+      cleanupBrowserImages();
       cleanupOdNextRunInputProjection();
       return design.runs.fail(run, code, message);
     };
@@ -11227,6 +11300,35 @@ export async function startServer({
         'OD Next request Run is missing its immutable task input snapshot.',
       );
     }
+    const selectedBrowserImageIds = Array.isArray(chatBody.annotationImageIds)
+      ? chatBody.annotationImageIds
+      : [];
+    let browserImagePaths = [];
+    if (selectedBrowserImageIds.length > 0) {
+      if (odNextTaskInputSnapshot) return failRun('BROWSER_EVIDENCE_UNAVAILABLE',
+        'This run cannot accept browser screenshots after its input snapshot was frozen.');
+      if (!def.supportsImagePaths || typeof projectId !== 'string'
+        || typeof conversationId !== 'string' || typeof chatBody.userMessageId !== 'string') {
+        return failRun('IMAGE_AGENT_UNSUPPORTED', 'Selected agent cannot receive browser screenshots.');
+      }
+      try {
+        const images = claimedEdgeAnnotationImages(db, projectId, conversationId,
+          chatBody.userMessageId, selectedBrowserImageIds);
+        if (images.some((image) => image.length > 1024 * 1024 || image.length < 24
+          || !image.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')))) {
+          return failRun('BAD_REQUEST', 'Browser screenshot is not a bounded PNG.');
+        }
+        fs.mkdirSync(browserImageDir, { recursive: true, mode: 0o700 });
+        browserImagePaths = images.map((image, index) => {
+          const file = path.join(browserImageDir, `${index}.png`);
+          fs.writeFileSync(file, image, { flag: 'wx', mode: 0o600 });
+          return file;
+        });
+      } catch (error) {
+        return failRun('BROWSER_EVIDENCE_UNAVAILABLE',
+          error instanceof Error ? error.message : 'Browser screenshot is unavailable.');
+      }
+    }
     const { safeImages, oversizedImages, failedImages } =
       resolveSafePromptImagePaths(odNextTaskInputSnapshot ? [] : imagePaths);
     if (oversizedImages.length > 0) {
@@ -11241,10 +11343,13 @@ export async function startServer({
         'Failed to read one or more image attachments.',
       );
     }
-    const transportSourceImages = odNextTaskInputSnapshot?.imagePaths ?? safeImages;
+    const transportSourceImages = odNextTaskInputSnapshot?.imagePaths ?? [...safeImages, ...browserImagePaths];
     const amrStagedImages =
       def.id === 'amr' && !odNextTaskInputSnapshot
-        ? await stageAmrImagePaths(cwd ?? PROJECT_ROOT, safeImages, UPLOAD_DIR)
+        ? [
+            ...await stageAmrImagePaths(cwd ?? PROJECT_ROOT, safeImages, UPLOAD_DIR),
+            ...browserImagePaths,
+          ]
         : transportSourceImages;
 
     // Project-scoped attachments: project-relative paths inside cwd. Each
@@ -11330,11 +11435,15 @@ export async function startServer({
     // throw included — revokes the capability token instead of leaking it for
     // the token TTL. Idempotent with the explicit pre-spawn/child-close cleanup.
     if (toolTokenGrant) {
+      const previousOnFinalize = run.onFinalize;
       run.onFinalize = () => {
-        revokeToolToken('run_finalized');
-        const sinkRunId = toolTokenGrant.runId ?? runId;
-        activeChatAgentEventSinks.delete(sinkRunId);
-        activeChatRunHandles.delete(sinkRunId);
+        try { previousOnFinalize?.(); }
+        finally {
+          revokeToolToken('run_finalized');
+          const sinkRunId = toolTokenGrant.runId ?? runId;
+          activeChatAgentEventSinks.delete(sinkRunId);
+          activeChatRunHandles.delete(sinkRunId);
+        }
       };
     }
     const runtimeToolPrompt = createAgentRuntimeToolPrompt(daemonUrl, toolTokenGrant);
@@ -12129,6 +12238,25 @@ export async function startServer({
             resumeContinuationSeed.anchorAssistantMessageId,
           )
         : null;
+    let browserContextPrompt = '';
+    if (Array.isArray(chatBody.annotationIds) && chatBody.annotationIds.length > 0) {
+      if (odNextTaskInputSnapshot || strategyTaskAtStart) return failRun('BROWSER_EVIDENCE_UNAVAILABLE',
+        'Browser annotations are unavailable for frozen strategy input.');
+      if (typeof projectId !== 'string' || typeof conversationId !== 'string'
+        || typeof chatBody.userMessageId !== 'string') return failRun('BROWSER_EVIDENCE_UNAVAILABLE',
+        'Browser annotations require a bound user message.');
+      try {
+        const contexts = claimedEdgeAnnotationContexts(db, projectId, conversationId,
+          chatBody.userMessageId, chatBody.annotationIds);
+        browserContextPrompt = contexts.map((context, index) =>
+          `Attachment ${index + 1}: annotation-context.json\n`
+          + `External reference: browser:${new URL(context.url).origin} (not an editable project file).\n`
+          + `${JSON.stringify(context, null, 2)}`).join('\n\n');
+      } catch (error) {
+        return failRun('BROWSER_EVIDENCE_UNAVAILABLE',
+          error instanceof Error ? error.message : 'Browser annotation context is unavailable.');
+      }
+    }
     const userRequestPrompt = isOdNextInitialRun
       ? resolveOdNextRequestUserPrompt({
           message,
@@ -12369,7 +12497,7 @@ export async function startServer({
       echoGuard: agentEchoGuard,
       requestOrStageText: userRequestPrompt,
       projectAttachmentReferences: attachmentHint,
-      commentAttachmentReferences: commentHint,
+      commentAttachmentReferences: `${commentHint}${browserContextPrompt ? `\n\n# Browser annotation context (chat attachment)\n\n${browserContextPrompt}` : ''}`,
       imageReferences: promptImagePaths.map((p) => `@${p}`).join(' '),
       strategyInputStage: strategyTaskAtStart?.inputStage ?? null,
         });
@@ -12771,6 +12899,7 @@ export async function startServer({
     // drive a second close-handler pass that finalizes the run as failed before
     // the retry ever spawns.
     const tearDownAttemptForRetry = () => {
+      cleanupBrowserImages();
       cleanupOdNextRunInputProjection();
       // Snapshot the failing attempt's child + process group BEFORE we detach
       // them, so the reap targets THIS attempt's group and never the next one.
@@ -15688,6 +15817,7 @@ export async function startServer({
         },
         imagePaths: def.supportsImagePaths ? promptImagePaths : [],
         uploadRoot: odNextTaskInputSnapshot?.projectionDir ?? UPLOAD_DIR,
+        ...(browserImagePaths.length > 0 ? { browserImageRoot: browserImageDir } : {}),
       });
     } else if (def.streamFormat === 'acp-json-rpc') {
       const acpStageTimeoutMs = resolveAcpStageTimeoutMs(def.inactivityTimeoutMs);
@@ -17957,6 +18087,7 @@ export async function startServer({
     uploads: uploadDeps,
     node: nodeDeps,
     projectStore: projectStoreDeps,
+    browserControl,
     authorizeProjectRequest,
     authorizeProjectToolRequest,
     isApiTokenAuthorization,
@@ -18100,6 +18231,8 @@ export async function startServer({
       }
       await terminalService.shutdownActive();
       await browserSessionService.shutdownActive();
+      browserControl.shutdown();
+      edgeAnnotations.shutdown();
       await design.analytics.shutdown();
     };
     let server;

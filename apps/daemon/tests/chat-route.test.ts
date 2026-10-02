@@ -3579,6 +3579,80 @@ setInterval(() => {}, 1000);
     }
   });
 
+  it('delivers selected annotation JSON to the active agent turn without adding it to the visible note', async () => {
+    if (!process.env.OD_DATA_DIR) throw new Error('OD_DATA_DIR is required for annotation delivery tests');
+    const projectId = `proj-annotation-${randomUUID()}`;
+    const created = await fetch(`${baseUrl}/api/projects`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: projectId, name: 'Annotation delivery fixture' }),
+    });
+    expect(created.status).toBe(200);
+    const conversations = await fetch(`${baseUrl}/api/projects/${projectId}/conversations`);
+    const { conversations: items } = await conversations.json() as { conversations: Array<{ id: string }> };
+    const conversationId = items[0]?.id;
+    expect(conversationId).toBeTruthy();
+    const draftResponse = await fetch(`${baseUrl}/api/projects/${projectId}/edge-annotations/draft`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversationId, eventId: randomUUID(),
+        url: 'https://example.test/annotated-page', title: 'Annotated page', note: 'Make Save easier to see',
+        target: { selector: '#save', label: 'Save', text: 'Save', htmlHint: 'button',
+          position: { x: 12, y: 20, width: 80, height: 30 } },
+      }),
+    });
+    expect(draftResponse.status).toBe(200);
+    const { id: annotationId } = await draftResponse.json() as { id: string };
+    const captureDir = mkdtempSync(join(tmpdir(), 'od-browser-context-prompt-'));
+    tempDirs.push(captureDir);
+    const capturePath = join(captureDir, 'prompt.txt');
+    const previousCapturePath = process.env.OD_CAPTURE_PROMPT_PATH;
+    process.env.OD_CAPTURE_PROMPT_PATH = capturePath;
+    try {
+      await withFakeAgent('opencode', `
+const fs = require('node:fs');
+let prompt = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { prompt += chunk; });
+process.stdin.on('end', () => {
+  fs.writeFileSync(process.env.OD_CAPTURE_PROMPT_PATH, prompt, 'utf8');
+  console.log(JSON.stringify({ type: 'text', part: { text: 'Annotation received.' } }));
+});
+`, async () => {
+        const userMessageId = randomUUID();
+        const runResponse = await fetch(`${baseUrl}/api/runs`, { method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projectId, conversationId, agentId: 'opencode',
+            userMessageId, assistantMessageId: randomUUID(), clientRequestId: randomUUID(),
+            message: 'Make Save easier to see', currentPrompt: 'Make Save easier to see',
+            annotationIds: [annotationId], annotationImageIds: [],
+          }),
+        });
+        expect(runResponse.status).toBe(202);
+        const { runId } = await runResponse.json() as { runId: string };
+        expect((await waitForRunStatus(baseUrl, runId)).status).toBe('succeeded');
+        const prompt = readFileSync(capturePath, 'utf8');
+        expect(prompt).toContain('# Browser annotation context (chat attachment)');
+        expect(prompt).toContain('browser:https://example.test');
+        expect(prompt).toContain('not an editable project file');
+        expect(prompt).toContain('"url": "https://example.test/annotated-page"');
+        expect(prompt).toContain('"selector": "#save"');
+        const sqlite = new Database(resolve(process.env.OD_DATA_DIR!, 'app.sqlite'), { readonly: true });
+        try {
+          const row = sqlite.prepare('SELECT content FROM messages WHERE id = ?')
+            .get(userMessageId) as { content: string } | undefined;
+          expect(row?.content).toBe('Make Save easier to see');
+        } finally { sqlite.close(); }
+        const context = await fetch(`${baseUrl}/api/projects/${projectId}/conversations/${conversationId}`
+          + `/messages/${userMessageId}/annotation-context/${annotationId}`);
+        expect(context.status).toBe(200);
+        expect(await context.json()).toMatchObject({ url: 'https://example.test/annotated-page',
+          target: { selector: '#save' } });
+      });
+    } finally {
+      if (previousCapturePath == null) delete process.env.OD_CAPTURE_PROMPT_PATH;
+      else process.env.OD_CAPTURE_PROMPT_PATH = previousCapturePath;
+    }
+  });
+
   it('marks submitted discovery form answers as the active turn before the transcript', async () => {
     const captureDir = mkdtempSync(join(tmpdir(), 'od-form-answer-prompt-'));
     tempDirs.push(captureDir);

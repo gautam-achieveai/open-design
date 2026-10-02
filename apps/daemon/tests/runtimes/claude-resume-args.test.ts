@@ -30,6 +30,10 @@ describe('claude buildArgs session resume', () => {
     expect(args).not.toContain('--session-id');
   });
 
+  it('admits selected browser screenshot paths for the Claude image reader', () => {
+    expect((claudeAgentDef as { supportsImagePaths?: boolean }).supportsImagePaths).toBe(true);
+  });
+
   it('declares it resumes its session via the CLI', () => {
     expect(claudeAgentDef.resumesSessionViaCli).toBe(true);
   });

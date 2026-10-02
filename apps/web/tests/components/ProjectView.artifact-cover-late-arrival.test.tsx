@@ -400,6 +400,32 @@ describe('封面在终止帧之后才落地时,卡面必须自己换成快照', 
     ).toBeNull();
   });
 
+  it('re-reads the active conversation when an Edge chat message is posted', async () => {
+    renderProjectView();
+    await waitFor(() => expect(listMessages).toHaveBeenCalled());
+    const edgeMessage = { id: 'edge-message-1', role: 'user', content: 'Make Save clearer',
+      createdAt: Date.now(), chatImages: [{ id: 'edge-message-1', mimeType: 'image/png', bytes: 100, width: 10, height: 10 }] };
+    listMessages.mockResolvedValue([...finishedTurn(pendingRef), edgeMessage]);
+    vi.useFakeTimers();
+    const before = listMessages.mock.calls.length;
+    act(() => {
+      projectEventHandler()({ type: 'conversation-message-created', projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID, messageId: edgeMessage.id, at: Date.now() } as ProjectEvent);
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(149); });
+    expect(listMessages).toHaveBeenCalledTimes(before);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(listMessages).toHaveBeenCalledTimes(before + 1);
+    await expect(listMessages.mock.results.at(-1)?.value).resolves.toEqual(expect.arrayContaining([edgeMessage]));
+    const after = listMessages.mock.calls.length;
+    act(() => {
+      projectEventHandler()({ type: 'conversation-message-created', projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID, messageId: edgeMessage.id, at: Date.now() } as ProjectEvent);
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(150); });
+    expect(listMessages).toHaveBeenCalledTimes(after + 1);
+  });
+
   it('别的项目的同名事件不该惊动这条会话', async () => {
     renderProjectView();
     await waitFor(() => expect(listMessages).toHaveBeenCalled());

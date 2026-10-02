@@ -98,6 +98,23 @@ export interface ChatArtifactRefsChangedSsePayload {
   at?: number;
 }
 
+/** A browser annotation is ready for the exact conversation's draft; fetch its reviewed content separately. */
+export interface AnnotationDraftAvailableSsePayload {
+  type: 'annotation-draft-available';
+  projectId: string;
+  conversationId: string;
+  at: number;
+}
+
+/** Thin invalidation after a paired browser annotation becomes a user chat message. */
+export interface ConversationMessageCreatedSsePayload {
+  type: 'conversation-message-created';
+  projectId: string;
+  conversationId: string;
+  messageId: string;
+  at: number;
+}
+
 export const CHAT_SSE_PROTOCOL_VERSION = 1;
 
 export interface ChatSseStartPayload {

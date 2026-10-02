@@ -11,12 +11,13 @@ import { useState, type ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatComposer } from '../../../src/components/ChatComposer';
+import { I18nProvider } from '../../../src/i18n';
 import {
   composerDraftExtrasKey,
   saveComposerDraftExtras,
 } from '../../../src/runtime/chat/composer-draft';
 import type { ChatQuote } from '../../../src/runtime/chat/quote-selection';
-import { composerText, flushMounts, pressEnter } from '../../helpers/lexical-composer';
+import { composerText, flushMounts, pressEnter, typeAndSettle } from '../../helpers/lexical-composer';
 
 const KEY = 'od:chat-composer:draft:project-1:conv-1';
 const OTHER_KEY = 'od:chat-composer:draft:project-1:conv-2';
@@ -106,6 +107,145 @@ function QuoteHost({ storageKey = KEY }: { storageKey?: string }) {
     />
   );
 }
+
+describe('browser annotations wait in the chat draft', () => {
+  const first = '11111111-1111-4111-8111-111111111111';
+  const second = '22222222-2222-4222-8222-222222222222';
+  const annotation = (id: string, text: string) => ({
+    id, projectId: 'project-1', conversationId: 'conv-1', eventId: id,
+    text, hasScreenshot: true, createdAt: 1,
+  });
+
+  it('keeps captured evidence out of the body and stages its JSON alongside the note', async () => {
+    const onSend = vi.fn((..._args: Parameters<NonNullable<ComponentProps<typeof ChatComposer>['onSend']>>) => 'restore-draft' as const);
+    renderComposer({ conversationId: 'conv-1', annotationDrafts: [{
+      ...annotation(first, 'Change Save'), note: 'Change Save',
+      text: 'Change Save\n\nBrowser page: https://example.test/private\nDOM outline: button Save',
+      evidence: { url: 'https://example.test/private', target: { selector: '#save', text: 'Save',
+        label: 'button', htmlHint: 'button', position: { x: 0, y: 0, width: 80, height: 30 } } },
+    }], onSend });
+    await flushMounts();
+    await waitFor(() => expect(composerText()).toBe('Change Save'));
+    expect(composerText()).not.toContain('DOM outline');
+    expect(screen.getByTestId('staged-browser-annotation-notes').textContent).toContain('annotation-context.json');
+    pressEnter({ meta: true });
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]?.[3]).toMatchObject({ annotationIds: [first] });
+  });
+
+  it('does not append another conversation’s pending notes or crops while its list is refreshing', async () => {
+    window.localStorage.setItem(OTHER_KEY, 'Second conversation text');
+    renderComposer({ conversationId: 'conv-2', draftStorageKey: OTHER_KEY,
+      annotationDrafts: [annotation(first, 'Only first conversation')] });
+    await flushMounts();
+    expect(composerText()).toBe('Second conversation text');
+    expect(screen.queryByTestId('staged-browser-annotation-notes')).toBeNull();
+    expect(screen.queryByTestId('staged-browser-annotations')).toBeNull();
+    expect(window.localStorage.getItem(OTHER_KEY)).toBe('Second conversation text');
+  });
+
+  it('discloses pending notes beyond the twenty-note send limit without losing them', async () => {
+    const pending = Array.from({ length: 21 }, (_, index) =>
+      annotation(crypto.randomUUID(), `Collected note ${index + 1}`));
+    const onSend = vi.fn();
+    renderComposer({ conversationId: 'conv-1', annotationDrafts: pending, onSend });
+    await flushMounts();
+    await waitFor(() => expect(within(screen.getByTestId('staged-browser-annotation-notes'))
+      .getAllByRole('button', { name: 'Remove comment attachment' })).toHaveLength(20));
+    expect(composerText()).toContain('Collected note 20');
+    expect(composerText()).not.toContain('Collected note 21');
+    expect(screen.getByRole('status').textContent).toContain('Browser annotations still waiting: 1');
+    expect(screen.getByRole('status').textContent).toContain('later message');
+    pressEnter({ meta: true });
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]?.[3]).toMatchObject({
+      annotationIds: pending.slice(0, 20).map((item) => item.id),
+      annotationImageIds: pending.slice(0, 20).map((item) => item.id),
+    });
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+    await waitFor(() => expect(composerText()).toContain('Collected note 21'));
+    expect(composerText()).not.toContain('Collected note 1\n\n');
+  });
+
+  it('shows the overflow limit in the selected locale', async () => {
+    const pending = Array.from({ length: 21 }, (_, index) =>
+      annotation(crypto.randomUUID(), `Collected note ${index + 1}`));
+    render(<I18nProvider initial="zh-CN">
+      <ChatComposer projectId="project-1" conversationId="conv-1" projectFiles={[]}
+        streaming={false} draftStorageKey={KEY} onEnsureProject={async () => 'project-1'}
+        onSend={vi.fn()} onStop={vi.fn()} annotationDrafts={pending} />
+    </I18nProvider>);
+    await flushMounts();
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('还有 1 条浏览器标注待处理'));
+    expect(screen.getByRole('status').textContent).toContain('20');
+  });
+
+  it('preserves a user-edited note while discarding its captured context', async () => {
+    renderComposer({ conversationId: 'conv-1', annotationDrafts: [annotation(first, 'Review Save')] });
+    await flushMounts();
+    await waitFor(() => expect(composerText()).toBe('Review Save'));
+    await typeAndSettle('Actually make Save stand out');
+    const noteTray = screen.getByTestId('staged-browser-annotation-notes');
+    act(() => within(noteTray).getByRole('button', { name: 'Remove comment attachment' }).click());
+    await waitFor(() => expect(screen.queryByTestId('staged-browser-annotation-notes')).toBeNull());
+    expect(composerText()).toBe('Actually make Save stand out');
+  });
+
+  it('keeps typed text when discarding an identical appended annotation', async () => {
+    window.localStorage.setItem(KEY, 'Review Save\n\nTyped follow-up');
+    renderComposer({ conversationId: 'conv-1', annotationDrafts: [annotation(first, 'Review Save')] });
+    await flushMounts();
+    await waitFor(() => expect(composerText()).toBe('Review Save\n\nTyped follow-up\n\nReview Save'));
+    const noteTray = screen.getByTestId('staged-browser-annotation-notes');
+    act(() => within(noteTray).getByRole('button', { name: 'Remove comment attachment' }).click());
+    await waitFor(() => expect(screen.queryByTestId('staged-browser-annotation-notes')).toBeNull());
+    expect(composerText()).toBe('Review Save\n\nTyped follow-up');
+  });
+
+  it('removes the selected middle note without trimming typed text or other notes', async () => {
+    window.localStorage.setItem(KEY, '  Typed opening  ');
+    renderComposer({ conversationId: 'conv-1', annotationDrafts: [
+      annotation(first, 'Review Save'), annotation(second, 'Review Heading'),
+    ] });
+    await flushMounts();
+    await waitFor(() => expect(composerText()).toBe('  Typed opening  \n\nReview Save\n\nReview Heading'));
+    const noteTray = screen.getByTestId('staged-browser-annotation-notes');
+    act(() => within(noteTray).getAllByRole('button', { name: 'Remove comment attachment' })[0]?.click());
+    await waitFor(() => expect(within(noteTray).getAllByRole('button')).toHaveLength(1));
+    expect(composerText()).toBe('  Typed opening  \n\nReview Heading');
+  });
+
+  it('preserves existing text, appends each note once, and blocks crop delivery after removal', async () => {
+    window.localStorage.setItem(KEY, 'Existing thought');
+    const onSend = vi.fn((..._args: Parameters<NonNullable<ComponentProps<typeof ChatComposer>['onSend']>>) => 'restore-draft' as const);
+    const view = renderComposer({ conversationId: 'conv-1',
+      annotationDrafts: [annotation(first, 'Review Save')], onSend });
+    await flushMounts();
+    await waitFor(() => expect(composerText()).toContain('Existing thought\n\nReview Save'));
+    expect(onSend).not.toHaveBeenCalled();
+    view.rerender(<ChatComposer projectId="project-1" conversationId="conv-1"
+      projectFiles={[]} streaming={false} draftStorageKey={KEY}
+      onEnsureProject={async () => 'project-1'} onSend={onSend} onStop={vi.fn()}
+      annotationDrafts={[annotation(first, 'Review Save'), annotation(second, 'Review Heading')]} />);
+    await waitFor(() => expect(composerText()).toContain('Review Heading'));
+    expect(composerText().split('Review Save')).toHaveLength(2);
+    const removeCrop = screen.getAllByLabelText('Remove last image')[0];
+    act(() => removeCrop?.click());
+    await waitFor(() => expect(screen.getAllByTestId('staged-browser-annotation-image')).toHaveLength(1));
+    pressEnter({ meta: true });
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]?.[3]).toMatchObject({
+      annotationIds: [first, second], annotationImageIds: [second],
+    });
+    expect(composerText()).toContain('Existing thought');
+    cleanup();
+    renderComposer({ conversationId: 'conv-1',
+      annotationDrafts: [annotation(first, 'Review Save'), annotation(second, 'Review Heading')], onSend });
+    await flushMounts();
+    await waitFor(() => expect(screen.getAllByTestId('staged-browser-annotation-image')).toHaveLength(1));
+    expect(composerText().split('Review Save')).toHaveLength(2);
+  });
+});
 
 describe('刷新之后草稿整份回来', () => {
   it('附件回来(不只是文字)', async () => {

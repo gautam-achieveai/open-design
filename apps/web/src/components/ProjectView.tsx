@@ -91,6 +91,7 @@ import {
   type ByokMediaDefaults,
   type ByokChatProtocol,
   type ChatTaskExecutionAnalytics,
+  type PendingBrowserAnnotation,
   type ProjectWorkspaceScope,
   type ResearchOptions,
 } from '@open-design/contracts';
@@ -307,7 +308,7 @@ import {
   currentUserDirectoryEntry,
   useTeamMembers,
 } from '../collab/useTeamMembers';
-import { workspaceIdentityCacheKey } from '../collab/workspace-identity';
+import { workspaceIdentityCacheKey, workspaceProjectHeaders } from '../collab/workspace-identity';
 import {
   useWorkspaceBillingResponse,
   useWorkspaceContext,
@@ -2016,7 +2017,9 @@ function projectEventToAgentEvent(evt: ProjectEvent): LiveArtifactEventItem['eve
     // conversation re-read. It must be named here rather than left to fall
     // through — the tail of this function assumes whatever survives is a
     // live-artifact refresh and reads `evt.phase` off it.
-    evt.type === 'chat-artifact-refs-changed'
+    evt.type === 'chat-artifact-refs-changed' ||
+    evt.type === 'annotation-draft-available' ||
+    evt.type === 'conversation-message-created'
   ) {
     return null;
   }
@@ -5121,6 +5124,7 @@ export function ProjectView({
   const scheduleConversationMessageRefreshRef = useRef<((conversationId: string) => void) | null>(
     null,
   );
+  const refreshAnnotationDraftRef = useRef<(() => void) | null>(null);
   const handleProjectEvent = useCallback((evt: ProjectEvent) => {
     if (evt.type === 'file-changed') {
       iframeKeepAlivePool.evictProject(project.id);
@@ -5136,6 +5140,18 @@ export function ProjectView({
       // `refreshPreviewComments` is defined later in this component, so reach it
       // through a ref to avoid a temporal-dead-zone reference here.
       if (evt.projectId === project.id) void refreshPreviewCommentsRef.current?.();
+      return;
+    }
+    if (evt.type === 'annotation-draft-available') {
+      if (evt.projectId === project.id && evt.conversationId === activeConversationId) {
+        refreshAnnotationDraftRef.current?.();
+      }
+      return;
+    }
+    if (evt.type === 'conversation-message-created') {
+      if (evt.projectId === project.id) {
+        scheduleConversationMessageRefreshRef.current?.(evt.conversationId);
+      }
       return;
     }
     if (evt.type === 'chat-artifact-refs-changed') {
@@ -5278,6 +5294,7 @@ export function ProjectView({
     // also imply the conversation transcript changed.
     setDesignMdRefreshKey((n) => n + 1);
   }, [
+    activeConversationId,
     authoritativeProjectName,
     coalescedFileChangedRefresh,
     collabCheckStatusNow,
@@ -5311,6 +5328,8 @@ export function ProjectView({
     onReady: () => {
       void reconcileFilesWhenProjectEventsBecomeReady();
       void refreshPreviewCommentsRef.current?.();
+      refreshAnnotationDraftRef.current?.();
+      if (activeConversationId) scheduleConversationMessageRefreshRef.current?.(activeConversationId);
     },
   }, projectRunWorkspaceContext);
 
@@ -5850,7 +5869,8 @@ export function ProjectView({
 
   const refreshConversationMessagesFromServer = useCallback(
     async (conversationId: string) => {
-      if (messagesConversationIdRef.current !== conversationId) return;
+      if (messagesConversationIdRef.current !== conversationId
+        || projectResourceAuthorityRef.current === 'denied') return;
       try {
         const serverMessages = await listMessages(
           project.id,
@@ -5858,7 +5878,8 @@ export function ProjectView({
           projectRunWorkspaceContext,
         );
         if (messagesConversationIdRef.current !== conversationId) return;
-        setMessages((current) => mergeServerMessagesIntoConversation(current, serverMessages));
+        setMessages((current) => projectResourceAuthorityRef.current === 'denied'
+          ? current : mergeServerMessagesIntoConversation(current, serverMessages));
         setMessagesInitialized(true);
         setMessagesConversationId(conversationId);
         setFailedMessagesConversationId(null);
@@ -8394,6 +8415,14 @@ export function ProjectView({
       if (projectMutationReadOnly) return false;
       if (!activeConversationId) return false;
       if (messagesConversationIdRef.current !== activeConversationId) return false;
+      if (meta?.annotationIds?.length && config.mode !== 'daemon') {
+        setError(t('chat.runError.modelCapabilityUnsupportedMessage'));
+        return false;
+      }
+      if (meta?.annotationImageIds?.length && !agentsById.get(config.agentId ?? '')?.supportsImagePaths) {
+        setError(t('chat.runError.modelCapabilityUnsupportedMessage'));
+        return false;
+      }
       const clientRequestId = meta?.clientRequestId ?? randomUUID();
       meta = {
         ...(meta ?? {}),
@@ -8598,6 +8627,9 @@ export function ProjectView({
         ...(runContext ? { runContext } : {}),
         attachments: effectiveAttachments.length > 0 ? effectiveAttachments : undefined,
         commentAttachments: commentAttachments.length > 0 ? commentAttachments : undefined,
+        ...(meta?.annotationIds?.length ? { annotationContexts: meta.annotationIds.map((id) => ({
+          id, name: 'annotation-context.json' as const, mimeType: 'application/json' as const,
+        })) } : {}),
       };
       const runCommentAttachments = userMsg.commentAttachments ?? [];
       const runAttachments = mergeChatAttachments(
@@ -9023,7 +9055,9 @@ export function ProjectView({
               ),
             );
           });
-        } else {
+        } else if (!meta?.annotationIds?.length) {
+          // Browser evidence must be claimed with this user row in the daemon's
+          // run transaction. A best-effort PUT here could race that claim.
           persistMessage(userMsg);
         }
       }
@@ -9879,7 +9913,7 @@ export function ProjectView({
           // run and route the user to the wrong recovery action.
           if (config.mode === 'daemon' && !currentRunId) {
             if (runMayFinalize) {
-              setError(null);
+              if (!meta?.annotationIds?.length) setError(null);
               activeCompletionNotificationRunsRef.current.delete(assistantId);
               setConversations((current) =>
                 current.map((conversation) => {
@@ -9898,17 +9932,19 @@ export function ProjectView({
                   };
                 }),
               );
-              setMessages((current) => {
-                let failedUser: ChatMessage | null = null;
-                const next = current.flatMap((message) => {
-                  if (message.id === assistantId) return [];
-                  if (message.id !== userMsg.id) return [message];
-                  failedUser = { ...message, sendFailed: true };
-                  return [failedUser];
+              if (!meta?.annotationIds?.length) {
+                setMessages((current) => {
+                  let failedUser: ChatMessage | null = null;
+                  const next = current.flatMap((message) => {
+                    if (message.id === assistantId) return [];
+                    if (message.id !== userMsg.id) return [message];
+                    failedUser = { ...message, sendFailed: true };
+                    return [failedUser];
+                  });
+                  if (failedUser) persistMessage(failedUser);
+                  return next;
                 });
-                if (failedUser) persistMessage(failedUser);
-                return next;
-              });
+              }
               if (runCommentAttachments.length > 0) {
                 void patchAttachedStatuses(runCommentAttachments, 'failed');
               }
@@ -10154,16 +10190,34 @@ export function ProjectView({
         },
       };
 
+      // Only annotation sends wait for the daemon to admit the exact evidence.
+      // The composer owns the draft until that boundary; waiting for the whole
+      // streamed run here would keep Send disabled for its entire duration.
+      let settleAnnotationAdmission: ((accepted: boolean) => void) | undefined;
+      const annotationAdmission = meta?.annotationIds?.length
+        ? new Promise<boolean>((resolve) => { settleAnnotationAdmission = resolve; })
+        : null;
+      const onAnnotationAdmissionRejected = (error: Error) => {
+        setError(error.message);
+        if (messagesConversationIdRef.current === runConversationId) retractPaintedTurn();
+        refreshAnnotationDraftRef.current?.();
+        settleAnnotationAdmission?.(false);
+      };
+
       if (config.mode === 'daemon') {
         if (!config.agentId) {
-          handlers.onError(new Error('Pick a local agent first (top bar).'));
-          return true;
+          const error = new Error('Pick a local agent first (top bar).');
+          if (annotationAdmission) onAnnotationAdmissionRejected(error);
+          else handlers.onError(error);
+          return annotationAdmission ? false : true;
         }
         const choice = effectiveSelectedAgentChoice;
         const daemonByokOpenCode = config.agentId === 'byok-opencode';
         if (daemonByokOpenCode && !agentsById.get('byok-opencode')?.available) {
-          handlers.onError(new Error(BYOK_OPENCODE_UNAVAILABLE_MESSAGE));
-          return true;
+          const error = new Error(BYOK_OPENCODE_UNAVAILABLE_MESSAGE);
+          if (annotationAdmission) onAnnotationAdmissionRejected(error);
+          else handlers.onError(error);
+          return annotationAdmission ? false : true;
         }
         // v2 analytics: when the active project is a DS workspace
         // (created by `prepareCreatedDesignSystemProject`, identifiable
@@ -10252,6 +10306,15 @@ export function ProjectView({
           workspaceContext: projectRunWorkspaceContext,
           attachments: runAttachments.map((a) => a.path),
           commentAttachments: runCommentAttachments,
+          annotationIds: meta?.annotationIds,
+          annotationImageIds: meta?.annotationImageIds,
+          ...(annotationAdmission ? {
+            onAdmissionAccepted: () => {
+              settleAnnotationAdmission?.(true);
+              void refreshConversationMessagesFromServer(runConversationId);
+            },
+            onAdmissionRejected: onAnnotationAdmissionRejected,
+          } : {}),
           sessionMode: runSessionMode,
           appliedPluginSnapshotId:
             meta?.appliedPluginSnapshotId ?? meta?.appliedPluginSnapshot?.snapshotId ?? null,
@@ -10404,7 +10467,7 @@ export function ProjectView({
             persistAssistantSoon();
           },
         });
-        return true;
+        return annotationAdmission ? await annotationAdmission : true;
       } else {
         if (config.apiProtocol === 'bedrock') {
           handlers.onError(new Error(BEDROCK_BYOK_UNSUPPORTED_MESSAGE));
@@ -10496,6 +10559,15 @@ export function ProjectView({
           workspaceContext: projectRunWorkspaceContext,
           attachments: runAttachments.map((a) => a.path),
           commentAttachments: runCommentAttachments,
+          annotationIds: meta?.annotationIds,
+          annotationImageIds: meta?.annotationImageIds,
+          ...(annotationAdmission ? {
+            onAdmissionAccepted: () => {
+              settleAnnotationAdmission?.(true);
+              void refreshConversationMessagesFromServer(runConversationId);
+            },
+            onAdmissionRejected: onAnnotationAdmissionRejected,
+          } : {}),
           sessionMode: runSessionMode,
           appliedPluginSnapshotId:
             meta?.appliedPluginSnapshotId ?? meta?.appliedPluginSnapshot?.snapshotId ?? null,
@@ -10626,7 +10698,7 @@ export function ProjectView({
             persistAssistantSoon();
           },
         });
-        return true;
+        return annotationAdmission ? await annotationAdmission : true;
       }
     },
     [
@@ -10640,6 +10712,7 @@ export function ProjectView({
       config,
       locale,
       agentsById,
+      t,
       onTouchProject,
       project.id,
       project.workspaceId,
@@ -10662,6 +10735,7 @@ export function ProjectView({
       clearCurrentRunStreamingMarker,
       clearProjectTimeout,
       scheduleConversationMessageRefresh,
+      refreshConversationMessagesFromServer,
       scheduleProjectTimeout,
       onProjectsRefresh,
       onProjectChange,
@@ -10769,6 +10843,7 @@ export function ProjectView({
         composerOwnedDraft: true,
       });
       if (started) return;
+      if (meta?.annotationIds?.length) return 'restore-draft';
       // 认领必须按请求 id:同一条会话里可能有别的发送也在这段时间被拒。
       if (amrGateBlockedRequestRef.current !== clientRequestId) return;
       amrGateBlockedRequestRef.current = null;
@@ -12384,6 +12459,31 @@ export function ProjectView({
 
   // Signal that pushes a draft into the chat composer (the "Import repo" CTA).
   const [composerDraftSignal, setComposerDraftSignal] = useState<{ text: string; nonce: number }>();
+  const [annotationDrafts, setAnnotationDrafts] = useState<PendingBrowserAnnotation[]>([]);
+  const annotationDraftRefreshNonceRef = useRef(0);
+  const refreshAnnotationDraft = useCallback(async () => {
+    const conversationId = activeConversationId;
+    const nonce = ++annotationDraftRefreshNonceRef.current;
+    if (!conversationId || projectResourceAuthority === 'denied' || projectResourceAuthority === 'pending') {
+      setAnnotationDrafts([]);
+      return;
+    }
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}/edge-annotations/pending?conversationId=${encodeURIComponent(conversationId)}`, {
+        cache: 'no-store',
+        ...(projectRunWorkspaceContext ? { headers: workspaceProjectHeaders(projectRunWorkspaceContext) } : {}),
+      });
+      if (!response.ok) throw new Error('annotation draft unavailable');
+      const result = await response.json() as { annotations: PendingBrowserAnnotation[] };
+      if (nonce === annotationDraftRefreshNonceRef.current) setAnnotationDrafts(result.annotations);
+    } catch {
+      if (nonce === annotationDraftRefreshNonceRef.current) setAnnotationDrafts([]);
+    }
+  }, [activeConversationId, project.id, projectResourceAuthority, projectRunWorkspaceContext]);
+  refreshAnnotationDraftRef.current = () => { void refreshAnnotationDraft(); };
+  useEffect(() => {
+    void refreshAnnotationDraft();
+  }, [refreshAnnotationDraft]);
   // One handler for both the review banner and the chat CTA. When GitHub is
   // not connected it opens Connectors; once connected it prefills the composer
   // with the import instruction so the user can review and send it.
@@ -13781,6 +13881,7 @@ export function ProjectView({
               shareToOpenDesignBusyMessageId={shareToOpenDesignBusyMessageId}
               forceStreamingMessageIds={forceStreamingPluginMessageIds}
               initialDraft={chatInitialDraft}
+              annotationDrafts={annotationDrafts}
               onboardingStarterPath={onboardingEntryRef.current?.productType ?? null}
               questionFormSubmitDisabled={currentConversationActionDisabled}
               onSubmitQuestionForm={async (text, attachments = [], context, sourceAssistantMessageId, formId) => {

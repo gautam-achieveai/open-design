@@ -1940,6 +1940,47 @@ test('[P0] failed foreground run does not send a desktop notification', async ({
   );
 });
 
+test('[P1] Edge connection panel stays anchored and readable in the Browser toolbar', async ({ page }) => {
+  const projectId = `edge-panel-${crypto.randomUUID()}`;
+  await createProjectViaApi(page, projectId, 'Edge connection panel');
+  await gotoProject(page, projectId);
+  await page.getByTestId('workspace-add-tab').click();
+  await page.getByRole('button', { name: 'New Browser' }).click();
+  await expect(page.getByTestId('file-workspace').getByRole('tab', { name: /Browser/ })).toBeVisible();
+  // In dev, the client-only App chunk can leave its CSS preload-only. Model
+  // that exact state: the Browser toolbar must not depend on lazy CSS to keep
+  // the pairing popover out of its flex row.
+  await page.evaluate(() => {
+    document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]').forEach((link) => {
+      if (link.href.includes('/_next/static/css/_app-pages-browser_')) link.remove();
+    });
+  });
+  await page.getByRole('button', { name: 'Connect managed Edge' }).click();
+
+  const panel = page.getByLabel('Edge annotations');
+  await expect(panel.getByRole('button', { name: 'Copy connection URL' })).toBeVisible();
+  await expect(panel).toBeVisible();
+  const geometry = await panel.evaluate((element) => {
+    const panel = element.getBoundingClientRect();
+    const browser = element.closest('.design-browser')!.getBoundingClientRect();
+    const chrome = element.closest('.db-chrome')!.getBoundingClientRect();
+    return {
+      position: getComputedStyle(element).position,
+      panel: { left: panel.left, right: panel.right, top: panel.top, bottom: panel.bottom },
+      browser: { left: browser.left, right: browser.right },
+      chromeBottom: chrome.bottom,
+      chromeHeight: chrome.height,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(geometry.position).toBe('absolute');
+  expect(geometry.chromeHeight).toBeLessThan(100);
+  expect(geometry.panel.left).toBeGreaterThanOrEqual(geometry.browser.left);
+  expect(geometry.panel.right).toBeLessThanOrEqual(geometry.browser.right);
+  expect(geometry.panel.right).toBeLessThanOrEqual(geometry.viewportWidth);
+  expect(geometry.panel.top).toBeGreaterThanOrEqual(geometry.chromeBottom - 8);
+});
+
 test('[P1] Browser Inspiration page_info action seeds Browser tab context into the next run request', async ({ page }) => {
   await routeMockAgents(page);
 

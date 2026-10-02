@@ -42,6 +42,9 @@ export interface ComposerDraftExtras {
   attachments: ChatAttachment[];
   commentAttachments: ChatCommentAttachment[];
   quotes: ChatQuote[];
+  /** Server-owned browser evidence IDs, never image bytes or URLs. */
+  annotationIds?: string[];
+  annotationImageIds?: string[];
   context: ComposerDraftContext;
 }
 
@@ -64,6 +67,7 @@ export const DRAFT_MAX_QUOTES = 20;
 export const DRAFT_MAX_QUOTE_CHARS = 1000;
 export const DRAFT_MAX_ATTACHMENTS = 50;
 export const DRAFT_MAX_COMMENT_ATTACHMENTS = 20;
+export const DRAFT_MAX_ANNOTATIONS = 20;
 export const DRAFT_MAX_CONTEXT_ITEMS = 50;
 /** 序列化之后的硬上界(字符数)。超了就按 §shed 顺序丢整组,还超就一个字不写。 */
 export const DRAFT_MAX_EXTRAS_CHARS = 64 * 1024;
@@ -77,6 +81,8 @@ const EMPTY_EXTRAS: ComposerDraftExtras = {
   attachments: [],
   commentAttachments: [],
   quotes: [],
+  annotationIds: [],
+  annotationImageIds: [],
   context: { skillIds: [], mcpServerIds: [], connectorIds: [], workspaceItems: [] },
 };
 
@@ -85,10 +91,19 @@ export function composerDraftExtrasAreEmpty(extras: ComposerDraftExtras): boolea
   return extras.attachments.length === 0
     && extras.commentAttachments.length === 0
     && extras.quotes.length === 0
+    && (extras.annotationIds?.length ?? 0) === 0
+    && (extras.annotationImageIds?.length ?? 0) === 0
     && extras.context.skillIds.length === 0
     && extras.context.mcpServerIds.length === 0
     && extras.context.connectorIds.length === 0
     && extras.context.workspaceItems.length === 0;
+}
+
+export function sanitizeAnnotationIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(raw.filter((id): id is string =>
+    typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(id),
+  ))).slice(0, DRAFT_MAX_ANNOTATIONS);
 }
 
 function stringArray(raw: unknown, limit: number): string[] {
@@ -194,6 +209,9 @@ export function sanitizeComposerDraftExtras(raw: unknown): ComposerDraftExtras {
     attachments: sanitizeAttachments(row.attachments),
     commentAttachments: sanitizeCommentAttachments(row.commentAttachments),
     quotes: sanitizeQuotes(row.quotes),
+    annotationIds: sanitizeAnnotationIds(row.annotationIds),
+    annotationImageIds: sanitizeAnnotationIds(row.annotationImageIds).filter((id) =>
+      sanitizeAnnotationIds(row.annotationIds).includes(id)),
     context: {
       skillIds: stringArray(context.skillIds, DRAFT_MAX_CONTEXT_ITEMS),
       mcpServerIds: stringArray(context.mcpServerIds, DRAFT_MAX_CONTEXT_ITEMS),

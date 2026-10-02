@@ -1,8 +1,7 @@
 // OpenDesign web clipper popup. Thin UI over the service worker message API.
 //
-// Zero-config: no pairing. The popup just probes whether OpenDesign is running
-// and lets you capture. The daemon URL lives under "Advanced" for the rare case
-// you ran the daemon on a non-default port.
+// Library capture only probes OpenDesign; project chat annotations require a
+// separate per-tab pairing. The daemon URL can be set under Advanced.
 
 const $ = (id) => document.getElementById(id);
 const I18N = globalThis.OD_CLIPPER_I18N;
@@ -41,7 +40,7 @@ function isInjectable(url) {
 // guards itself with window.__odClipperInjected. Returns true on success.
 async function injectContentScript(tabId) {
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['i18n.js', 'content.js'] });
     return true;
   } catch {
     return false;
@@ -53,7 +52,7 @@ async function injectContentScript(tabId) {
 function sendToTab(tabId, message) {
   return new Promise((resolve) => {
     try {
-      chrome.tabs.sendMessage(tabId, message, (res) => {
+      chrome.tabs.sendMessage(tabId, message, { frameId: 0 }, (res) => {
         void chrome.runtime.lastError;
         resolve(res);
       });
@@ -146,11 +145,42 @@ function renderToolbar(visible) {
 }
 
 async function refresh() {
-  const res = await send({ type: 'getStatus' });
+  const [res, annotation] = await Promise.all([
+    send({ type: 'getStatus' }),
+    send({ type: 'odAnnotation:status' }),
+  ]);
   if (res.ok) {
     $('daemon').value = res.daemonUrl || '';
     render(Boolean(res.connected));
   }
+  const paired = Boolean(annotation.ok);
+  const annotate = $('annotate');
+  annotate.disabled = !paired;
+  annotate.title = paired
+    ? t('annotationProject', { project: annotation.projectName || annotation.projectId })
+    : t('annotationUnpaired');
+  $('annotation-setup').hidden = paired;
+  $('annotation-destination').hidden = !paired;
+  $('annotation-status').textContent = paired
+    ? t('annotationConnected', { project: annotation.projectName || annotation.projectId, conversation: annotation.conversationName || annotation.conversationId || '' })
+    : '';
+  const annotationError = $('annotation-error');
+  if (paired) {
+    annotationError.hidden = true;
+    annotationError.textContent = '';
+  } else if (annotation.error && annotation.error !== 'not paired') {
+    annotationError.textContent = annotation.error === 'Open Design is unavailable'
+      ? t('annotationAppUnavailable')
+      : t('annotationConnectionLost');
+    annotationError.hidden = false;
+  } else {
+    annotationError.hidden = true;
+    annotationError.textContent = '';
+  }
+  const chat = $('annotation-chat');
+  chat.hidden = !paired || !annotation.chatUrl;
+  if (paired && annotation.chatUrl) chat.href = annotation.chatUrl;
+  $('element').title = t('pickElementLibraryOnly');
   try {
     const { toolbarVisible, imageHoverCapture } = await chrome.storage.local.get([
       'toolbarVisible',
@@ -178,6 +208,66 @@ function reportCapture(res, okText) {
     setMsg(t('failed', { error: res.error || t('unknown') }), 'err');
   }
 }
+
+async function refreshAnnotationDiagnostics() {
+  const result = await send({ type: 'odAnnotation:diagnostics' });
+  if (!result.ok) return;
+  $('annotation-diagnostics').checked = result.enabled;
+  const tabId = await activeTabId();
+  const content = tabId ? await sendToTab(tabId, { type: 'odClipper:ping' }) : null;
+  $('annotation-version').textContent = t('annotationBuild', {
+    build: result.report.build, version: result.report.extensionVersion,
+  }) + ' · ' + t('annotationContentBuild', { build: content?.build || t('annotationContentMissing') });
+  if (content?.ok && content.build !== result.report.build) {
+    setMsg(t('annotationContentStale'), 'err');
+  }
+}
+$('annotation-diagnostics')?.addEventListener('change', async () => {
+  await send({ type: 'odAnnotation:diagnostics', enabled: $('annotation-diagnostics').checked });
+  await refreshAnnotationDiagnostics();
+});
+$('annotation-report')?.addEventListener('click', async () => {
+  const result = await send({ type: 'odAnnotation:diagnostics' });
+  if (!result.ok) { setMsg(t('failed', { error: result.error }), 'err'); return; }
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(result.report, null, 2));
+    setMsg(t('annotationReportCopied'), 'ok');
+  } catch { setMsg(t('failed', { error: t('unknown') }), 'err'); }
+});
+void refreshAnnotationDiagnostics();
+
+$('annotation-connect')?.addEventListener('click', async () => {
+  const input = $('annotation-code');
+  const code = input.value.trim();
+  const error = $('annotation-error');
+  if (!code) {
+    error.textContent = t('annotationEnterUrl');
+    error.hidden = false;
+    input.focus();
+    return;
+  }
+  const button = $('annotation-connect');
+  button.disabled = true;
+  error.hidden = true;
+  const result = await send({ type: 'odAnnotation:pair', code });
+  button.disabled = false;
+  if (!result.ok) {
+    error.textContent = t('annotationConnectFailed', { error: result.error || t('unknown') });
+    error.hidden = false;
+    return;
+  }
+  input.value = '';
+  await refresh();
+});
+
+$('annotation-code')?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') $('annotation-connect').click();
+});
+
+$('annotation-change')?.addEventListener('click', () => {
+  $('annotation-setup').hidden = false;
+  $('annotation-code').focus();
+});
 
 $('save-daemon').addEventListener('click', async () => {
   const url = $('daemon').value.trim();
@@ -274,6 +364,20 @@ $('element')?.addEventListener('click', () =>
     t('elementPickerUnavailable'),
   ),
 );
+
+$('annotate')?.addEventListener('click', async () => {
+  const tab = await activeTab();
+  const status = await send({ type: 'odAnnotation:status' });
+  if (!status.ok || !tab?.id || !isInjectable(tab.url)) {
+    setMsg(t(status.ok ? 'annotationBlocked' : 'annotationUnpaired'), 'err');
+    return;
+  }
+  await openOnPage(
+    { type: 'odClipper:annotateElement' },
+    t('clickElement'),
+    t('annotationBlocked'),
+  );
+});
 
 $('imgs')?.addEventListener('click', () =>
   openOnPage(

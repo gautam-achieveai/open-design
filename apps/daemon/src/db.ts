@@ -45,6 +45,7 @@ import type { ChatArtifactRef } from './chat-artifacts/types.js';
 import { migrateCritique } from './critique/persistence.js';
 import { migrateMediaTasks } from './media/tasks.js';
 import { migrateLibrary } from './library-store.js';
+import { conversationEdgeAnnotationContexts, conversationEdgeChatImageMetadata, edgeAnnotationContextIds, edgeChatImageMetadata, migrateEdgeChatMessages } from './services/edge-chat-message.js';
 import { migratePlugins } from './plugins/persistence.js';
 import { migrateProjectScenarioBindings } from './plugins/scenario-binding.js';
 import { emittedRenderableQuestionForm } from './question-form-detect.js';
@@ -303,6 +304,7 @@ function migrate(db: SqliteDb): void {
       pod_members_json TEXT,
       style_json TEXT,
       attachments_json TEXT,
+      metadata_json TEXT,
       slide_index INTEGER,
       slide_key INTEGER NOT NULL DEFAULT -1,
       note TEXT NOT NULL,
@@ -521,6 +523,9 @@ function migrate(db: SqliteDb): void {
   if (!previewCommentCols.some((c: DbRow) => c.name === 'attachments_json')) {
     db.exec(`ALTER TABLE preview_comments ADD COLUMN attachments_json TEXT`);
   }
+  if (!previewCommentCols.some((c: DbRow) => c.name === 'metadata_json')) {
+    db.exec(`ALTER TABLE preview_comments ADD COLUMN metadata_json TEXT`);
+  }
   if (!previewCommentCols.some((c: DbRow) => c.name === 'slide_index')) {
     db.exec(`ALTER TABLE preview_comments ADD COLUMN slide_index INTEGER`);
   }
@@ -543,6 +548,12 @@ function migrate(db: SqliteDb): void {
   // Multiple comments per element: edit by explicit id; creating another note
   // on the same element inserts a new row.
   migratePreviewCommentsAllowMultiplePerElement(db);
+  // Added after legacy table rebuilds so those migrations cannot drop the
+  // live embedded-browser identity carried by newly saved annotations.
+  const previewCommentMetadataCols = db.prepare(`PRAGMA table_info(preview_comments)`).all() as DbRow[];
+  if (!previewCommentMetadataCols.some((c: DbRow) => c.name === 'metadata_json')) {
+    db.exec(`ALTER TABLE preview_comments ADD COLUMN metadata_json TEXT`);
+  }
   // Stable canvas pin numbering + persisted sidebar order (recvq5BVsolIxi).
   // Added after the multi-per-element rebuild so a legacy table rebuild can
   // never drop them (same reasoning as the anchor columns above).
@@ -621,6 +632,7 @@ function migrate(db: SqliteDb): void {
   migrateProjectScenarioBindings(db);
   migrateStrategyTaskStore(db);
   migrateChatArtifacts(db);
+  migrateEdgeChatMessages(db);
   migrateCollabSyncSnapshots(db);
   migrateCommentRelayOutbox(db);
   migrateAmrTerminalReportOutbox(db);
@@ -2970,6 +2982,8 @@ function listMessagesUnobserved(db: SqliteDb, conversationId: string) {
   // One query for the whole conversation. A per-message lookup here would be a
   // straight N+1 on every transcript read.
   const artifactRefs = conversationChatArtifactRefs(db, conversationId);
+  const chatImages = conversationEdgeChatImageMetadata(db, conversationId);
+  const annotationContexts = conversationEdgeAnnotationContexts(db, conversationId);
   // Rows are normalized one at a time, so only one row's stored event log is
   // held at full size at once: rows written before the run-event payload
   // budget can be MBs each, and normalizing bounds them (see
@@ -2987,6 +3001,8 @@ function listMessagesUnobserved(db: SqliteDb, conversationId: string) {
       message,
       eventBatches.get(String(message.id)) ?? [],
       artifactRefs.get(String(message.id)) ?? [],
+      chatImages.get(String(message.id)) ?? [],
+      annotationContexts.get(String(message.id)) ?? [],
     ));
   }
   return normalized;
@@ -3717,7 +3733,7 @@ export function listPreviewComments(db: SqliteDb, projectId: string, conversatio
               text, position_json AS positionJson, html_hint AS htmlHint,
               selection_kind AS selectionKind, member_count AS memberCount,
               pod_members_json AS podMembersJson, style_json AS styleJson,
-              attachments_json AS attachmentsJson,
+              attachments_json AS attachmentsJson, metadata_json AS metadataJson,
               slide_index AS slideIndex,
               anchor_state AS anchorState, anchored_version AS anchoredVersion,
               author_member_id AS authorMemberId, last_good_position_json AS lastGoodPositionJson,
@@ -3744,7 +3760,7 @@ export function listProjectPreviewComments(db: SqliteDb, projectId: string) {
               text, position_json AS positionJson, html_hint AS htmlHint,
               selection_kind AS selectionKind, member_count AS memberCount,
               pod_members_json AS podMembersJson, style_json AS styleJson,
-              attachments_json AS attachmentsJson,
+              attachments_json AS attachmentsJson, metadata_json AS metadataJson,
               slide_index AS slideIndex,
               anchor_state AS anchorState, anchored_version AS anchoredVersion,
               author_member_id AS authorMemberId, last_good_position_json AS lastGoodPositionJson,
@@ -3791,6 +3807,7 @@ export function upsertPreviewComment(
   const selectionKind = target.selectionKind === 'pod' ? 'pod' : 'element';
   const podMembers = selectionKind === 'pod' ? normalizePodMembers(target.podMembers) : [];
   const style = normalizeAnnotationStyle(target.style);
+  const metadata = normalizePreviewCommentMetadata(target.metadata);
   const memberCount = selectionKind === 'pod'
     ? (podMembers.length > 0
         ? podMembers.length
@@ -3864,9 +3881,9 @@ export function upsertPreviewComment(
     `INSERT INTO preview_comments
        (id, project_id, conversation_id, file_path, element_id, selector, label,
         text, position_json, html_hint, selection_kind, member_count, pod_members_json,
-        style_json, attachments_json, slide_index, slide_key, note, status, created_at, updated_at,
+        style_json, attachments_json, metadata_json, slide_index, slide_key, note, status, created_at, updated_at,
         anchored_version, author_member_id, pin_seq, pin_seq_confirmed, sort_key)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        selector = excluded.selector,
        label = excluded.label,
@@ -3878,6 +3895,7 @@ export function upsertPreviewComment(
        pod_members_json = excluded.pod_members_json,
        style_json = excluded.style_json,
        attachments_json = excluded.attachments_json,
+       metadata_json = excluded.metadata_json,
        slide_index = excluded.slide_index,
        note = excluded.note,
        status = 'open',
@@ -3902,6 +3920,7 @@ export function upsertPreviewComment(
     selectionKind === 'pod' ? JSON.stringify(podMembers) : null,
     style ? JSON.stringify(style) : null,
     attachments.length > 0 ? JSON.stringify(attachments) : null,
+    metadata ? JSON.stringify(metadata) : null,
     slideIndex,
     slideKey,
     note,
@@ -4436,7 +4455,7 @@ export function getPreviewComment(db: SqliteDb, projectId: string, conversationI
               text, position_json AS positionJson, html_hint AS htmlHint,
               selection_kind AS selectionKind, member_count AS memberCount,
               pod_members_json AS podMembersJson, style_json AS styleJson,
-              attachments_json AS attachmentsJson,
+              attachments_json AS attachmentsJson, metadata_json AS metadataJson,
               slide_index AS slideIndex,
               anchor_state AS anchorState, anchored_version AS anchoredVersion,
               author_member_id AS authorMemberId, last_good_position_json AS lastGoodPositionJson,
@@ -4458,7 +4477,7 @@ export function getProjectPreviewComment(db: SqliteDb, projectId: string, id: st
               text, position_json AS positionJson, html_hint AS htmlHint,
               selection_kind AS selectionKind, member_count AS memberCount,
               pod_members_json AS podMembersJson, style_json AS styleJson,
-              attachments_json AS attachmentsJson,
+              attachments_json AS attachmentsJson, metadata_json AS metadataJson,
               slide_index AS slideIndex,
               anchor_state AS anchorState, anchored_version AS anchoredVersion,
               author_member_id AS authorMemberId, last_good_position_json AS lastGoodPositionJson,
@@ -4497,6 +4516,7 @@ function normalizePreviewComment(row: DbRow) {
     slideIndex: Number.isFinite(row.slideIndex) ? row.slideIndex : undefined,
     note: row.note,
     attachments: normalizePreviewCommentAttachments(parseJsonOrUndef(row.attachmentsJson)),
+    metadata: normalizePreviewCommentMetadata(parseJsonOrUndef(row.metadataJson)),
     status: row.status,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -4521,6 +4541,20 @@ function normalizePreviewCommentAttachments(input: unknown) {
     })
     .filter(Boolean)
     .slice(0, 20);
+}
+
+function normalizePreviewCommentMetadata(input: unknown) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const browser = (input as DbRow).browser;
+  if (!browser || typeof browser !== 'object' || Array.isArray(browser)) return undefined;
+  const tabId = typeof (browser as DbRow).tabId === 'string'
+    ? (browser as DbRow).tabId.trim().slice(0, 128)
+    : '';
+  const webContentsId = (browser as DbRow).webContentsId;
+  if (!tabId || !Number.isSafeInteger(webContentsId) || Number(webContentsId) <= 0) {
+    return undefined;
+  }
+  return { browser: { tabId, webContentsId: Number(webContentsId) } };
 }
 
 function cleanRequiredString(value: unknown, name: string): string {
@@ -4926,6 +4960,8 @@ function normalizeMessage(
   row: DbRow,
   eventBatches?: DbRow[][],
   artifactRefs?: ChatArtifactRef[],
+  chatImages?: ReturnType<typeof edgeChatImageMetadata>,
+  annotationContextIds?: string[],
 ) {
   const eventsJson = typeof row.eventsJson === 'string' ? row.eventsJson : null;
   const materializedEvents = materializeMessageAgentEvents(
@@ -4998,6 +5034,10 @@ function normalizeMessage(
         : undefined,
     attachments: parseJsonOrUndef(row.attachmentsJson),
     commentAttachments: parseJsonOrUndef(row.commentAttachmentsJson),
+    chatImages: chatImages ?? edgeChatImageMetadata(db, String(row.id)),
+    annotationContexts: (annotationContextIds ?? edgeAnnotationContextIds(db, String(row.id)))
+      .map((id) => ({ id, name: 'annotation-context.json' as const,
+        mimeType: 'application/json' as const })),
     producedFiles: parseJsonOrUndef(row.producedFilesJson),
     // Normalized artifact refs. `producedFiles` stays exactly as it was for
     // transcripts and older clients; new cards read this instead.

@@ -1,0 +1,51 @@
+.panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 730;
+  width: min(440px, calc(100vw - 28px));
+  max-width: calc(100vw - 28px);
+  box-shadow: var(--shadow-lg);
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.panel p {
+  margin: 0;
+}
+
+.header,
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.code,
+.url {
+  overflow-wrap: anywhere;
+}
+
+.url {
+  user-select: all;
+}
+
+.identity {
+  display: grid;
+  gap: 4px;
+}
+
+.identity input {
+  width: 100%;
+}
+
+.actions span {
+  overflow-wrap: anywhere;
+}

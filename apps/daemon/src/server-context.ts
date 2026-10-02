@@ -8,6 +8,7 @@ import type {
   AuthorizeProjectRequest,
   AuthorizeProjectToolRequest,
 } from './collab/project-request-authority.js';
+import type { BrowserCommandBroker } from './services/browser-command-broker.js';
 
 export interface HttpDeps {
   createSseResponse: (...args: any[]) => any;
@@ -189,6 +190,7 @@ export interface ServerContext {
   uploads: any;
   node: any;
   projectStore: any;
+  browserControl: BrowserCommandBroker;
   authorizeProjectRequest: AuthorizeProjectRequest;
   authorizeProjectToolRequest: AuthorizeProjectToolRequest;
   isApiTokenAuthorization: (authorization: string | undefined) => boolean;

@@ -24,6 +24,9 @@ import {
 } from "@open-design/sidecar-proto";
 import type {
   OpenDesignHostActionResult,
+  OpenDesignHostBrowserExecuteResult,
+  OpenDesignHostBrowserListTargetsResult,
+  OpenDesignHostBrowserRegisterTargetResult,
   OpenDesignHostCaptureResult,
   OpenDesignHostPreviewNavigationFailure,
   OpenDesignHostProjectImportInit,
@@ -33,6 +36,11 @@ import type {
 } from "@open-design/host";
 
 import { renderDeckSlides } from "./deck-capture.js";
+import {
+  DESIGN_BROWSER_PARTITION,
+  createDesignBrowserCdpController,
+  isAllowedDesignBrowserUrl,
+} from "./browser-cdp.js";
 import { renderDeterministicFrames } from "./frame-capture.js";
 import { openFirstPartyMailto } from "./mailto-open.js";
 import { openValidatedDirectory } from "./open-path.js";
@@ -319,7 +327,12 @@ const DESKTOP_PET_WINDOW_HEIGHT = 300;
 const DESKTOP_PET_WINDOW_MARGIN = 24;
 const UPDATER_STATUS_EVENT = "od:update:status-changed";
 const UPDATER_OPEN_DIALOG_EVENT = "od:update:open-dialog";
-const DESIGN_BROWSER_PARTITION = "persist:open-design-design-browser";
+const BROWSER_TARGET_IPC_CHANNELS = [
+  "browser:register-target",
+  "browser:unregister-target",
+  "browser:list-targets",
+  "browser:execute",
+] as const;
 const UPDATER_IPC_CHANNELS = [
   "od:update:status",
   "od:update:check",
@@ -1623,23 +1636,10 @@ export function isAllowedChildWindowUrl(url: string): boolean {
 }
 
 export function isAllowedEmbeddedBrowserUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    // Security boundary for the design-browser webview. Keep this to remote
-    // references and project-served content only. `file:` is deliberately
-    // excluded: the same surface can capture the webview region and persist
-    // the PNG into the project, so allowing `file://` would let a compromised
-    // renderer or a pasted address load and exfiltrate arbitrary local files
-    // (e.g. `/etc/passwd`). The reference board only needs http(s) and
-    // about:blank.
-    return (
-      parsed.protocol === "http:" ||
-      parsed.protocol === "https:" ||
-      (parsed.protocol === "about:" && parsed.pathname === "blank")
-    );
-  } catch {
-    return false;
-  }
+  // `file:` is deliberately excluded: this surface can capture pixels and
+  // persist them into a project, so local-file navigation would be an
+  // exfiltration path. Keep the navigation and CDP trust boundaries identical.
+  return isAllowedDesignBrowserUrl(url);
 }
 
 export function resolveDesktopStatusUrl(currentUrl: string | null, pendingUrl: string | null): string | null {
@@ -2032,6 +2032,9 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
   ipcMain.removeHandler("shell:open-external");
   ipcMain.removeHandler("shell:open-path");
   ipcMain.removeHandler("browser:clear-data");
+  for (const channel of BROWSER_TARGET_IPC_CHANNELS) {
+    ipcMain.removeHandler(channel);
+  }
   for (const channel of UPDATER_IPC_CHANNELS) {
     ipcMain.removeHandler(channel);
   }
@@ -2483,6 +2486,9 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     const status = await (options.updater?.status() ?? unavailableUpdaterStatus());
     return { ...status, error: updateRestartSafetyError(safety) };
   };
+  const browserCdp = createDesignBrowserCdpController(
+    session.fromPartition(DESIGN_BROWSER_PARTITION),
+  );
   window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const src = typeof params.src === "string" ? params.src : "";
     const partition = typeof params.partition === "string" ? params.partition : "";
@@ -2510,6 +2516,13 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     guestWebContents.on("will-navigate", blockDisallowed);
     guestWebContents.on("will-redirect", blockDisallowed);
     guestWebContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    void browserCdp.attachGuest(guestWebContents).catch((error) => {
+      console.error("[open-design desktop] failed to attach Design Browser CDP", {
+        error: error instanceof Error ? error.message : String(error),
+        url: guestWebContents.isDestroyed() ? null : guestWebContents.getURL(),
+        webContentsId: guestWebContents.id,
+      });
+    });
   });
   ipcMain.handle("browser:clear-data", async (event, rawOptions: unknown): Promise<OpenDesignHostActionResult> => {
     requireMainWindowSender(event);
@@ -2543,6 +2556,55 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
       };
     }
   });
+  ipcMain.handle(
+    "browser:register-target",
+    (event, target: unknown): OpenDesignHostBrowserRegisterTargetResult => {
+      requireMainWindowSender(event);
+      return browserCdp.registerTarget(target);
+    },
+  );
+  ipcMain.handle("browser:unregister-target", (event, target: unknown): OpenDesignHostActionResult => {
+    requireMainWindowSender(event);
+    return browserCdp.unregisterTarget(target);
+  });
+  ipcMain.handle("browser:list-targets", (event): OpenDesignHostBrowserListTargetsResult => {
+    requireMainWindowSender(event);
+    return browserCdp.listTargets();
+  });
+  ipcMain.handle(
+    "browser:execute",
+    async (event, request: unknown): Promise<OpenDesignHostBrowserExecuteResult> => {
+      requireMainWindowSender(event);
+      const operation = request && typeof request === "object"
+        ? (request as { operation?: { kind?: unknown } }).operation
+        : null;
+      const expiresAt = request && typeof request === "object"
+        ? (request as { expiresAt?: unknown }).expiresAt
+        : null;
+      const kind = operation && typeof operation.kind === "string" ? operation.kind : "";
+      if (kind === "click" || kind === "type" || kind === "scroll" || kind === "navigate") {
+        if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+          return { ok: false, reason: "browser command expired before user approval" };
+        }
+        const confirmation = await dialog.showMessageBox(window, {
+          type: "warning",
+          buttons: ["Cancel", "Allow once"],
+          cancelId: 0,
+          defaultId: 0,
+          message: "Allow the agent to control this browser tab?",
+          detail: `Requested browser action: ${kind}`,
+          noLink: true,
+        });
+        if (confirmation.response !== 1) {
+          return { ok: false, reason: "browser operation was not approved by the user" };
+        }
+        if (expiresAt <= Date.now()) {
+          return { ok: false, reason: "browser command expired before execution" };
+        }
+      }
+      return await browserCdp.execute(request);
+    },
+  );
   ipcMain.handle("od:update:status", async (event) => {
     requireMainWindowSender(event);
     const status = await (options.updater?.status() ?? unavailableUpdaterStatus());
@@ -3022,6 +3084,10 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
       for (const channel of UPDATER_IPC_CHANNELS) {
         ipcMain.removeHandler(channel);
       }
+      for (const channel of BROWSER_TARGET_IPC_CHANNELS) {
+        ipcMain.removeHandler(channel);
+      }
+      browserCdp.close();
       ipcMain.removeHandler("browser:clear-data");
       if (splash != null && !splash.isDestroyed()) splash.close();
       if (!petWindow.isDestroyed()) petWindow.close();

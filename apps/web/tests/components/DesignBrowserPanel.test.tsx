@@ -9,6 +9,7 @@ import {
   REFERENCE_TOTAL,
   browserUseActionById,
   browserUsePrompt,
+  browserTargetFromSnapshot,
   browserFileName,
   faviconUrl,
   filterBrowserUseCategories,
@@ -179,6 +180,31 @@ describe('inspiration action prompts', () => {
 });
 
 describe('browser tool file targeting', () => {
+  it('adds exact browser tab identity to new annotation targets', () => {
+    expect(browserTargetFromSnapshot(
+      {
+        filePath: 'browser:https://example.com',
+        elementId: 'dom:#hero',
+        selector: '#hero',
+        label: 'section#hero',
+        text: 'Hero',
+        position: { x: 1, y: 2, width: 300, height: 200 },
+        htmlHint: '<section id="hero">',
+        selectionKind: 'element',
+      },
+      { tabId: 'browser-tab-1', webContentsId: 77 },
+    )).toMatchObject({
+      filePath: 'browser:https://example.com',
+      selector: '#hero',
+      metadata: {
+        browser: {
+          tabId: 'browser-tab-1',
+          webContentsId: 77,
+        },
+      },
+    });
+  });
+
   it('treats localhost dev-server pages as browser targets, not single-file HTML saves', () => {
     const url = 'http://localhost:3000/src/App.jsx';
 

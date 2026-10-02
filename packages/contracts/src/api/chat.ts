@@ -3,6 +3,7 @@ import type { RunResultPackageResponse, RunWorkspace } from './workspaces.js';
 import type {
   PreviewCommentAttachment,
   PreviewCommentMember,
+  PreviewCommentMetadata,
   PreviewCommentPosition,
   PreviewCommentSelectionKind,
   PreviewAnnotationStyle,
@@ -174,6 +175,10 @@ export interface ChatRequest {
   designSystemId?: string | null;
   attachments?: string[];
   commentAttachments?: ChatCommentAttachment[];
+  /** Selected, conversation-scoped pending browser annotations bound at run claim. */
+  annotationIds?: string[];
+  /** Selected screenshots; a subset of annotationIds. */
+  annotationImageIds?: string[];
   model?: string | null;
   reasoning?: string | null;
   serviceTier?: string | null;
@@ -942,6 +947,22 @@ export interface ChatAttachment {
   order?: number;
 }
 
+/** Chat-only screenshot; unlike ChatAttachment, it is never a project source file. */
+export interface ChatImageAttachment {
+  id: string;
+  mimeType: 'image/png';
+  bytes: number;
+  width: number;
+  height: number;
+}
+
+/** Chat-owned browser context; fetch by message and annotation ID, never from project files. */
+export interface ChatAnnotationContextAttachment {
+  id: string;
+  name: 'annotation-context.json';
+  mimeType: 'application/json';
+}
+
 export interface ChatCommentAttachment {
   id: string;
   order: number;
@@ -954,6 +975,8 @@ export interface ChatCommentAttachment {
   pagePosition: PreviewCommentPosition;
   htmlHint: string;
   style?: PreviewAnnotationStyle;
+  /** Safe, bounded structural chain from picked element toward its nearest landmarks. */
+  ancestors?: Array<{ tag: string; selector: string; role?: string }>;
   selectionKind?: ChatCommentSelectionKind;
   memberCount?: number;
   podMembers?: PreviewCommentMember[];
@@ -967,6 +990,7 @@ export interface ChatCommentAttachment {
   /** `'query'` means `comment` was promoted to the message text; keep target data as context only. */
   commentContext?: 'context' | 'query';
   source?: 'saved-comment' | 'board-batch';
+  metadata?: PreviewCommentMetadata;
 }
 
 /**
@@ -1410,6 +1434,10 @@ export interface ChatMessage {
   appliedPluginSnapshot?: AppliedPluginSnapshot;
   attachments?: ChatAttachment[];
   commentAttachments?: ChatCommentAttachment[];
+  /** Reviewed, daemon-owned images attached only to this chat message. */
+  chatImages?: ChatImageAttachment[];
+  /** Structured browser evidence linked to this user message. */
+  annotationContexts?: ChatAnnotationContextAttachment[];
   /**
    * 用户消息**没发出去**(网络或服务异常)。
    *

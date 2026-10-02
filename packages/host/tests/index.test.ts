@@ -8,6 +8,7 @@ import {
   OPEN_DESIGN_HOST_GLOBAL,
   OPEN_DESIGN_HOST_VERSION,
   clearHostBrowserData,
+  executeHostBrowserOperation,
   checkHostUpdater,
   detectOpenDesignHostClientType,
   getLatestHostPreviewNavigationFailure,
@@ -18,17 +19,21 @@ import {
   isOpenDesignHostBridge,
   normalizeOpenDesignHostProjectImportResult,
   openHostExternalUrl,
+  listHostBrowserTargets,
   pickAndImportHostProject,
   printHostPdf,
   openHostProjectPath,
   quitHostAfterUpdaterInstallerOpen,
+  registerHostBrowserTarget,
   setHostUpdaterMenuLabels,
   setHostPetVisible,
   subscribeHostUpdaterOpenDialog,
   subscribeHostUpdater,
   subscribeHostPreviewNavigationFailure,
+  unregisterHostBrowserTarget,
 } from "../src/index.js";
 import { createMockOpenDesignHost, installMockOpenDesignHost } from "../src/testing.js";
+import type { OpenDesignHostBrowserOperation } from "../src/index.js";
 
 const hostRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -42,6 +47,17 @@ function filesUnder(dir: string): string[] {
 }
 
 describe("open-design host contract", () => {
+  it("keeps consequential browser operations explicitly approved", () => {
+    const operations = [
+      { approved: true, kind: "click", selector: "#save" },
+      { approved: true, kind: "type", selector: "input", text: "hello" },
+      { approved: true, deltaY: 500, kind: "scroll" },
+      { approved: true, kind: "navigate", url: "https://example.com" },
+    ] satisfies OpenDesignHostBrowserOperation[];
+
+    expect(operations.every((operation) => operation.approved === true)).toBe(true);
+  });
+
   it("stays independent from daemon/web contracts", () => {
     const pkg = JSON.parse(readFileSync(join(hostRoot, "package.json"), "utf8")) as {
       dependencies?: Record<string, string>;
@@ -66,6 +82,30 @@ describe("open-design host contract", () => {
     const host = createMockOpenDesignHost();
     expect(isOpenDesignHostBridge(host)).toBe(true);
     expect(host.version).toBe(OPEN_DESIGN_HOST_VERSION);
+  });
+
+  it("continues to recognize version-2 hosts without browser control", async () => {
+    const host = createMockOpenDesignHost();
+    const {
+      execute: _execute,
+      listTargets: _listTargets,
+      registerTarget: _registerTarget,
+      unregisterTarget: _unregisterTarget,
+      ...legacyBrowser
+    } = host.browser;
+    const legacyHost = { ...host, browser: legacyBrowser };
+    const scope = { [OPEN_DESIGN_HOST_GLOBAL]: legacyHost };
+    expect(isOpenDesignHostBridge(legacyHost)).toBe(true);
+    await expect(openHostExternalUrl("https://example.com", scope)).resolves.toEqual({ ok: true });
+    await expect(registerHostBrowserTarget({
+      projectId: "project-1",
+      tabId: "tab-1",
+      url: "about:blank",
+      webContentsId: 1,
+    }, scope)).resolves.toEqual({
+      ok: false,
+      reason: "host build does not support embedded browser targets",
+    });
   });
 
   it("rejects legacy or incomplete bridge shapes", () => {
@@ -207,6 +247,18 @@ describe("open-design host contract", () => {
     const openExternal = vi.fn(async () => ({ ok: true as const }));
     const openPath = vi.fn(async () => ({ ok: true as const }));
     const clearData = vi.fn(async () => ({ ok: true as const }));
+    const registerTarget = vi.fn(async (target) => ({
+      ok: true as const,
+      target: { ...target, attached: true, title: target.title ?? "" },
+    }));
+    const unregisterTarget = vi.fn(async () => ({ ok: true as const }));
+    const listTargets = vi.fn(async () => ({ ok: true as const, targets: [] }));
+    const execute = vi.fn(async (request) => ({
+      ok: true as const,
+      operation: "console" as const,
+      tabId: request.tabId,
+      value: { entries: [] },
+    }));
     const pickAndImport = vi.fn(async () => ({
       ok: true as const,
       projectId: "project-2",
@@ -217,7 +269,7 @@ describe("open-design host contract", () => {
     const setVisible = vi.fn();
     const scope: Record<string, unknown> = {};
     scope[OPEN_DESIGN_HOST_GLOBAL] = createMockOpenDesignHost({
-      browser: { clearData },
+      browser: { clearData, execute, listTargets, registerTarget, unregisterTarget },
       shell: { openExternal, openPath },
       project: { pickAndImport },
       pdf: { print },
@@ -227,6 +279,19 @@ describe("open-design host contract", () => {
     await expect(openHostExternalUrl("https://example.com", scope)).resolves.toEqual({ ok: true });
     await expect(openHostProjectPath("project-2", scope)).resolves.toEqual({ ok: true });
     await expect(clearHostBrowserData({ cookies: true }, scope)).resolves.toEqual({ ok: true });
+    const target = {
+      projectId: "project-2",
+      tabId: "tab-1",
+      url: "https://example.com",
+      webContentsId: 42,
+    };
+    await expect(registerHostBrowserTarget(target, scope)).resolves.toMatchObject({ ok: true });
+    await expect(listHostBrowserTargets(scope)).resolves.toEqual({ ok: true, targets: [] });
+    await expect(executeHostBrowserOperation({
+      tabId: "tab-1",
+      operation: { kind: "console", limit: 10 },
+    }, scope)).resolves.toMatchObject({ ok: true, operation: "console" });
+    await expect(unregisterHostBrowserTarget({ tabId: "tab-1" }, scope)).resolves.toEqual({ ok: true });
     await expect(pickAndImportHostProject({ skillId: "skill-1" }, scope)).resolves.toMatchObject({
       ok: true,
       projectId: "project-2",
@@ -237,6 +302,13 @@ describe("open-design host contract", () => {
     expect(openExternal).toHaveBeenCalledWith("https://example.com");
     expect(openPath).toHaveBeenCalledWith("project-2");
     expect(clearData).toHaveBeenCalledWith({ cookies: true });
+    expect(registerTarget).toHaveBeenCalledWith(target);
+    expect(listTargets).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledWith({
+      tabId: "tab-1",
+      operation: { kind: "console", limit: 10 },
+    });
+    expect(unregisterTarget).toHaveBeenCalledWith({ tabId: "tab-1" });
     expect(pickAndImport).toHaveBeenCalledWith({ skillId: "skill-1" });
     expect(print).toHaveBeenCalledWith("<html></html>", "nonce", { deck: true });
     expect(setVisible).toHaveBeenCalledWith(true);

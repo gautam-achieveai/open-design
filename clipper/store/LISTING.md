@@ -6,7 +6,7 @@ All copy is keyword-tuned for discoverability (ASO) without keyword stuffing.
 
 - **Public name:** OpenDesign Web Clipper
 - **Version:** 0.2.0 (MV3)
-- **Package:** the `clipper/` directory (no build step — zip it as-is)
+- **Package:** Chrome/Edge use `clipper/` (zip it as-is). Firefox uses a separate directory prepared with `pnpm exec tsx clipper/prepare-firefox.ts .tmp/clipper-firefox` (zip that output instead). Do not publish the Chromium manifest to AMO.
 - **Homepage:** https://open-design.ai
 - **Source:** https://github.com/nexu-io/open-design (folder `clipper/`)
 - **Support / issues:** https://github.com/nexu-io/open-design/issues
@@ -173,15 +173,14 @@ The **same MV3 package** publishes to Edge unchanged.
 
 ## 4. Firefox Add-ons (AMO)
 
-Firefox needs the gecko settings already added to `manifest.json`:
+Firefox needs the separately prepared package described above. Its
+`manifest.firefox.json` retains the gecko settings and uses the Firefox runtime:
 ```json
-"browser_specific_settings": { "gecko": { "id": "web-clipper@open-design.ai", "strict_min_version": "121.0" } }
+"browser_specific_settings": { "gecko": { "id": "web-clipper@open-design.ai", "strict_min_version": "121.0" } },
+"background": { "scripts": ["background.js"] }
 ```
-And the dual background key (already in `manifest.json`) — Firefox uses
-`background.scripts`, Chrome/Edge use `background.service_worker`:
-```json
-"background": { "service_worker": "background.js", "scripts": ["background.js"] }
-```
+Chrome/Edge load the original `manifest.json`, which uses only
+`background.service_worker`; mixing both background keys causes a warning.
 
 - **Name:** `OpenDesign Web Clipper`
 - **Summary (≤250):** `Clip web pages, design systems, screenshots, images, and Figma import JSON straight into your OpenDesign Library. Local-first, one click — no account, no pairing, no tokens.`

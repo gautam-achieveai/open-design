@@ -44,6 +44,18 @@ function defaultHost(): OpenDesignHostBridge {
     version: OPEN_DESIGN_HOST_VERSION,
     browser: {
       clearData: async () => ({ ok: true }),
+      execute: async (request) => ({
+        ok: true,
+        operation: "console",
+        tabId: request.tabId,
+        value: { entries: [] },
+      }),
+      listTargets: async () => ({ ok: true, targets: [] }),
+      registerTarget: async (target) => ({
+        ok: true,
+        target: { ...target, attached: true, title: target.title ?? "" },
+      }),
+      unregisterTarget: async () => ({ ok: true }),
     },
     capture: {
       page: async () => ({ ok: true, dataUrl: "data:image/png;base64,", h: 1, w: 1 }),

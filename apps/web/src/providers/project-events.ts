@@ -5,6 +5,8 @@ import {
   COLLAB_PROJECT_INVALIDATION_EVENTS,
   PROJECT_CONTENT_TRANSFER_STATE_EVENT,
   type ChatArtifactRefsChangedSsePayload,
+  type AnnotationDraftAvailableSsePayload,
+  type ConversationMessageCreatedSsePayload,
   type CollabProjectInvalidationSsePayload,
   type LiveArtifactRefreshSsePayload,
   type LiveArtifactSsePayload,
@@ -51,6 +53,8 @@ export type ProjectEvent =
   | ProjectLiveArtifactEvent
   | ProjectCollabInvalidationEvent
   | ProjectChatArtifactRefsChangedEvent
+  | AnnotationDraftAvailableSsePayload
+  | ConversationMessageCreatedSsePayload
   | ProjectContentTransferStateSsePayload;
 
 export interface ProjectEventsConnectionOptions {
@@ -228,6 +232,22 @@ export function createProjectEventsConnection(
           // eslint-disable-next-line no-console
           console.warn('[project-events] malformed chat-artifact-refs-changed payload', err);
         }
+      }
+    });
+    es.addEventListener('conversation-message-created', (evt) => {
+      try {
+        const data = JSON.parse((evt as MessageEvent).data) as ConversationMessageCreatedSsePayload;
+        onChange(data);
+      } catch {
+        // A missed invalidation is reconciled when the stream reconnects.
+      }
+    });
+    es.addEventListener('annotation-draft-available', (evt) => {
+      try {
+        const data = JSON.parse((evt as MessageEvent).data) as AnnotationDraftAvailableSsePayload;
+        onChange(data);
+      } catch {
+        // The exact conversation is re-read when the stream reconnects.
       }
     });
     es.addEventListener(PROJECT_CONTENT_TRANSFER_STATE_EVENT, (evt) => {

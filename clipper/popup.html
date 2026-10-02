@@ -39,7 +39,63 @@
     </header>
 
     <main class="body">
-      <section id="capture-block" class="actions">
+      <section class="annotation-pair" aria-labelledby="annotation-heading">
+        <div class="section-heading">
+          <span class="section-kicker" data-i18n="annotationProjectLabel">Open Design project</span>
+          <h1 id="annotation-heading" data-i18n="annotationTitle">Annotate this page</h1>
+        </div>
+        <div id="annotation-setup" class="annotation-setup" hidden>
+          <p class="section-description" data-i18n="annotationSetupTitle">Connect a conversation</p>
+          <ol class="setup-steps">
+            <li data-i18n="annotationSetupStep1">In OpenDesign, open a conversation and copy its connection URL.</li>
+            <li data-i18n="annotationSetupStep2">Paste it here while the website tab is active.</li>
+          </ol>
+          <label class="label-field" for="annotation-code" data-i18n="annotationCode">Open Design connection URL</label>
+          <div class="row">
+            <input id="annotation-code" type="text" autocomplete="off" spellcheck="false" maxlength="1024" placeholder="Paste connection URL" data-i18n-placeholder="annotationCodePlaceholder" />
+            <button id="annotation-connect" class="btn-save" type="button" data-i18n="annotationConnect">Connect</button>
+          </div>
+        </div>
+        <div id="annotation-destination" class="annotation-destination" hidden>
+          <span class="destination-dot" aria-hidden="true"></span>
+          <div class="destination-copy">
+            <span class="destination-label" data-i18n="annotationDestination">Connected destination</span>
+            <span id="annotation-status" class="destination-name" role="status" aria-live="polite"></span>
+          </div>
+          <button id="annotation-change" class="text-button" type="button" data-i18n="annotationChange">Change connection</button>
+        </div>
+        <p id="annotation-error" class="annotation-error" role="alert" hidden></p>
+        <button id="annotate" class="action action-annotate" disabled>
+          <span class="action-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 20h16" /><path d="M7 16 17 6l2 2L9 18H7z" />
+            </svg>
+          </span>
+          <span class="action-text">
+            <span class="action-title" data-i18n="annotateElement">Annotate an element</span>
+            <span class="action-sub" data-i18n="annotationIntro">Choose an element, add your note, and review it in OpenDesign.</span>
+          </span>
+          <span class="action-go" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></svg>
+          </span>
+        </button>
+        <div class="annotation-footer">
+          <span data-i18n="annotationDraftHint">Adds to a chat draft. Nothing is sent until you review it in OpenDesign.</span>
+          <a id="annotation-chat" target="_blank" rel="noopener noreferrer" hidden data-i18n="annotationViewChat">View chat</a>
+        </div>
+      </section>
+
+      <p id="hint" class="hint" hidden>
+        <span data-i18n-html="hintHtml"><strong>OpenDesign</strong> isn’t running. Start the app, then reopen this popup — the clipper connects automatically.</span>
+      </p>
+
+      <section id="capture-block" class="actions" aria-labelledby="library-heading">
+        <div class="section-heading section-heading-library">
+          <div>
+            <span class="section-kicker" data-i18n="libraryIntro">Capture assets separately from the chat draft.</span>
+            <h2 id="library-heading" data-i18n="libraryTitle">Save to Library</h2>
+          </div>
+        </div>
         <button id="page" class="action action-primary">
           <span class="action-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
@@ -85,7 +141,7 @@
             </span>
             <span class="action-title" data-i18n="pickImages">Pick images</span>
           </button>
-          <button id="element" class="action">
+          <button id="element" class="action" title="Save to Library, not chat">
             <span class="action-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="3.5" /><path d="M12 2v3.5" /><path d="M12 18.5V22" />
@@ -115,10 +171,6 @@
         </div>
       </section>
 
-      <p id="hint" class="hint" hidden>
-        <span data-i18n-html="hintHtml"><strong>OpenDesign</strong> isn’t running. Start the app, then reopen this popup — the clipper connects automatically.</span>
-      </p>
-
       <details id="advanced" class="advanced">
         <summary data-i18n="advanced">Advanced</summary>
         <div class="adv-switch">
@@ -143,6 +195,12 @@
           <input id="include-images" type="checkbox" checked />
           <span><span data-i18n="inlineImages">Inline images</span> <em>(<span data-i18n="inlineImagesSub">higher fidelity, larger files</span>)</em></span>
         </label>
+        <label class="check">
+          <input id="annotation-diagnostics" type="checkbox" />
+          <span data-i18n="annotationDiagnostics">Record annotation diagnostics (no page content)</span>
+        </label>
+        <button id="annotation-report" class="text-button" type="button" data-i18n="annotationReport">Copy sanitized report</button>
+        <p id="annotation-version" class="section-description"></p>
         <label class="label-field" for="daemon" data-i18n="daemonUrl">Daemon URL</label>
         <div class="row">
           <input id="daemon" type="text" placeholder="http://127.0.0.1:7456" />

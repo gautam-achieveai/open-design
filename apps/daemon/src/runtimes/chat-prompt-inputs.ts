@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   OD_NEXT_BUNDLE_ECHO_GUARD_V2,
+  normalizeEdgeAnnotationScope, normalizeEdgeAnnotationAncestors,
   type OdNextPromptBundleHeadV2,
   type OdNextPromptBundleRecipeIdentityV2,
   serializeOdNextPromptBundleV2,
@@ -65,6 +66,7 @@ type CommentAttachmentInput = {
   pagePosition?: InputValue;
   htmlHint?: InputValue;
   style?: InputValue;
+  ancestors?: InputValue;
   source?: InputValue;
 };
 
@@ -538,6 +540,8 @@ export function normalizeCommentAttachments(input: readonly CommentAttachmentInp
         pagePosition,
         htmlHint: compactString(record.htmlHint, 180),
         style: normalizeAnnotationStyle(record.style),
+        ancestors: normalizeEdgeAnnotationAncestors(record.ancestors),
+        ...(normalizeEdgeAnnotationScope(record.scope) ? { scope: normalizeEdgeAnnotationScope(record.scope) } : {}),
         selectionKind,
         memberCount,
         podMembers,
@@ -579,6 +583,11 @@ export function renderCommentAttachmentHint(
       `htmlHint: ${item.htmlHint || '(none)'}`,
       `computedStyle: ${formatAnnotationStyle(item.style) || '(none)'}`,
     );
+    if (item.ancestors.length > 0) {
+      lines.push(`ancestors (nearest first): ${item.ancestors.map((ancestor) => (
+        `${ancestor.tag}${ancestor.role ? `[role=${ancestor.role}]` : ''} ${ancestor.selector}`
+      )).join(' > ')}`);
+    }
     if (item.comment && item.commentContext !== 'query') {
       lines.push(`comment: ${item.comment}`);
     }
