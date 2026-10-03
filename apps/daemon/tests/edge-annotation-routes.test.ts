@@ -461,6 +461,47 @@ describe('Edge annotation pairing routes', () => {
     expect(listMessages(f.db, 'c1')).toHaveLength(0);
   });
 
+  it.each(['draft', 'post'] as const)('retains exact written about:blank annotation metadata through %s', async (surface) => {
+    const f = await fixture({ bound: true });
+    fixtures.push(f);
+    const route = `/api/projects/p1/edge-annotations/${surface}`;
+    const headers = { 'x-od-workspace-id': 'w1', 'x-od-workspace-member-id': 'm1' };
+    const input = { conversationId: 'c1', url: 'about:blank', title: 'Written pop-up',
+      note: 'Adjust this written heading', eventId: `blank-${surface}`, screenshotDataUrl,
+      target: { ...target, selector: 'h1', label: 'Heading', text: 'Written heading' } };
+    expect((await post(f.base, route, input, undefined, undefined, {
+      ...headers, 'x-od-workspace-id': 'foreign',
+    })).status).toBe(403);
+    expect((await post(f.base, route, { ...input, conversationId: 'foreign' }, undefined, undefined, headers)).status).toBe(404);
+    const posted = await post(f.base, route, input, undefined, undefined, headers);
+    expect(posted.status).toBe(200);
+    const result = await posted.json() as { id?: string; messageId?: string; replayed: boolean };
+    expect(result.replayed).toBe(false);
+    if (surface === 'draft') {
+      expect(pendingEdgeAnnotationContext(f.db, 'p1', 'c1', result.id!)).toMatchObject({
+        url: 'about:blank', title: input.title, target: { selector: 'h1', text: input.target.text }, screenshot: 'captured',
+      });
+      expect(pendingEdgeAnnotationImage(f.db, 'p1', 'c1', result.id!)).toEqual(png);
+      expect(listMessages(f.db, 'c1')).toHaveLength(0);
+    } else {
+      const message = getMessage(f.db, result.messageId!, 'c1');
+      expect(message?.content).toContain('Browser page: about:blank');
+      expect(message?.content).toContain('Selector: h1');
+      expect(message?.content).toContain('the URL does not identify an editable project file');
+      expect(edgeChatImageForMessage(f.db, 'p1', 'c1', result.messageId!)?.data).toEqual(png);
+      expect(listMessages(f.db, 'c1')).toHaveLength(1);
+    }
+    const repeated = await post(f.base, route, input, undefined, undefined, headers);
+    expect(await repeated.json()).toMatchObject({ ...result, replayed: true });
+    expect(f.events).toHaveLength(1);
+    expect((await post(f.base, route, { ...input, note: 'Changed note' }, undefined, undefined, headers)).status).toBe(409);
+    for (const [index, url] of ['about:config', 'about:blank#fragment', 'about:blank?query=1', 'about:blank/extra',
+      'about:Blank', 'about:%62lank', 'data:text/html,example', 'javascript:alert(1)'].entries()) {
+      expect((await post(f.base, route, { ...input, url, eventId: `blank-rejected-${index}` }, undefined, undefined, headers)).status).toBe(400);
+    }
+    expect(f.events).toHaveLength(1);
+  });
+
   it('CLI post keeps its direct message and message-owned image contract', async () => {
     const f = await fixture();
     fixtures.push(f);

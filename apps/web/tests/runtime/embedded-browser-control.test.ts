@@ -21,6 +21,68 @@ const target: EmbeddedBrowserTarget = {
 };
 
 describe('embedded browser control relay', () => {
+  it.each(['applied', 'failed', 'unmeasured', 'expired', 'unapproved', 'missing'] as const)(
+    'handles %s typed style patches without host page execution', async (outcome) => {
+      let polls = 0;
+      const expiresAt = outcome === 'expired' ? 0 : Date.now() + 10_000;
+      const request = { operation: 'style' as const, approved: outcome !== 'unapproved',
+        target: { selector: 'h1' }, styles: { color: 'red' } };
+      const inspection = { selector: 'h1', position: { x: 1, y: 2, width: 160, height: 30 }, style: { color: 'red' } };
+      const applyStyle = vi.fn(async () => {
+        if (outcome === 'failed') throw new Error('Browser style target is no longer available');
+        return outcome === 'unmeasured' ? null : inspection;
+      });
+      const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+        if (String(input).endsWith('/commands/next')) {
+          if (++polls === 1) return jsonResponse({ command: { commandId: 'style-1', expiresAt, request } });
+          return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+        }
+        return jsonResponse(String(input).endsWith('/register') ? { leaseId: 'lease-1' } : { accepted: true });
+      });
+      const hostBridge = { registerTarget: vi.fn(async () => ({ ok: true })), unregisterTarget: vi.fn(async () => ({ ok: true })), execute: vi.fn() };
+      const session = createEmbeddedBrowserControlSession({ target, fetchImpl, hostBridge,
+        ...(outcome === 'missing' ? {} : { applyStyle }) });
+      await session.ready;
+      const resultUrl = EMBEDDED_BROWSER_CONTROL_ROUTES.result(target.projectId, target.tabId, 'style-1');
+      await vi.waitFor(() => expect(requestBody(fetchImpl, resultUrl)).not.toBeNull());
+      expect(requestBody(fetchImpl, resultUrl)).toMatchObject(outcome === 'applied'
+        ? { ok: true, result: { operation: 'style', applied: true, inspection } }
+        : { ok: false, error: { code: 'BROWSER_COMMAND_FAILED' } });
+      expect(applyStyle).toHaveBeenCalledTimes(['expired', 'unapproved', 'missing'].includes(outcome) ? 0 : 1);
+      if (outcome === 'applied') expect(applyStyle).toHaveBeenCalledWith(request, expiresAt);
+      expect(hostBridge.execute).not.toHaveBeenCalled();
+      await session.stop();
+    });
+
+  it.each(['applied', 'parked', 'expired'] as const)('handles %s viewport selection in the existing lease without host page execution', async (outcome) => {
+    let polls = 0;
+    const expiresAt = outcome === 'expired' ? 0 : Date.now() + 10_000;
+    const applyViewport = vi.fn(async () => {
+      if (outcome === 'parked') throw new Error('Activate this browser tab before changing its viewport');
+      return { preset: 'mobile' as const, width: 390, height: 600 };
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      if (String(input).endsWith('/commands/next')) {
+        if (++polls === 1) return jsonResponse({ command: { commandId: 'viewport-1', expiresAt,
+          request: { operation: 'viewport', preset: 'mobile' } } });
+        return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+      }
+      return jsonResponse(String(input).endsWith('/register') ? { leaseId: 'lease-1' } : { accepted: true });
+    });
+    const hostBridge = { registerTarget: vi.fn(async () => ({ ok: true })), unregisterTarget: vi.fn(async () => ({ ok: true })), execute: vi.fn() };
+    const session = createEmbeddedBrowserControlSession({ target, fetchImpl, hostBridge, applyViewport });
+    await session.ready;
+    const resultUrl = EMBEDDED_BROWSER_CONTROL_ROUTES.result(target.projectId, target.tabId, 'viewport-1');
+    await vi.waitFor(() => expect(requestBody(fetchImpl, resultUrl)).not.toBeNull());
+    expect(requestBody(fetchImpl, resultUrl)).toMatchObject(outcome === 'applied'
+      ? { ok: true, result: { operation: 'viewport', preset: 'mobile', width: 390, height: 600 } }
+      : { ok: false, error: { code: 'BROWSER_COMMAND_FAILED', message: expect.stringContaining(outcome === 'parked' ? 'Activate' : 'expired') } });
+    expect(applyViewport).toHaveBeenCalledTimes(outcome === 'expired' ? 0 : 1);
+    if (outcome !== 'expired') expect(applyViewport).toHaveBeenCalledWith('mobile', expiresAt);
+    expect(hostBridge.execute).not.toHaveBeenCalled();
+    expect(hostBridge.registerTarget).toHaveBeenCalledTimes(1);
+    await session.stop();
+  });
   it('executes a browser operation against the selected tab', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({
       commandId: 'command-direct',

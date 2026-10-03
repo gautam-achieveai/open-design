@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const tr: Dict = {
+  "homeHero.chip.activeUiDevelopment": "Aktif UI geliştirme",
+  "homeHero.chip.activeUiDevelopmentDesc": "Mevcut siteyi tarayıcı geri bildirimiyle iyileştirin",
+  "homeHero.chip.activeUiDevelopmentHint": "Mevcut kaynak projeyi açın veya içe aktarın, ardından önizleme URL’sini veya açıklamaları paylaşın.",
+  "homeHero.uiDevelopmentTitle": "Arayüzünüzü iyileştirelim",
+  "homeHero.uiDevelopmentSubtitle": "Mevcut kaynak projeyi açın veya içe aktarın, ardından önizleme URL’sini veya açıklamaları paylaşın.",
   'billing.wallet': 'Cüzdan bakiyesi',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} saat',
@@ -2213,6 +2218,7 @@ export const tr: Dict = {
   'chat.annotationSentWithoutScreenshot': 'Önizleme yakalanamadı. Açıklama ekran görüntüsü olmadan gönderildi.',
   'chat.annotationCaptureDisclosure': "Girilen metin yakalama sırasında gizlendi; özgün kenarlıklar ve arka planlar korundu. Desteklenmeyen kontroller maskeli kalır.",
   'chat.annotationTimeout': 'Açıklama gönderimi zaman aşımına uğradı. Lütfen tekrar deneyin.',
+  'chat.annotationContextLoading': "Açıklama ayrıntıları yükleniyor…",
   'chat.annotationFailed': 'Açıklama gönderimi başarısız oldu. Lütfen tekrar deneyin.',
   'chat.annotationProjectCreateFailed': 'Bir proje oluşturulamadığından açıklama gönderilmedi.',
   'chat.annotationUploadFailed': 'Ek yükleme başarısız oldu. Lütfen tekrar deneyin.',

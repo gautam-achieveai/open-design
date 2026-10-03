@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const th: Dict = {
+  "homeHero.chip.activeUiDevelopment": "พัฒนา UI อย่างต่อเนื่อง",
+  "homeHero.chip.activeUiDevelopmentDesc": "ปรับปรุงเว็บไซต์เดิมด้วยความคิดเห็นจากเบราว์เซอร์",
+  "homeHero.chip.activeUiDevelopmentHint": "เปิดหรือนำเข้าโปรเจกต์ซอร์สเดิม จากนั้นแชร์ URL ตัวอย่างหรือคำอธิบายประกอบ",
+  "homeHero.uiDevelopmentTitle": "มาปรับปรุง UI ของคุณกัน",
+  "homeHero.uiDevelopmentSubtitle": "เปิดหรือนำเข้าโปรเจกต์ซอร์สเดิม จากนั้นแชร์ URL ตัวอย่างหรือคำอธิบายประกอบ",
   'billing.wallet': 'ยอดเงินในกระเป๋าเงิน',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} ชั่วโมง',
@@ -2213,6 +2218,7 @@ export const th: Dict = {
   'chat.annotationSentWithoutScreenshot': 'ไม่สามารถจับภาพตัวอย่างได้ ส่งคำอธิบายประกอบโดยไม่มีภาพหน้าจอแล้ว',
   'chat.annotationCaptureDisclosure': "ซ่อนข้อความที่ป้อนขณะจับภาพ โดยคงเส้นขอบและพื้นหลังเดิมไว้ ส่วนควบคุมที่ไม่รองรับยังถูกปิดบัง",
   'chat.annotationTimeout': 'การส่งคำอธิบายประกอบหมดเวลา โปรดลองอีกครั้ง',
+  'chat.annotationContextLoading': "กำลังโหลดรายละเอียดคำอธิบายประกอบ…",
   'chat.annotationFailed': 'การส่งคำอธิบายประกอบล้มเหลว โปรดลองอีกครั้ง',
   'chat.annotationProjectCreateFailed': 'ไม่สามารถสร้างโปรเจกต์ได้ จึงไม่ได้ส่งคำอธิบายประกอบ',
   'chat.annotationUploadFailed': 'การอัปโหลดไฟล์แนบล้มเหลว โปรดลองอีกครั้ง',

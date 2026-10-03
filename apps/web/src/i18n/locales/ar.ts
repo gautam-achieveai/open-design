@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const ar: Dict = {
+  "homeHero.chip.activeUiDevelopment": "تطوير نشط للواجهة",
+  "homeHero.chip.activeUiDevelopmentDesc": "حسّن موقعًا قائمًا بملاحظات المتصفح",
+  "homeHero.chip.activeUiDevelopmentHint": "افتح مشروع المصدر الحالي أو استورده، ثم شارك رابط المعاينة أو التعليقات التوضيحية.",
+  "homeHero.uiDevelopmentTitle": "لنحسّن واجهتك",
+  "homeHero.uiDevelopmentSubtitle": "افتح مشروع المصدر الحالي أو استورده، ثم شارك رابط المعاينة أو التعليقات التوضيحية.",
   'billing.wallet': 'رصيد المحفظة',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} ساعات',
@@ -2213,6 +2218,7 @@ export const ar: Dict = {
   'chat.annotationSentWithoutScreenshot': 'تعذّر التقاط المعاينة. تم إرسال التعليق التوضيحي بدون لقطة شاشة.',
   'chat.annotationCaptureDisclosure': "تم إخفاء النص المُدخل أثناء الالتقاط مع الحفاظ على حدود الحقول وخلفياتها الأصلية. تبقى عناصر التحكم غير المدعومة محجوبة.",
   'chat.annotationTimeout': 'انتهت مهلة إرسال التعليق التوضيحي. يُرجى المحاولة مرة أخرى.',
+  'chat.annotationContextLoading': "جارٍ تحميل تفاصيل التعليق…",
   'chat.annotationFailed': 'فشل إرسال التعليق التوضيحي. يُرجى المحاولة مرة أخرى.',
   'chat.annotationProjectCreateFailed': 'تعذّر إنشاء مشروع، لذا لم يتم إرسال التعليق التوضيحي.',
   'chat.annotationUploadFailed': 'فشل رفع المرفق. يُرجى المحاولة مرة أخرى.',

@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { act, useState } from 'react';
+import { act, useCallback, useEffect, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -42,6 +42,8 @@ import {
 } from '../../src/collab/collab-context';
 import { IframeKeepAliveProvider } from '../../src/components/IframeKeepAlivePool';
 import { navigate } from '../../src/router';
+import { installMockOpenDesignHost } from '@open-design/host/testing';
+import type { OpenDesignHostBrowserPopup, OpenDesignHostBrowserPopupEvent } from '@open-design/host';
 
 describe('settleManualEditExit', () => {
   it.each([
@@ -79,18 +81,29 @@ vi.mock('../../src/providers/registry', async () => {
   };
 });
 
+const browserMetadataFeedback = vi.hoisted(() => ({
+  current: {} as Record<string, { title: string; url: string; iconUrl?: string }>,
+  next: {} as Record<string, { title: string; url: string; iconUrl?: string }>,
+}));
+
 vi.mock('../../src/components/DesignBrowserPanel', () => ({
   DesignBrowserPanel: ({
+    browserTabId,
+    onBrowserRetentionChange,
     initialIconUrl,
     initialTitle,
     initialUrl,
     navigateRequest,
+    onPageInfoChange,
     onPageSnapshotToast,
   }: {
+    browserTabId?: string;
+    onBrowserRetentionChange?: (tabId: string, pending: boolean) => void;
     initialIconUrl?: string;
     initialTitle?: string;
     initialUrl?: string;
     navigateRequest?: { url: string; nonce: number };
+    onPageInfoChange?: (info: { title: string; url: string; iconUrl?: string }) => void;
     onPageSnapshotToast?: (event: {
       actionFileName?: string;
       actionLabel?: string;
@@ -101,15 +114,31 @@ vi.mock('../../src/components/DesignBrowserPanel', () => ({
       tabId: string;
       ttlMs?: number;
     }) => void;
-  }) => (
+  }) => {
+    // Match the real panel's metadata effect, including callback identity.
+    useEffect(() => {
+      const info = browserMetadataFeedback.current[browserTabId ?? ''];
+      if (info) onPageInfoChange?.(info);
+    }, [browserTabId, onPageInfoChange]);
+    return (
     <div
       data-testid="design-browser-panel"
+      data-browser-tab-id={browserTabId}
       data-initial-icon-url={initialIconUrl ?? ''}
       data-initial-title={initialTitle ?? ''}
       data-initial-url={initialUrl ?? ''}
       data-navigate-url={navigateRequest?.url ?? ''}
       data-navigate-nonce={navigateRequest?.nonce ?? ''}
     >
+      <button data-testid={`retain-${browserTabId}`} onClick={() => onBrowserRetentionChange?.(browserTabId!, true)}>retain registration</button>
+      <button data-testid={`release-${browserTabId}`} onClick={() => onBrowserRetentionChange?.(browserTabId!, false)}>release registration</button>
+      <button data-testid={`metadata-${browserTabId}`} onClick={() => {
+        const info = browserMetadataFeedback.next[browserTabId ?? ''];
+        if (info) {
+          browserMetadataFeedback.current[browserTabId!] = info;
+          onPageInfoChange?.(info);
+        }
+      }}>report changed browser metadata</button>
       <button
         type="button"
         data-testid="emit-browser-snapshot-success"
@@ -127,7 +156,8 @@ vi.mock('../../src/components/DesignBrowserPanel', () => ({
         emit snapshot success
       </button>
     </div>
-  ),
+    );
+  },
   labelFromUrl: (url: string) => {
     try {
       return new URL(url).hostname.replace(/^www\./, '') || url;
@@ -257,6 +287,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  browserMetadataFeedback.current = {};
+  browserMetadataFeedback.next = {};
   excalidrawWorkspaceMock.lastProps = null;
   if (root) {
     act(() => root?.unmount());
@@ -4741,5 +4773,117 @@ describe('FileWorkspace empty-project generation contract', () => {
     );
 
     expect(screen.queryByTestId('preview-run-status')).toBeNull();
+  });
+});
+
+
+describe('FileWorkspace native popup adoption', () => {
+  it('settles stateful parent restoration feedback without losing live popup metadata', async () => {
+    let receive: ((event: OpenDesignHostBrowserPopupEvent) => void) | undefined;
+    const popup: OpenDesignHostBrowserPopup = { surfaceId: 'popup:feedback', projectId: 'project-feedback',
+      openerTabId: '__browser__:1', ancestorTabIds: ['__browser__:1'], webContentsId: 199,
+      url: 'about:blank', title: 'Written child', loading: false, canGoBack: false, canGoForward: false,
+      disposition: 'new-window' };
+    const bindPopup = vi.fn(async () => ({ ok: true as const }));
+    const closePopupProject = vi.fn(async () => ({ ok: true as const }));
+    const restore = installMockOpenDesignHost({ host: { browser: {
+      listPopups: async () => ({ ok: true, popups: [] }),
+      subscribePopups: (listener) => { receive = listener; return () => {}; }, bindPopup, closePopupProject,
+      presentPopup: async () => ({ ok: true }), popupCommand: async () => ({ ok: true }),
+    } } });
+    const published = vi.fn<(next: OpenTabsState) => void>();
+    browserMetadataFeedback.current = {
+      '__browser__:1': { title: 'Restored page', url: 'https://restored.example/' },
+      '__browser__:2': { title: 'Written child', url: 'about:blank', iconUrl: 'https://child.example/icon.png' },
+    };
+    browserMetadataFeedback.next['__browser__:2'] = {
+      title: 'Navigated child', url: 'https://child.example/next', iconUrl: 'https://child.example/next-icon.png',
+    };
+    function Parent({ projectId }: { projectId: string }) {
+      const [state, setState] = useState<OpenTabsState>({ tabs: [], active: '__browser__:1', browserTabs: [
+        { id: '__browser__:1', label: 'Browser', url: 'https://restored.example/' },
+      ] });
+      const persist = useCallback((next: OpenTabsState) => {
+        published(next);
+        // Fail deterministically before React's repeated passive effects spin forever.
+        if (published.mock.calls.length > 8) throw new Error('browser metadata persistence did not settle');
+        setState(next);
+      }, []);
+      return <FileWorkspace projectId={projectId} projectKind="prototype" files={[]} liveArtifacts={[]}
+        onRefreshFiles={vi.fn()} isDeck={false} tabsState={state} onTabsStateChange={persist} />;
+    }
+    try {
+      const view = render(<Parent projectId="project-feedback" />);
+      expect(screen.getByRole('tab', { name: /Restored page/ })).toBeTruthy();
+      expect(published).toHaveBeenCalledTimes(1);
+      await act(async () => { receive?.({ kind: 'updated', popup }); });
+      await waitFor(() => expect(document.querySelector<HTMLElement>('[data-browser-tab-id="__browser__:2"]')
+        ?.dataset.initialTitle).toBe('Written child'));
+      const child = document.querySelector('[data-browser-tab-id="__browser__:2"]') as HTMLElement;
+      expect(child.dataset.initialIconUrl).toBe('https://child.example/icon.png');
+      expect(child.dataset.navigateUrl).toBe('');
+      expect(bindPopup).toHaveBeenCalledTimes(1);
+      expect(published.mock.calls.every(([state]: [OpenTabsState]) =>
+        state.browserTabs?.every((tab) => tab.id === '__browser__:1'))).toBe(true);
+      const settledPublications = published.mock.calls.length;
+      view.rerender(<Parent projectId="project-feedback" />);
+      expect(published).toHaveBeenCalledTimes(settledPublications);
+
+      fireEvent.click(screen.getByTestId('metadata-__browser__:2'));
+      expect(screen.getByRole('tab', { name: /Navigated child/ })).toBeTruthy();
+      expect(document.querySelector('[data-browser-tab-id="__browser__:2"]')).toBe(child);
+      expect(child.dataset.initialUrl).toBe('https://child.example/next');
+      expect(bindPopup).toHaveBeenCalledTimes(1);
+      expect(published).toHaveBeenCalledTimes(settledPublications + 1);
+      expect(published.mock.calls.at(-1)![0].browserTabs).toHaveLength(1);
+
+      view.rerender(<Parent projectId="another-project" />);
+      await waitFor(() => expect(document.querySelector('[data-browser-tab-id="__browser__:2"]')).toBeNull());
+      expect(closePopupProject).toHaveBeenCalledWith('project-feedback');
+    } finally { cleanup(); restore(); }
+  });
+
+  it('recovers snapshots once without navigation, retains dependent ancestors beyond the LRU and excludes transient tabs from persistence', async () => {
+    let receive: ((event: OpenDesignHostBrowserPopupEvent) => void) | undefined;
+    const popup: OpenDesignHostBrowserPopup = { surfaceId: 'popup:1', projectId: 'project-1', openerTabId: '__browser__:1',
+      ancestorTabIds: ['__browser__:1'], webContentsId: 99, url: 'about:blank', title: 'Written child', loading: false,
+      canGoBack: false, canGoForward: false, disposition: 'new-window' };
+    const bindPopup = vi.fn(async () => ({ ok: true as const }));
+    const closePopupProject = vi.fn(async () => ({ ok: true as const }));
+    const restore = installMockOpenDesignHost({ host: { browser: { listPopups: async () => ({ ok: true, popups: [popup] }),
+      subscribePopups: (listener) => { receive = listener; return () => {}; }, bindPopup,
+      presentPopup: async () => ({ ok: true }), popupCommand: async () => ({ ok: true }), closePopupProject } } });
+    try {
+      const changes = vi.fn();
+      const browserTabs = Array.from({ length: 5 }, (_, index) => ({ id: `__browser__:${index + 1}`, label: `Page ${index + 1}`,
+        title: `Page ${index + 1}`, url: `https://page${index + 1}.example/` }));
+      const view = render(<FileWorkspace projectId="project-1" projectKind="prototype" files={[]} liveArtifacts={[]}
+        onRefreshFiles={vi.fn()} isDeck={false} tabsState={{ tabs: [], active: '__browser__:1', browserTabs }} onTabsStateChange={changes} />);
+      await waitFor(() => expect(screen.getByRole('tab', { name: /Written child/ })).toBeTruthy());
+      await act(async () => { receive?.({ kind: 'updated', popup }); });
+      expect(bindPopup).toHaveBeenCalledTimes(1);
+      expect(screen.getAllByRole('tab', { name: /Written child/ })).toHaveLength(1);
+      const child = document.querySelector('[data-browser-tab-id="__browser__:6"]') as HTMLElement;
+      expect(child.dataset.navigateUrl).toBe('');
+      for (const page of [2, 3, 4, 5]) fireEvent.click(screen.getByRole('tab', { name: new RegExp(`Page ${page}`) }));
+      expect(document.querySelector('[data-browser-tab-id="__browser__:1"]')).not.toBeNull();
+      expect(document.querySelector('[data-browser-tab-id="__browser__:2"]')).toBeNull();
+      expect(changes.mock.calls.at(-1)?.[0].browserTabs.some((tab: { id: string }) => tab.id === '__browser__:6')).toBe(false);
+      await act(async () => { receive?.({ kind: 'closed', popup }); });
+      expect(screen.queryByRole('tab', { name: /Written child/ })).toBeNull();
+      expect(document.querySelector('[data-browser-tab-id="__browser__:1"]')).toBeNull();
+      view.unmount(); expect(closePopupProject).toHaveBeenCalledWith('project-1');
+    } finally { cleanup(); restore(); }
+  });
+  it('temporarily retains an opener awaiting registration and restores ordinary LRU eviction on release', () => {
+    const browserTabs = Array.from({ length: 5 }, (_, index) => ({ id: `__browser__:${index + 1}`, label: `Page ${index + 1}`,
+      title: `Page ${index + 1}`, url: `https://page${index + 1}.example/` }));
+    render(<FileWorkspace projectId="project-1" projectKind="prototype" files={[]} liveArtifacts={[]}
+      onRefreshFiles={vi.fn()} isDeck={false} tabsState={{ tabs: [], active: '__browser__:1', browserTabs }} onTabsStateChange={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('retain-__browser__:1'));
+    for (const page of [2, 3, 4, 5]) fireEvent.click(screen.getByRole('tab', { name: new RegExp(`Page ${page}`) }));
+    expect(document.querySelector('[data-browser-tab-id="__browser__:1"]')).not.toBeNull();
+    fireEvent.click(screen.getByTestId('release-__browser__:1'));
+    expect(document.querySelector('[data-browser-tab-id="__browser__:1"]')).toBeNull();
   });
 });

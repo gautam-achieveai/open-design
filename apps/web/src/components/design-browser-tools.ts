@@ -1,6 +1,7 @@
 import type { PreviewAnnotationStyle } from '../types';
 
-export type BrowserViewportId = 'desktop' | 'tablet' | 'mobile';
+import type { BrowserViewportId } from '@open-design/contracts';
+export type { BrowserViewportId } from '@open-design/contracts';
 
 export interface BrowserViewportPreset {
   id: BrowserViewportId;
@@ -91,6 +92,7 @@ export function browserAnnotationPixelMasks(
   frame: BrowserRect,
   image: { w: number; h: number },
   masks: BrowserRect[],
+  actualCrop?: BrowserRect,
 ): BrowserRect[] | null {
   const clipped = {
     x: Math.max(0, element.x),
@@ -103,16 +105,20 @@ export function browserAnnotationPixelMasks(
   if (![element.x, element.y, element.width, element.height, frame.width, frame.height,
     image.w, image.h].every(Number.isFinite) || width <= 0 || height <= 0
     || image.w <= 0 || image.h <= 0 || masks.length > 200) return null;
-  const sx = image.w / width;
-  const sy = image.h / height;
+  const crop = actualCrop ?? { x: clipped.x, y: clipped.y, width, height };
+  if (![crop.x, crop.y, crop.width, crop.height].every(Number.isFinite) || crop.width <= 0 || crop.height <= 0
+    || crop.x >= clipped.right || crop.y >= clipped.bottom
+    || crop.x + crop.width <= clipped.x || crop.y + crop.height <= clipped.y) return null;
+  const sx = image.w / crop.width;
+  const sy = image.h / crop.height;
   const result: BrowserRect[] = [];
   for (const mask of masks) {
     if (![mask.x, mask.y, mask.width, mask.height].every(Number.isFinite)
       || mask.width <= 0 || mask.height <= 0) return null;
-    const x0 = Math.max(0, Math.floor((element.x + mask.x - clipped.x) * sx));
-    const y0 = Math.max(0, Math.floor((element.y + mask.y - clipped.y) * sy));
-    const x1 = Math.min(image.w, Math.ceil((element.x + mask.x + mask.width - clipped.x) * sx));
-    const y1 = Math.min(image.h, Math.ceil((element.y + mask.y + mask.height - clipped.y) * sy));
+    const x0 = Math.max(0, Math.floor((element.x + mask.x - crop.x) * sx));
+    const y0 = Math.max(0, Math.floor((element.y + mask.y - crop.y) * sy));
+    const x1 = Math.min(image.w, Math.ceil((element.x + mask.x + mask.width - crop.x) * sx));
+    const y1 = Math.min(image.h, Math.ceil((element.y + mask.y + mask.height - crop.y) * sy));
     if (x1 > x0 && y1 > y0) result.push({ x: x0, y: y0, width: x1 - x0, height: y1 - y0,
       ...(mask.textHidden === true ? { textHidden: true } : {}) });
   }
@@ -517,7 +523,16 @@ export function browserElementPickerScript(filePath: string): string {
       paddingRight: s.paddingRight,
       paddingBottom: s.paddingBottom,
       paddingLeft: s.paddingLeft,
-      borderRadius: s.borderRadius
+      borderRadius: s.borderRadius,
+      opacity: s.opacity,
+      borderColor: s.borderColor,
+      borderWidth: s.borderWidth,
+      width: s.width,
+      height: s.height,
+      marginTop: s.marginTop,
+      marginRight: s.marginRight,
+      marginBottom: s.marginBottom,
+      marginLeft: s.marginLeft
     };
   }
   function snapshotFor(el, ev) {
@@ -679,7 +694,16 @@ export function browserMeasureTargetsScript(
       paddingRight: s.paddingRight,
       paddingBottom: s.paddingBottom,
       paddingLeft: s.paddingLeft,
-      borderRadius: s.borderRadius
+      borderRadius: s.borderRadius,
+      opacity: s.opacity,
+      borderColor: s.borderColor,
+      borderWidth: s.borderWidth,
+      width: s.width,
+      height: s.height,
+      marginTop: s.marginTop,
+      marginRight: s.marginRight,
+      marginBottom: s.marginBottom,
+      marginLeft: s.marginLeft
     };
   }
   function snapshotFor(target) {
@@ -727,6 +751,27 @@ export function browserApplyStyleScript(
   if (!el || !el.style) return false;
   el.style[${JSON.stringify(prop)}] = ${JSON.stringify(value)};
   return true;
+})()
+`;
+}
+
+export function browserApplyStylesScript(selector: string, styles: Partial<PreviewAnnotationStyle>): string {
+  return `
+(() => {
+  const el = document.querySelector(${JSON.stringify(selector)});
+  if (!el || !el.style) return false;
+  const patch = ${JSON.stringify(styles)};
+  const entries = Object.entries(patch);
+  const propertyName = (key) => key.replace(/[A-Z]/g, (letter) => '-' + letter.toLowerCase());
+  if (!entries.length || entries.some(([key, value]) => !CSS.supports(propertyName(key), value))) return false;
+  const previous = el.getAttribute('style');
+  try {
+    for (const [key, value] of entries) el.style[key] = value;
+    return true;
+  } catch (_) {
+    if (previous === null) el.removeAttribute('style'); else el.setAttribute('style', previous);
+    return false;
+  }
 })()
 `;
 }
@@ -831,6 +876,15 @@ function normalizeAnnotationStyle(value: unknown): PreviewAnnotationStyle | unde
     'paddingBottom',
     'paddingLeft',
     'borderRadius',
+    'opacity',
+    'borderColor',
+    'borderWidth',
+    'width',
+    'height',
+    'marginTop',
+    'marginRight',
+    'marginBottom',
+    'marginLeft',
   ] as Array<keyof PreviewAnnotationStyle>) {
     const raw = record[key];
     if (typeof raw === 'string' && raw.trim()) style[key] = raw.trim();

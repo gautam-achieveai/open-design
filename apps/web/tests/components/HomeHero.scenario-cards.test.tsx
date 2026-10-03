@@ -91,11 +91,12 @@ describe('HomeHero scenario cards', () => {
     expect(typePill('deck')?.textContent).toContain('Slide deck');
   });
 
-  it('uses the fixed ten-item Home creation hierarchy in product order', () => {
+  it('offers active UI development alongside creation types in product order', () => {
     const ordered = orderedCreateChips();
     const ids = ordered.map((chip) => chip.id);
     expect(ids).toEqual([
       'prototype',
+      'active-ui-development',
       'deck',
       'document',
       'image',
@@ -108,6 +109,26 @@ describe('HomeHero scenario cards', () => {
     ]);
     expect(ids).not.toContain('wireframe');
     expect(ids).not.toContain('mobile');
+  });
+
+  it('offers existing-site prompts and an improvement headline for active UI development', () => {
+    renderHero({ activeChipId: 'active-ui-development' });
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('Let’s improve your UI');
+    expect(screen.getByText('Open or import the existing source project, then share a preview URL or annotations.')).toBeTruthy();
+    const examples = screen.getAllByTestId('home-hero-prompt-example');
+    expect(examples).toHaveLength(4);
+    expect(examples.map((example) => example.textContent)).toEqual([
+      expect.stringContaining('annotations'),
+      expect.stringContaining('feedback'),
+      expect.stringContaining('responsive'),
+      expect.stringContaining('Research'),
+    ]);
+    expect(findChip('active-ui-development')?.action).toMatchObject({
+      pluginId: 'od-active-ui-development',
+      projectKind: 'other',
+      projectMetadata: { kind: 'other', intent: 'active-ui-development' },
+      automaticDefault: true,
+    });
   });
 
   it('keeps nested prototype scenarios executable without giving them a chip of their own', () => {

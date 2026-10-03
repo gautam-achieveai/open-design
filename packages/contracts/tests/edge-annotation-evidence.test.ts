@@ -42,4 +42,15 @@ describe('optional browser annotation evidence', () => {
     expect(normalizeEdgeAnnotationAncestors({})).toEqual([]);
     expect(normalizeEdgeAnnotationAncestors([{ tag: 'div', selector: '<private>' }])).toEqual([]);
   });
+
+  it('retains remaining measured style-menu fields without widening value filtering', () => {
+    const style = {
+      opacity: '0.8', borderColor: 'rgb(32, 33, 36)', borderWidth: '1px',
+      width: '600px', height: '20.1562px', marginTop: '0px', marginRight: '1px',
+      marginBottom: '12px', marginLeft: '-2px',
+    };
+    expect(normalizeEdgeAnnotationStyle({ ...style, unsupported: 'keep out' })).toEqual(style);
+    expect(normalizeEdgeAnnotationStyle({ width: 'url(<private>)', borderColor: 'token=private-value',
+      height: '1'.repeat(161), opacity: 1 })).toEqual({});
+  });
 });

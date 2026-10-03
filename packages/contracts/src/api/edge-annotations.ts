@@ -85,6 +85,8 @@ const ANNOTATION_STYLE_KEYS = [
   'color', 'backgroundColor', 'fontSize', 'fontWeight', 'lineHeight',
   'fontFamily', 'textAlign', 'paddingTop', 'paddingRight', 'paddingBottom',
   'paddingLeft', 'borderRadius',
+  'opacity', 'borderColor', 'borderWidth', 'width', 'height',
+  'marginTop', 'marginRight', 'marginBottom', 'marginLeft',
 ] as const satisfies readonly (keyof PreviewAnnotationStyle)[];
 const ANNOTATION_CREDENTIAL_VALUE = /(?:password|passwd|passphrase|secret|token|api[_-]?key|authorization|session|credential|otp|one.time|auth.code|bearer)(?:\s*=\s*\S{6,}|\s*:\s*\S{6,}(?=\s*(?:$|[\n;,])))/i;
 

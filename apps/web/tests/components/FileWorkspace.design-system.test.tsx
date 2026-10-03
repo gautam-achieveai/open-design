@@ -503,6 +503,12 @@ describe('FileWorkspace design-system project surface', () => {
           headers: { 'Content-Type': 'application/json' },
         });
       }
+      if (url === '/api/projects/ds-acme/browser/active-tab') {
+        return new Response(JSON.stringify({ activeTabId: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       events.push(url);
       return new Response(JSON.stringify({ id: 'brand-acme' }), {
         status: 200,
@@ -569,6 +575,10 @@ describe('FileWorkspace design-system project surface', () => {
         body: JSON.stringify({ projectId: 'ds-acme' }),
       }),
     ));
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/projects/ds-acme/browser/active-tab',
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ tabId: null }) }),
+    );
     expect(events).toEqual([
       '/api/brands/brand-acme/finalize',
       'refresh-files',
@@ -636,6 +646,12 @@ describe('FileWorkspace design-system project surface', () => {
           headers: { 'Content-Type': 'application/json' },
         });
       }
+      if (url === '/api/projects/ds-acme/browser/active-tab') {
+        return new Response(JSON.stringify({ activeTabId: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       events.push(url);
       return new Response(JSON.stringify({ id: 'brand-acme' }), {
         status: 200,
@@ -694,6 +710,10 @@ describe('FileWorkspace design-system project surface', () => {
         body: JSON.stringify({ projectId: 'ds-acme' }),
       }),
     );
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/projects/ds-acme/browser/active-tab',
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ tabId: null }) }),
+    );
     expect(events).toEqual([
       '/api/brands/brand-acme/finalize',
       'refresh-files',
@@ -738,6 +758,12 @@ describe('FileWorkspace design-system project surface', () => {
       }
       if (url === '/api/workspace/context') {
         return new Response(JSON.stringify({ context: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url === '/api/projects/ds-acme/browser/active-tab') {
+        return new Response(JSON.stringify({ activeTabId: null }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -794,6 +820,10 @@ describe('FileWorkspace design-system project surface', () => {
     });
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/projects/ds-acme/browser/active-tab',
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ tabId: null }) }),
+    );
     expect(events).toEqual([
       '/api/brands/brand-acme/finalize',
       'refresh-files',

@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const ko: Dict = {
+  "homeHero.chip.activeUiDevelopment": "지속적인 UI 개발",
+  "homeHero.chip.activeUiDevelopmentDesc": "브라우저 피드백으로 기존 사이트 개선",
+  "homeHero.chip.activeUiDevelopmentHint": "기존 소스 프로젝트를 열거나 가져온 뒤 미리보기 URL이나 주석을 공유하세요.",
+  "homeHero.uiDevelopmentTitle": "기존 UI를 개선해 봅시다",
+  "homeHero.uiDevelopmentSubtitle": "기존 소스 프로젝트를 열거나 가져온 뒤 미리보기 URL이나 주석을 공유하세요.",
   'billing.wallet': '지갑 잔액',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count}시간',
@@ -2213,6 +2218,7 @@ export const ko: Dict = {
   'chat.annotationSentWithoutScreenshot': '미리보기를 캡처하지 못했습니다. 주석은 스크린샷 없이 전송되었습니다.',
   'chat.annotationCaptureDisclosure': "캡처 중 입력된 텍스트는 숨기고 원래 테두리와 배경은 유지합니다. 지원되지 않는 컨트롤은 마스킹됩니다.",
   'chat.annotationTimeout': '주석 전송 시간이 초과되었습니다. 다시 시도해 주세요.',
+  'chat.annotationContextLoading': "주석 세부 정보를 불러오는 중…",
   'chat.annotationFailed': '주석 전송에 실패했습니다. 다시 시도해 주세요.',
   'chat.annotationProjectCreateFailed': '프로젝트를 생성할 수 없어 주석이 전송되지 않았습니다.',
   'chat.annotationUploadFailed': '첨부 파일 업로드에 실패했습니다. 다시 시도해 주세요.',

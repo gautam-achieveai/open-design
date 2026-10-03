@@ -21,7 +21,7 @@ const script = splashPixelScanScript();
 const webEngineSource = readFileSync(
   fileURLToPath(new URL('../../../web/src/components/home-hero/pixel-scan/engine.ts', import.meta.url)),
   'utf8',
-);
+).replace(/\r\n/g, '\n');
 
 function webShader(name: 'SHADER' | 'VERT'): string {
   const match = new RegExp(`const ${name} = \`\\n([\\s\\S]*?)\\n\`;`).exec(webEngineSource);

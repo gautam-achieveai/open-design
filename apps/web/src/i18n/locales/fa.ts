@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const fa: Dict = {
+  "homeHero.chip.activeUiDevelopment": "توسعهٔ فعال رابط کاربری",
+  "homeHero.chip.activeUiDevelopmentDesc": "بهبود سایت موجود با بازخورد مرورگر",
+  "homeHero.chip.activeUiDevelopmentHint": "پروژهٔ منبع موجود را باز یا وارد کنید، سپس نشانی پیش‌نمایش یا یادداشت‌ها را به اشتراک بگذارید.",
+  "homeHero.uiDevelopmentTitle": "بیایید رابط کاربری را بهتر کنیم",
+  "homeHero.uiDevelopmentSubtitle": "پروژهٔ منبع موجود را باز یا وارد کنید، سپس نشانی پیش‌نمایش یا یادداشت‌ها را به اشتراک بگذارید.",
   'billing.wallet': 'موجودی کیف پول',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} ساعت',
@@ -2213,6 +2218,7 @@ export const fa: Dict = {
   'chat.annotationSentWithoutScreenshot': 'پیش‌نمایش قابل ثبت نبود. حاشیه‌نویسی بدون اسکرین‌شات ارسال شد.',
   'chat.annotationCaptureDisclosure': "متن واردشده هنگام ثبت پنهان شد؛ حاشیه‌ها و پس‌زمینه‌های اصلی حفظ شدند. کنترل‌های پشتیبانی‌نشده همچنان پوشانده می‌شوند.",
   'chat.annotationTimeout': 'زمان ارسال حاشیه‌نویسی به پایان رسید. لطفاً دوباره تلاش کنید.',
+  'chat.annotationContextLoading': "در حال بارگذاری جزئیات یادداشت…",
   'chat.annotationFailed': 'ارسال حاشیه‌نویسی ناموفق بود. لطفاً دوباره تلاش کنید.',
   'chat.annotationProjectCreateFailed': 'امکان ایجاد پروژه وجود نداشت، بنابراین حاشیه‌نویسی ارسال نشد.',
   'chat.annotationUploadFailed': 'بارگذاری پیوست ناموفق بود. لطفاً دوباره تلاش کنید.',

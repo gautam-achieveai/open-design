@@ -6,7 +6,7 @@ import {
   type OpenDesignHostUpdaterStatusSnapshot,
 } from "./index.js";
 
-export type MockOpenDesignHost = Partial<Omit<OpenDesignHostBridge, "capture" | "client" | "pdf" | "pet" | "preview" | "project" | "shell" | "updater">> & {
+export type MockOpenDesignHost = Partial<Omit<OpenDesignHostBridge, "browser" | "capture" | "client" | "pdf" | "pet" | "preview" | "project" | "shell" | "updater">> & {
   browser?: Partial<OpenDesignHostBridge["browser"]>;
   capture?: Partial<OpenDesignHostBridge["capture"]>;
   client?: Partial<OpenDesignHostBridge["client"]>;

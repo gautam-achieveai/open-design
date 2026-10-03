@@ -18,7 +18,7 @@ import { splitResearchSubcommand } from './research/cli-args.js';
 import { resolveDaemonUrl } from './daemon-url.js';
 import { SidecarFactory } from '@open-design/sidecar';
 import { APP_KEYS, SIDECAR_MESSAGES } from '@open-design/sidecar-proto';
-import { EXPORT_FORMATS, EXPORT_IMAGE_FORMATS, mediaFailureNextStep } from '@open-design/contracts';
+import { EXPORT_FORMATS, EXPORT_IMAGE_FORMATS, isBrowserViewportId, isBrowserStylePatch, mediaFailureNextStep } from '@open-design/contracts';
 import type { ArtifactLintFinding, LintArtifactCliResultEnvelope, LintArtifactResponse, LintFailOn } from '@open-design/contracts';
 import { buildExportCliRequestBody, buildExportCliResultEnvelope, resolveExportCliDeckMode } from './export-cli-request.js';
 import { exportRoutePath } from './export-cli-routing.js';
@@ -379,6 +379,7 @@ const BROWSER_STRING_FLAGS = new Set([
   'extension-id',
   'screenshot',
   'context-file',
+  'styles-file',
   'event-id',
   'workspace',
   'workspace-member',
@@ -497,7 +498,9 @@ function printBrowserHelp() {
   od browser tabs --project <id> [--json]
   od browser active <tabId|clear> --project <id> [--json]
   od browser snapshot --project <id> [--tab <id>] [--json]
+  od browser viewport <desktop|tablet|mobile> --project <id> [--tab <id>] [--json]
   od browser inspect --project <id> [--tab <id>] --selector <css> [--json]
+  od browser style --project <id> [--tab <id>] --selector <css> --styles-file <path|-> --approve [--json]
   od browser screenshot --project <id> [--tab <id>] [--full-page] [--format png|jpeg] [--output <file>] [--json]
   od browser console --project <id> [--tab <id>] [--level <level>] [--limit <n>] [--json]
   od browser network [list|failures|get <requestId>] --project <id> [--tab <id>] [--json]
@@ -519,7 +522,11 @@ The first commands target the renderer-registered embedded tab. The Edge command
 pair a separately signed-in Edge/Chrome tab through the Open Design Clipper;
 that tab remains in the browser's managed work profile. No public CDP port is opened.
 When --tab is omitted, the project's active embedded tab is used. click, type,
-scroll, and navigate are consequential and are refused without --approve.
+scroll, navigate, and style are consequential and are refused without --approve.
+Style patches accept only the bounded annotation style properties, as a JSON object.
+Viewport selection requires an active native tab and returns fitted frame CSS
+dimensions. Its finite preset argument does not accept prompt files.
+Browser-only iframe previews support the toolbar selector but do not register CLI targets.
 
 Options:
   --daemon-url <url>       Override daemon discovery.
@@ -717,7 +724,7 @@ async function runBrowser(args) {
       return;
     }
 
-    if (sub === 'click' || sub === 'type' || sub === 'scroll' || sub === 'navigate') {
+    if (sub === 'click' || sub === 'type' || sub === 'scroll' || sub === 'navigate' || sub === 'style') {
       if (!flags.approve) {
         console.error(`od browser ${sub} is consequential; re-run with --approve`);
         process.exit(2);
@@ -726,6 +733,34 @@ async function runBrowser(args) {
 
     let command;
     switch (sub) {
+      case 'style': {
+        if (typeof flags['styles-file'] !== 'string' || !flags['styles-file'].trim()) {
+          console.error('od browser style requires --styles-file <path|->');
+          process.exit(2);
+        }
+        let styles;
+        try {
+          styles = JSON.parse(await readBrowserText({ 'text-file': flags['styles-file'] }));
+        } catch {
+          console.error('od browser style requires a valid JSON styles file');
+          process.exit(2);
+        }
+        if (!isBrowserStylePatch(styles)) {
+          console.error('styles must be a nonempty bounded object of allowed style strings');
+          process.exit(2);
+        }
+        command = { operation: 'style', approved: true, target: browserTarget(flags, true), styles };
+        break;
+      }
+      case 'viewport': {
+        const preset = positional[1];
+        if (!isBrowserViewportId(preset)) {
+          console.error('Usage: od browser viewport <desktop|tablet|mobile> --project <id>');
+          process.exit(2);
+        }
+        command = { operation: 'viewport', preset };
+        break;
+      }
       case 'snapshot':
         command = { operation: 'snapshot' };
         break;

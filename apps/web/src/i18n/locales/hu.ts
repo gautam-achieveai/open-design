@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const hu: Dict = {
+  "homeHero.chip.activeUiDevelopment": "Aktív UI-fejlesztés",
+  "homeHero.chip.activeUiDevelopmentDesc": "Meglévő webhely javítása böngészős visszajelzéssel",
+  "homeHero.chip.activeUiDevelopmentHint": "Nyisd meg vagy importáld a meglévő forrásprojektet, majd adj meg előnézeti URL-t vagy megjegyzéseket.",
+  "homeHero.uiDevelopmentTitle": "Javítsuk a felületedet",
+  "homeHero.uiDevelopmentSubtitle": "Nyisd meg vagy importáld a meglévő forrásprojektet, majd adj meg előnézeti URL-t vagy megjegyzéseket.",
   'billing.wallet': 'Tárca egyenlege',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} óra',
@@ -2213,6 +2218,7 @@ export const hu: Dict = {
   'chat.annotationSentWithoutScreenshot': 'Nem sikerült rögzíteni az előnézetet. A jegyzet képernyőkép nélkül lett elküldve.',
   'chat.annotationCaptureDisclosure': "A beírt szöveg rejtve maradt a felvételen; az eredeti mezőszegélyek és hátterek megmaradtak. A nem támogatott vezérlők maszkolva maradnak.",
   'chat.annotationTimeout': 'Az annotáció küldése időtúllépés miatt megszakadt. Kérjük, próbálja újra.',
+  'chat.annotationContextLoading': "A megjegyzés részleteinek betöltése…",
   'chat.annotationFailed': 'Az annotáció küldése nem sikerült. Kérjük, próbálja újra.',
   'chat.annotationProjectCreateFailed': 'Nem sikerült projektet létrehozni, ezért az annotáció nem lett elküldve.',
   'chat.annotationUploadFailed': 'A melléklet feltöltése nem sikerült. Kérjük, próbálja újra.',

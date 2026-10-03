@@ -17,6 +17,11 @@ import {
 } from '../src/plugins/scenario-defaults.js';
 
 describe('automaticStrategyTaskProfileForRouteId', () => {
+  it('routes active UI development to source editing without a generation strategy', () => {
+    const metadata = { kind: 'other' as const, intent: 'active-ui-development' as const };
+    expect(defaultScenarioPluginIdForProjectMetadata(metadata)).toBe('od-active-ui-development');
+    expect(defaultScenarioTaskProfileForProjectMetadata(metadata, 'od-active-ui-development')).toBeNull();
+  });
   it('recognizes only the four product-owned OD Next routes', () => {
     expect(automaticStrategyTaskProfileForRouteId('prototype')).toBe('prototype');
     expect(automaticStrategyTaskProfileForRouteId('deck')).toBe('ppt');

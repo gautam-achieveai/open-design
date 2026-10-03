@@ -112,8 +112,8 @@ export function PlaceholderCarousel({ scenarios, active, paused = false, onScena
     : scenario.text.slice(0, state.charCount);
   return (
     <div className="home-hero__carousel" aria-hidden="true" data-testid="home-hero-carousel">
-      <span className="home-hero__carousel-text">{visible}</span>
       <span className="home-hero__carousel-caret" />
+      <span className="home-hero__carousel-text">{visible}</span>
     </div>
   );
 }

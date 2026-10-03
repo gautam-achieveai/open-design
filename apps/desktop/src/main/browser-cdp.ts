@@ -350,11 +350,6 @@ function guestHasApprovedIdentity(guest: WebContents, designBrowserSession: Sess
   );
 }
 
-function guestIsApproved(guest: WebContents, designBrowserSession: Session): boolean {
-  return guestHasApprovedIdentity(guest, designBrowserSession)
-    && isAllowedDesignBrowserUrl(guest.getURL());
-}
-
 async function queryNodeId(guest: WebContents, selector: string): Promise<number | null> {
   const document = await guest.debugger.sendCommand("DOM.getDocument", { depth: 0, pierce: true }) as UnknownRecord;
   const root = isRecord(document.root) ? document.root : {};
@@ -464,6 +459,7 @@ function waitForNavigationReadiness(
 
 export type DesignBrowserCdpController = {
   attachGuest(guest: WebContents): Promise<void>;
+  attachPopup(guest: WebContents): Promise<void>;
   close(): void;
   execute(value: unknown): Promise<OpenDesignHostBrowserExecuteResult>;
   listTargets(): OpenDesignHostBrowserListTargetsResult;
@@ -474,12 +470,16 @@ export type DesignBrowserCdpController = {
 export function createDesignBrowserCdpController(
   designBrowserSession: Session,
 ): DesignBrowserCdpController {
+  const trustedPopups = new Set<WebContents>();
+  const approvedIdentity = (guest: WebContents) => guestHasApprovedIdentity(guest, designBrowserSession) || (trustedPopups.has(guest) && !guest.isDestroyed() && guest.session === designBrowserSession);
+  const approved = (guest: WebContents) => approvedIdentity(guest) && isAllowedDesignBrowserUrl(guest.getURL() || "about:blank");
   const attached = new Map<number, AttachedGuest>();
   const registrations = new Map<string, OpenDesignHostBrowserTargetRegistration>();
 
   const removeGuest = (webContentsId: number): void => {
     const state = attached.get(webContentsId);
     attached.delete(webContentsId);
+    if (state) trustedPopups.delete(state.guest);
     for (const [tabId, registration] of registrations) {
       if (registration.webContentsId === webContentsId) registrations.delete(tabId);
     }
@@ -494,7 +494,7 @@ export function createDesignBrowserCdpController(
 
   const attachGuest = async (guest: WebContents): Promise<void> => {
     if (
-      !guestHasApprovedIdentity(guest, designBrowserSession)
+      !approvedIdentity(guest)
       || (guest.getURL() !== "" && !isAllowedDesignBrowserUrl(guest.getURL()))
     ) {
       throw new Error("embedded browser guest is not approved for CDP");
@@ -617,7 +617,7 @@ export function createDesignBrowserCdpController(
     const state = attached.get(registration.webContentsId);
     if (
       !state
-      || !guestIsApproved(state.guest, designBrowserSession)
+      || !approved(state.guest)
       || !state.guest.debugger.isAttached()
     ) {
       return failure("browser target is not an attached approved Design Browser guest");
@@ -652,7 +652,7 @@ export function createDesignBrowserCdpController(
       const state = attached.get(registration.webContentsId);
       if (
         !state
-        || !guestIsApproved(state.guest, designBrowserSession)
+        || !approved(state.guest)
         || !state.guest.debugger.isAttached()
       ) {
         registrations.delete(tabId);
@@ -671,7 +671,7 @@ export function createDesignBrowserCdpController(
     const state = attached.get(registration.webContentsId);
     if (
       !state
-      || !guestIsApproved(state.guest, designBrowserSession)
+      || !approved(state.guest)
       || !state.guest.debugger.isAttached()
     ) {
       registrations.delete(request.tabId);
@@ -885,6 +885,11 @@ export function createDesignBrowserCdpController(
 
   return {
     attachGuest,
+    attachPopup: async (guest) => {
+      if (guest.session !== designBrowserSession || guest.isDestroyed()) throw new Error("unapproved popup session");
+      trustedPopups.add(guest);
+      try { await attachGuest(guest); } catch (error) { trustedPopups.delete(guest); throw error; }
+    },
     close: () => {
       for (const webContentsId of [...attached.keys()]) removeGuest(webContentsId);
       registrations.clear();

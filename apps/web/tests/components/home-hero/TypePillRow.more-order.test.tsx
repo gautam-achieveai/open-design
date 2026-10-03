@@ -21,6 +21,7 @@ afterEach(() => {
 });
 
 const EXPECTED_MORE_ORDER = [
+  'active-ui-development',
   'image',
   'hyperframes',
   'web-clone',

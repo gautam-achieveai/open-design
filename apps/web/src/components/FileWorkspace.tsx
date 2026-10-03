@@ -1,3 +1,4 @@
+import { getHostBrowserPopups, type OpenDesignHostBrowserPopup, type OpenDesignHostBrowserPopupEvent } from '@open-design/host';
 import { useExperienceError } from '../observability/use-experience-error';
 import type { RecoveryActionBlockReason } from '../runtime/chat/recovery-gating';
 import {
@@ -1498,6 +1499,16 @@ export function FileWorkspace({
     projectFoldersProjectIdRef.current = projectId;
     setProjectFolders(EMPTY_PROJECT_FOLDERS);
   }
+  const [pendingBrowserRegistrations, setPendingBrowserRegistrations] = useState<Set<string>>(() => new Set());
+  const retainPendingBrowser = useCallback((tabId: string, pending: boolean) => {
+    setPendingBrowserRegistrations((current) => {
+      if (current.has(tabId) === pending) return current;
+      const next = new Set(current); if (pending) next.add(tabId); else next.delete(tabId); return next;
+    });
+  }, []);
+  const [popupTabs, setPopupTabs] = useState<Record<string, OpenDesignHostBrowserPopup>>({});
+  const popupTabsRef = useRef(popupTabs);
+  popupTabsRef.current = popupTabs;
   const [browserTabs, setBrowserTabs] = useState<BrowserWorkspaceTab[]>(
     () => browserTabsFromState(tabsState.browserTabs),
   );
@@ -1674,12 +1685,16 @@ export function FileWorkspace({
   // "Continue extraction" handler read the live, post-wall DOM instead of
   // silently degrading to a re-walled server fetch.
   const mountedBrowserTabIds = useMemo(() => {
-    const ids = new Set(liveBrowserTabIds);
+    const ids = new Set([...liveBrowserTabIds, ...pendingBrowserRegistrations]);
     if (pinnedBrowserTabId && browserTabs.some((tab) => tab.id === pinnedBrowserTabId)) {
       ids.add(pinnedBrowserTabId);
     }
+    for (const [tabId, popup] of Object.entries(popupTabs)) {
+      ids.add(tabId);
+      for (const ancestor of popup.ancestorTabIds) ids.add(ancestor);
+    }
     return ids;
-  }, [liveBrowserTabIds, pinnedBrowserTabId, browserTabs]);
+  }, [liveBrowserTabIds, pinnedBrowserTabId, browserTabs, popupTabs, pendingBrowserRegistrations]);
 
   const visibleFiles = useMemo(
     () => files.filter((file) => !isLiveArtifactImplementationPath(file.name)),
@@ -1869,9 +1884,24 @@ export function FileWorkspace({
   }, [loadSketchFile, sketchFiles]);
 
   useEffect(() => {
-    const nextBrowserTabs = browserTabsFromState(tabsState.browserTabs);
-    setBrowserTabs(nextBrowserTabs);
-    browserTabSequenceRef.current = maxBrowserTabSequence(nextBrowserTabs);
+    setBrowserTabs((current) => {
+      const next = browserTabsFromState(tabsState.browserTabs);
+      for (const [id, popup] of Object.entries(popupTabsRef.current)) if (!next.some((tab) => tab.id === id)) {
+        // Persistence excludes live children. Keep their latest guest metadata
+        // instead of rebuilding it from a potentially older native snapshot.
+        next.push(current.find((tab) => tab.id === id)
+          ?? { id, label: 'Browser', insertAfter: popup.openerTabId, url: popup.url, title: popup.title });
+      }
+      browserTabSequenceRef.current = maxBrowserTabSequence(next);
+      // Parent persistence feeds metadata back with a new array. Identical
+      // hydration must not restart the panel's metadata publication effect.
+      return current.length === next.length && current.every((tab, index) => {
+        const restored = next[index];
+        return restored !== undefined && tab.id === restored.id && tab.label === restored.label
+          && tab.insertAfter === restored.insertAfter && tab.title === restored.title
+          && tab.url === restored.url && tab.iconUrl === restored.iconUrl;
+      }) ? current : next;
+    });
   }, [tabsState.browserTabs]);
 
   function workspaceTabsState(
@@ -1880,7 +1910,9 @@ export function FileWorkspace({
     nextBrowserTabs = browserTabs,
   ): OpenTabsState {
     const state: OpenTabsState = { tabs, active };
-    if (nextBrowserTabs.length > 0) state.browserTabs = nextBrowserTabs;
+    const restorable = nextBrowserTabs.filter((tab) => !popupTabsRef.current[tab.id]);
+    if (restorable.length > 0) state.browserTabs = restorable;
+    if (active && popupTabsRef.current[active]) state.active = popupTabsRef.current[active].ancestorTabIds[0] ?? null;
     return state;
   }
 
@@ -1899,6 +1931,53 @@ export function FileWorkspace({
       commitTabsState(workspaceTabsState(persistedTabs, name));
     });
   }
+
+  useEffect(() => {
+    const host = getHostBrowserPopups();
+    if (!host) return;
+    let disposed = false;
+    let queue = Promise.resolve();
+    const surfaces = new Map<string, string>();
+    const reconcile = async (event: OpenDesignHostBrowserPopupEvent) => {
+      const popup = event.popup;
+      if (disposed || popup.projectId !== projectId) return;
+      if (event.kind === 'console') return;
+      let tabId = surfaces.get(popup.surfaceId) ?? popup.tabId;
+      if (event.kind === 'closed') {
+        if (!tabId) return;
+        surfaces.delete(popup.surfaceId);
+        const next = { ...popupTabsRef.current }; delete next[tabId]; popupTabsRef.current = next; setPopupTabs(next);
+        setBrowserTabs((tabs) => tabs.filter((tab) => tab.id !== tabId));
+        return;
+      }
+      if (!tabId) {
+        tabId = `${BROWSER_TAB_PREFIX}${++browserTabSequenceRef.current}`;
+        surfaces.set(popup.surfaceId, tabId);
+        // Pin ordinary ancestry before waiting for native binding.
+        const next = { ...popupTabsRef.current, [tabId]: popup }; popupTabsRef.current = next; setPopupTabs(next);
+        const binding = await host.bindPopup?.({ projectId, surfaceId: popup.surfaceId, tabId });
+        if (disposed || !binding?.ok) {
+          if (!disposed) { const abandoned = { ...popupTabsRef.current }; delete abandoned[tabId]; popupTabsRef.current = abandoned; setPopupTabs(abandoned); }
+          return;
+        }
+        if (popup.disposition !== 'background-tab') setActiveTab(tabId);
+      }
+      surfaces.set(popup.surfaceId, tabId);
+      const bound = { ...popup, tabId };
+      const next = { ...popupTabsRef.current, [tabId]: bound }; popupTabsRef.current = next; setPopupTabs(next);
+      setBrowserTabs((tabs) => {
+        const existing = tabs.find((tab) => tab.id === tabId);
+        const tab: BrowserWorkspaceTab = { ...existing, id: tabId!, label: existing?.label ?? 'Browser',
+          insertAfter: existing?.insertAfter ?? popup.openerTabId, title: popup.title || labelFromUrl(popup.url), url: popup.url };
+        return existing ? tabs.map((candidate) => candidate.id === tabId ? tab : candidate) : [...tabs, tab];
+      });
+    };
+    const enqueue = (event: OpenDesignHostBrowserPopupEvent) => { queue = queue.then(() => reconcile(event)).catch(() => { /* Teardown can race a pending host response. */ }); };
+    // Subscribe first: snapshot recovery and live events converge by surface ID.
+    const unsubscribe = host.subscribePopups?.(enqueue);
+    void host.listPopups?.(projectId).then((result) => { if (result.ok) for (const popup of result.popups) enqueue({ kind: 'updated', popup }); });
+    return () => { disposed = true; unsubscribe?.(); void host.closePopupProject?.(projectId); popupTabsRef.current = {}; setPopupTabs({}); };
+  }, [projectId]);
 
   function openRequestedBrowserTab(request: BrowserOpenRequest) {
     afterActiveManualEditSettles(() => commitRequestedBrowserTab(request));
@@ -1989,6 +2068,15 @@ export function FileWorkspace({
   }
 
   function closeBrowserTab(tabId: string) {
+    const popup = popupTabsRef.current[tabId];
+    if (popup) {
+      void getHostBrowserPopups()?.popupCommand?.({ projectId, surfaceId: popup.surfaceId, kind: 'close' });
+      return;
+    }
+    // Explicit opener disposal closes its native descendants; parking does not.
+    for (const dependent of Object.values(popupTabsRef.current)) if (dependent.ancestorTabIds.includes(tabId)) {
+      void getHostBrowserPopups()?.popupCommand?.({ projectId, surfaceId: dependent.surfaceId, kind: 'close' });
+    }
     const closingIndex = browserTabs.findIndex((tab) => tab.id === tabId);
     const nextTabs = browserTabs.filter((tab) => tab.id !== tabId);
     setBrowserTabs(nextTabs);
@@ -4308,6 +4396,8 @@ export function FileWorkspace({
             <DesignBrowserPanel
               projectId={projectId}
               conversationId={activeConversationId}
+              onBrowserRetentionChange={retainPendingBrowser}
+              popup={popupTabs[browserTab.id]}
               browserTabId={browserTab.id}
               browserTabActive={activeTab === browserTab.id}
               resolvedDir={resolvedDir}

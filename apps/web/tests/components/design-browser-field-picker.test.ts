@@ -1,9 +1,46 @@
 // @vitest-environment jsdom
 
 import { afterEach, expect, it, vi } from 'vitest';
-import { browserAnnotationPixelMasks, browserAnnotationTextPaintScript, browserElementPickerScript, browserMeasureTargetsScript } from '../../src/components/design-browser-tools';
+import { browserApplyStylesScript, browserAnnotationPixelMasks, browserAnnotationTextPaintScript, browserElementPickerScript, browserMeasureTargetsScript, browserSnapshotFromUnknown } from '../../src/components/design-browser-tools';
+
+it('applies a style patch together and refuses an invalid property before changing the element', () => {
+  document.body.innerHTML = '<h1 id="heading" style="color:red;padding-top:2px">Heading</h1>';
+  vi.stubGlobal('CSS', { supports: (_property: string, value: string) => value !== 'invalid' });
+  const heading = document.getElementById('heading')!;
+  expect(window.eval(browserApplyStylesScript('#heading', { color: 'blue', paddingTop: 'invalid' }))).toBe(false);
+  expect(heading.style.color).toBe('red');
+  expect(heading.style.paddingTop).toBe('2px');
+  expect(window.eval(browserApplyStylesScript('#heading', { paddingTop: '4px', paddingRight: '4px' }))).toBe(true);
+  expect(heading.style.paddingTop).toBe('4px');
+  expect(heading.style.paddingRight).toBe('4px');
+  expect(window.eval(browserApplyStylesScript('#missing', { color: 'blue' }))).toBe(false);
+  vi.unstubAllGlobals();
+});
 
 const oldRect = HTMLElement.prototype.getBoundingClientRect;
+
+it('retains remaining measured style-menu fields when selecting and refreshing an element', async () => {
+  const style = {
+    opacity: '0.8', borderColor: 'rgb(32, 33, 36)', borderWidth: '1px', width: '600px',
+    height: '20.1562px', marginTop: '0px', marginRight: '1px', marginBottom: '12px', marginLeft: '-2px',
+  };
+  document.body.innerHTML = '<h1 id="heading">Measured heading</h1>';
+  HTMLElement.prototype.getBoundingClientRect = () => ({ x: 10, y: 20, width: 160, height: 30,
+    left: 10, top: 20, right: 170, bottom: 50, toJSON() {} } as DOMRect);
+  vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+    ...style, display: 'block', visibility: 'visible', color: 'rgb(1, 2, 3)',
+  } as CSSStyleDeclaration);
+  const picked = window.eval(browserElementPickerScript('browser:https://example.test')) as Promise<Record<string, unknown>>;
+  document.getElementById('heading')!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  const target = await picked;
+  expect(target.style).toMatchObject(style);
+  expect(browserSnapshotFromUnknown(target, 'browser:https://example.test')?.style).toMatchObject(style);
+  const refreshed = window.eval(browserMeasureTargetsScript('browser:https://example.test', [
+    { elementId: String(target.elementId), selector: String(target.selector), key: 'active' },
+  ])) as Array<Record<string, unknown>>;
+  expect(refreshed[0]?.style).toMatchObject(style);
+  expect(browserSnapshotFromUnknown(refreshed[0], 'browser:https://example.test')?.style).toMatchObject(style);
+});
 
 afterEach(() => {
   HTMLElement.prototype.getBoundingClientRect = oldRect;
@@ -88,6 +125,31 @@ it('scales and clips masks to a high-DPI capture of a partly offscreen field', (
     [{ x: 50, y: 10, width: 20, height: 10 }])).toEqual([
     { x: 100, y: 20, width: 40, height: 20 },
   ]);
+});
+
+it('masks from the actual inward native crop origin at fractional host zoom', () => {
+  expect(browserAnnotationPixelMasks({ x: 201, y: 201, width: 240, height: 160 },
+    { x: 0, y: 0, width: 1000, height: 800 }, { w: 287, h: 191 },
+    [{ x: 1, y: 1, width: 10, height: 10 }],
+    { x: 242 / 1.2, y: 242 / 1.2, width: 287 / 1.2, height: 191 / 1.2 })).toEqual([
+    { x: 0, y: 0, width: 13, height: 13 },
+  ]);
+});
+
+it('keeps actual negative guest-local offsets and image pixel scale when masking', () => {
+  expect(browserAnnotationPixelMasks({ x: 0, y: 0, width: 100, height: 40 },
+    { x: 0, y: 0, width: 300, height: 200 }, { w: 200, h: 80 },
+    [{ x: 0, y: 0, width: 10, height: 10 }],
+    { x: -0.5, y: -0.5, width: 100, height: 40 })).toEqual([{ x: 1, y: 1, width: 20, height: 20 }]);
+});
+
+it('rejects invalid or disjoint actual crop geometry without guessing a mask transform', () => {
+  for (const crop of [{ x: NaN, y: 0, width: 100, height: 40 }, { x: 0, y: 0, width: 0, height: 40 },
+    { x: 500, y: 0, width: 100, height: 40 }]) {
+    expect(browserAnnotationPixelMasks({ x: 0, y: 0, width: 100, height: 40 },
+      { x: 0, y: 0, width: 300, height: 200 }, { w: 200, h: 80 },
+      [{ x: 0, y: 0, width: 10, height: 10 }], crop)).toBeNull();
+  }
 });
 
 it('does not serialize sensitive descendants when selecting a containing button', async () => {

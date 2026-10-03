@@ -3,6 +3,7 @@ import { installMockOpenDesignHost } from '@open-design/host/testing';
 import {
   archiveFilenameFrom,
   archiveRootFromFilePath,
+  captureHostRegionSnapshot,
   buildDesignHandoffContent,
   buildDesignManifestContent,
   downloadImageDataUrl,
@@ -27,6 +28,25 @@ import {
   sourceLooksLikeNavigableDeck,
 } from '../../src/runtime/exports';
 import { workspaceContextFixture } from '../helpers/workspace-context';
+
+describe('host capture CSS geometry', () => {
+  it.each(['valid', 'legacy', 'nonfinite', 'zero', 'outside', 'array'] as const)(
+    'forwards only valid captured CSS geometry: %s', async (kind) => {
+      const captured = { x: 242 / 1.2, y: 242 / 1.2, width: 287 / 1.2, height: 191 / 1.2 };
+      const metadata = kind === 'legacy' ? undefined : kind === 'nonfinite' ? { ...captured, x: NaN }
+        : kind === 'zero' ? { ...captured, width: 0 } : kind === 'outside' ? { ...captured, x: 200 }
+          : kind === 'array' ? [] : captured;
+      const restore = installMockOpenDesignHost({ host: { capture: { page: async () => ({ ok: true,
+        dataUrl: 'data:image/png;base64,cGl4ZWxz', w: 287, h: 191,
+        capturedCssRect: metadata as typeof captured | undefined }) } } });
+      try {
+        const result = await captureHostRegionSnapshot({ left: 201, top: 201, width: 240, height: 160 });
+        expect(result).toMatchObject({ w: 287, h: 191 });
+        if (kind === 'valid') expect(result?.capturedCssRect).toEqual(captured);
+        else expect(result).not.toHaveProperty('capturedCssRect');
+      } finally { restore(); }
+    });
+});
 
 describe('planDeckImageCapture (#4604 current-slide capture for runtime decks)', () => {
   it('whole-deck capture renders off-screen with no index (stitch all)', () => {

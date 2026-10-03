@@ -1,0 +1,30 @@
+{
+  "$schema": "https://open-design.ai/schemas/plugin.v1.json",
+  "specVersion": "1.0.0",
+  "name": "od-active-ui-development",
+  "title": "Active UI development",
+  "version": "0.1.0",
+  "description": "Improve an existing website through browser annotations, user feedback, and focused UX research. Patch the original source and verify the result in the running app.",
+  "license": "MIT",
+  "tags": ["scenario", "first-party", "active-ui-development", "existing-site", "annotations", "ux"],
+  "compat": { "agentSkills": [{ "path": "./SKILL.md" }] },
+  "od": {
+    "kind": "scenario",
+    "taskKind": "tune-collab",
+    "scenario": "active-ui-development",
+    "mode": "refine",
+    "context": { "skills": [{ "path": "./SKILL.md" }] },
+    "pipeline": {
+      "stages": [
+        { "id": "patch", "atoms": ["patch-edit"] },
+        { "id": "verify", "atoms": ["build-test"] },
+        { "id": "handoff", "atoms": ["handoff"] }
+      ]
+    },
+    "capabilities": ["prompt:inject", "fs:read", "fs:write"],
+    "useCase": {
+      "query": "Improve the existing website using the user's browser annotations, feedback, and research goals. Before patching, establish the active writable source root from the opened or imported source project; linked directories remain read-only references. Inspect the running UI and its original source, make the smallest useful changes in the current stack, and verify the affected interactions in the browser.",
+      "exampleOutputs": []
+    }
+  }
+}

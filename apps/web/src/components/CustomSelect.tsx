@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
 
@@ -7,6 +7,7 @@ export interface CustomSelectOption {
   value: string;
   label: string;
   disabled?: boolean;
+  icon?: ReactNode;
 }
 
 export interface CustomSelectGroup {
@@ -30,6 +31,8 @@ interface Props {
   portal?: boolean;
   title?: string;
   onFocus?: () => void;
+  iconOnly?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 interface FlatOption extends CustomSelectOption {
@@ -69,6 +72,8 @@ export function CustomSelect({
   portal = true,
   title,
   onFocus,
+  iconOnly = false,
+  onOpenChange,
 }: Props) {
   const reactId = useId();
   const idBase = reactId.replace(/:/g, '');
@@ -79,6 +84,11 @@ export function CustomSelect({
   const [open, setOpen] = useState(false);
   const [activeValue, setActiveValue] = useState(value);
   const [position, setPosition] = useState<MenuPosition | null>(null);
+  const onOpenChangeRef = useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+
+  useEffect(() => { onOpenChangeRef.current?.(open); }, [open]);
+  useEffect(() => () => { onOpenChangeRef.current?.(false); }, []);
 
   const flatOptions = useMemo(() => flattenOptions(options), [options]);
   const selected = flatOptions.find((option) => option.value === value);
@@ -106,16 +116,20 @@ export function CustomSelect({
     const above = rect.top - viewportPad;
     const maxHeight = Math.max(160, Math.min(300, Math.max(below, above) - gap));
     const openAbove = below < 180 && above > below;
+    // Compact icon triggers still need room for the option labels.
+    const width = iconOnly
+      ? Math.min(Math.max(0, window.innerWidth - viewportPad * 2), Math.max(rect.width, 160))
+      : rect.width;
     setPosition({
       top: openAbove ? Math.max(viewportPad, rect.top - maxHeight - gap) : rect.bottom + gap,
       left: Math.min(
         Math.max(viewportPad, rect.left),
-        Math.max(viewportPad, window.innerWidth - rect.width - viewportPad),
+        Math.max(viewportPad, window.innerWidth - width - viewportPad),
       ),
-      width: rect.width,
+      width,
       maxHeight,
     });
-  }, []);
+  }, [iconOnly]);
 
   useEffect(() => {
     if (!portal) return;
@@ -157,7 +171,7 @@ export function CustomSelect({
       window.removeEventListener('resize', onScrollOrResize);
       window.removeEventListener('scroll', onScrollOrResize, true);
     };
-  }, [open, portal]);
+  }, [open, portal, updatePosition]);
 
   const choose = (nextValue: string) => {
     const next = flatOptions.find((option) => option.value === nextValue);
@@ -280,7 +294,8 @@ export function CustomSelect({
         onFocus={onFocus}
       >
         <span id={`${idBase}-value`} className="od-select-value">
-          {selectedLabel}
+          {selected?.icon && <span className="od-select-icon" aria-hidden>{selected.icon}</span>}
+          {!iconOnly || !selected?.icon ? selectedLabel : null}
         </span>
         <Icon name="chevron-down" size={14} />
       </button>
@@ -320,7 +335,10 @@ function SelectOptionButton({
       onMouseEnter={() => onActive(option.value)}
       onClick={() => onChoose(option.value)}
     >
-      <span className="od-select-option-label">{option.label}</span>
+      <span className="od-select-option-label">
+        {option.icon && <span className="od-select-icon" aria-hidden>{option.icon}</span>}
+        {option.label}
+      </span>
       <span className="od-select-option-check" aria-hidden>
         <Icon name="check" size={14} />
       </span>

@@ -42,6 +42,11 @@ function definedClasses(css: string): Set<string> {
 // demanding a rule that never existed. A class only belongs here if it carries
 // no layout of its own; anything that paints or positions must stay covered.
 const STYLELESS_HOOKS = new Set([
+  // Toolbar identities inherit layout from db-action-item/db-tooltip-anchor;
+  // the actual controls retain the covered db-icon-btn and db-ai-control rules.
+  'db-action-ai',
+  'db-action-annotate',
+  'db-action-edge',
   'db-action-browser-use',
   'db-action-menu',
   'db-action-primary',

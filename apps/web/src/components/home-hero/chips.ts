@@ -119,6 +119,21 @@ export const HOME_HERO_CHIPS: ReadonlyArray<HomeHeroChip> = [
     action: { kind: 'create-brand-kit' },
   },
   {
+    id: 'active-ui-development',
+    label: 'Active UI development',
+    icon: 'file-code',
+    group: 'create',
+    description: 'Improve an existing site with browser feedback',
+    hint: 'Open or import the existing source project, then share a preview URL or annotations.',
+    action: {
+      kind: 'apply-scenario',
+      pluginId: 'od-active-ui-development',
+      projectKind: 'other',
+      automaticDefault: true,
+      projectMetadata: { kind: 'other', intent: 'active-ui-development' },
+    },
+  },
+  {
     id: 'prototype',
     label: 'Prototype',
     icon: 'artboard',
@@ -381,13 +396,14 @@ export function chipsForGroup(group: ChipGroup): HomeHeroChip[] {
   return HOME_HERO_CHIPS.filter((c) => c.group === group);
 }
 
-// Fixed Home information architecture. Only these ten output types are
+// Fixed Home information architecture. Creation and existing-site work are
 // top-level choices. Action-only create entries (for example Create Design
-// System) are intentionally excluded. Prototype leads and Slide deck follows;
+// System) are intentionally excluded. Prototype and Active UI development lead;
 // the media scenarios trail so at typical widths they live in the 更多
 // overflow popover rather than the visible pill row.
 export const CREATE_RAIL_ORDER = [
   'prototype',
+  'active-ui-development',
   'deck',
   'document',
   'image',
@@ -406,6 +422,7 @@ export const CREATE_RAIL_ORDER = [
 // `CREATE_RAIL_ORDER`; `TypePillRow.more-order.test.tsx` pins both.
 export const HOME_TYPE_ROW_IDS: readonly string[] = ['prototype', 'deck', 'document'];
 export const HOME_TYPE_ROW_MORE_IDS: readonly string[] = [
+  'active-ui-development',
   'image',
   'hyperframes',
   'web-clone',
@@ -421,7 +438,7 @@ export const HOME_TYPE_ROW_MORE_IDS: readonly string[] = [
 // single tidy row. Website clone starts
 // from someone else's site rather than the user's design system, so it stays
 // off the design-system teaser too.
-const ONBOARDING_ARTIFACT_OMIT = new Set<string>(['web-clone', 'video', 'audio']);
+const ONBOARDING_ARTIFACT_OMIT = new Set<string>(['active-ui-development', 'web-clone', 'video', 'audio']);
 
 // The artifact chips shown on the onboarding "build a design system" step — a
 // curated single-row subset of the create rail. Derived from CREATE_RAIL_ORDER

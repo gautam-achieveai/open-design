@@ -27,6 +27,15 @@ import type {
   OpenDesignHostUpdaterStatusListener,
 } from "./protocol.js";
 import { getOpenDesignHost } from "./detection.js";
+import type { OpenDesignHostBridge } from './protocol.js';
+
+/** Native popup capability remains absent in ordinary browser builds. */
+export function getHostBrowserPopups(scope: OpenDesignHostGlobalScope = globalThis): Pick<OpenDesignHostBridge['browser'], 'listPopups' | 'bindPopup' | 'presentPopup' | 'popupCommand' | 'closePopupProject' | 'subscribePopups'> | null {
+  const browser = getOpenDesignHost(scope)?.browser;
+  return typeof browser?.listPopups === 'function' && typeof browser.bindPopup === 'function'
+    && typeof browser.presentPopup === 'function' && typeof browser.popupCommand === 'function'
+    && typeof browser.subscribePopups === 'function' ? browser : null;
+}
 
 /**
  * @module actions

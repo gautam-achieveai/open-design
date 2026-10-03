@@ -14,6 +14,7 @@ import {
   getLatestHostPreviewNavigationFailure,
   getHostUpdaterStatus,
   getOpenDesignHost,
+  getHostBrowserPopups,
   installHostUpdater,
   isOpenDesignHostAvailable,
   isOpenDesignHostBridge,
@@ -47,6 +48,17 @@ function filesUnder(dir: string): string[] {
 }
 
 describe("open-design host contract", () => {
+  it('feature-detects the complete popup bridge without requiring it from older hosts', () => {
+    const oldHost = createMockOpenDesignHost();
+    expect(getHostBrowserPopups({ __od__: oldHost })).toBeNull();
+    const host = createMockOpenDesignHost({ browser: {
+      listPopups: async () => ({ ok: true, popups: [] }), bindPopup: async () => ({ ok: true }),
+      presentPopup: async () => ({ ok: true }), popupCommand: async () => ({ ok: true }), subscribePopups: () => () => {},
+    } });
+    expect(getHostBrowserPopups({ __od__: host })).toBe(host.browser);
+    delete host.browser.presentPopup;
+    expect(getHostBrowserPopups({ __od__: host })).toBeNull();
+  });
   it("keeps consequential browser operations explicitly approved", () => {
     const operations = [
       { approved: true, kind: "click", selector: "#save" },

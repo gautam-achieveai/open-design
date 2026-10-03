@@ -48,6 +48,7 @@ export type DefaultScenarioPluginId =
   | 'od-figma-migration'
   | 'od-code-migration'
   | 'od-tune-collab'
+  | 'od-active-ui-development'
   | 'example-live-artifact'
   | 'example-hyperframes'
   | 'example-simple-deck'
@@ -154,6 +155,7 @@ export function defaultScenarioPluginIdForKind(
 export function defaultScenarioPluginIdForProjectMetadata(
   metadata: Pick<ProjectMetadata, 'kind' | 'intent'> | null | undefined,
 ): DefaultScenarioPluginId | null {
+  if (metadata?.intent === 'active-ui-development') return 'od-active-ui-development';
   if (metadata?.intent === 'live-artifact') return 'example-live-artifact';
   if (metadata?.intent === 'web-clone') return 'example-web-clone';
   // The powered-preview GPU card is a first-level output type on the create

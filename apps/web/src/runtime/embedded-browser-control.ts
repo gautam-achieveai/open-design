@@ -3,7 +3,10 @@ import type {
   BrowserOperationRequest,
   BrowserOperationResult,
   BrowserTabsResponse,
+  BrowserViewportId,
+  JsonValue,
 } from '@open-design/contracts';
+import { isBrowserStylePatch, isBrowserStyleInspection } from '@open-design/contracts';
 import {
   getOpenDesignHost,
   type OpenDesignHostBrowserExecuteResult,
@@ -80,6 +83,8 @@ export interface EmbeddedBrowserControlSession {
 }
 
 export interface EmbeddedBrowserControlSessionOptions {
+  applyStyle?: (request: Extract<BrowserOperationRequest, { operation: 'style' }>, expiresAt?: number) => Promise<JsonValue>;
+  applyViewport?: (preset: BrowserViewportId, expiresAt?: number) => Promise<{ preset: BrowserViewportId; width: number; height: number }>;
   fetchImpl?: typeof fetch;
   headers?: HeadersInit;
   hostBridge?: HostBrowserControlBridge | null;
@@ -230,6 +235,8 @@ export function createEmbeddedBrowserControlSession(
         currentTarget.tabId,
         command.request,
         command.expiresAt,
+        options.applyViewport,
+        options.applyStyle,
       );
       await submitBrowserCommandResult(
         fetchImpl,
@@ -487,13 +494,48 @@ type BrowserCommandExecution =
       };
     };
 
+let viewportFailureDiagnostics = 0;
+const VIEWPORT_DIAGNOSTIC_REASONS = new Set([
+  'Browser viewport is not ready',
+  'Browser viewport is no longer available',
+  'Activate this browser tab before changing its viewport',
+  'Browser viewport changed while applying the preset; retry the command',
+  'Browser viewport has no visible frame',
+  'Browser command expired before execution.',
+  'Native popup support is unavailable',
+  'Native popup did not apply the requested viewport bounds',
+  'invalid popup presentation',
+  'popup presentation was superseded',
+  'invalid popup bounds',
+]);
+
 async function executeBrowserCommand(
   host: HostBrowserControlBridge,
   tabId: string,
   request: BrowserOperationRequest,
   expiresAt: number,
+  applyViewport?: EmbeddedBrowserControlSessionOptions['applyViewport'],
+  applyStyle?: EmbeddedBrowserControlSessionOptions['applyStyle'],
 ): Promise<BrowserCommandExecution> {
   try {
+    if (request.operation === 'style') {
+      if (Date.now() >= expiresAt) return browserCommandFailure('Browser command expired before execution.');
+      if (request.approved !== true || !isBrowserStylePatch(request.styles)
+        || typeof request.target?.selector !== 'string' || !request.target.selector.trim()
+        || request.target.selector.length > 8_192) return browserCommandFailure('Browser style command requires approval, a target and allowed styles.');
+      if (!applyStyle) return browserCommandFailure('This browser tab does not support style editing.');
+      const inspection = await applyStyle(request, expiresAt);
+      if (Date.now() >= expiresAt) return browserCommandFailure('Browser command expired before completion.');
+      if (!isBrowserStyleInspection(inspection) || (inspection as { selector: string }).selector !== request.target.selector.trim()) {
+        return browserCommandFailure('Browser style command returned no measured target.');
+      }
+      return { ok: true, result: { operation: 'style', applied: true, inspection } };
+    }
+    if (request.operation === 'viewport') {
+      if (Date.now() >= expiresAt) return browserCommandFailure('Browser command expired before execution.');
+      if (!applyViewport) return browserCommandFailure('This browser tab does not support viewport selection.');
+      return { ok: true, result: { operation: 'viewport', ...await applyViewport(request.preset, expiresAt) } };
+    }
     const operation = hostOperationFromCommand(request);
     const result = await host.execute({ expiresAt, operation, tabId });
     if (!result.ok) {
@@ -504,13 +546,18 @@ async function executeBrowserCommand(
       result: browserOperationResultFromHost(request, result),
     };
   } catch (error) {
+    if (request.operation === 'viewport' && viewportFailureDiagnostics++ < 40) {
+      const message = error instanceof Error ? error.message : '';
+      console.warn(JSON.stringify({ logger: 'browser.viewport.command', event: 'failed', preset: request.preset,
+        reason: VIEWPORT_DIAGNOSTIC_REASONS.has(message) ? message : 'unclassified-viewport-failure' }));
+    }
     return browserCommandFailure(
       error instanceof Error ? error.message : 'Browser command failed.',
     );
   }
 }
 
-function hostOperationFromCommand(request: BrowserOperationRequest): OpenDesignHostBrowserOperation {
+function hostOperationFromCommand(request: Exclude<BrowserOperationRequest, { operation: 'viewport' | 'style' }>): OpenDesignHostBrowserOperation {
   switch (request.operation) {
     case 'snapshot':
       return { kind: 'snapshot' };
@@ -580,7 +627,7 @@ function hostOperationFromCommand(request: BrowserOperationRequest): OpenDesignH
 }
 
 function browserOperationResultFromHost(
-  request: BrowserOperationRequest,
+  request: Exclude<BrowserOperationRequest, { operation: 'viewport' | 'style' }>,
   result: Extract<OpenDesignHostBrowserExecuteResult, { ok: true }>,
 ): BrowserOperationResult {
   switch (request.operation) {

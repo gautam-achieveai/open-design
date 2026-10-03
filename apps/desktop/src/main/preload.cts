@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 import type {
   OpenDesignHostBridge,
+  OpenDesignHostBrowserPopupEvent,
   OpenDesignHostActionResult,
   OpenDesignHostBrowserClearDataOptions,
   OpenDesignHostBrowserExecuteRequest,
@@ -233,7 +234,17 @@ const shell = {
   },
 };
 
-const browser = {
+const browser: OpenDesignHostBridge['browser'] = {
+  listPopups: (projectId) => ipcRenderer.invoke('browser:list-popups', projectId).catch((error: unknown) => failure(reasonFromError(error))),
+  bindPopup: (request) => ipcRenderer.invoke('browser:bind-popup', request).catch((error: unknown) => failure(reasonFromError(error))),
+  presentPopup: (request) => ipcRenderer.invoke('browser:present-popup', request).catch((error: unknown) => failure(reasonFromError(error))),
+  popupCommand: (request) => ipcRenderer.invoke('browser:popup-command', request).catch((error: unknown) => failure(reasonFromError(error))),
+  closePopupProject: (projectId) => ipcRenderer.invoke('browser:close-popup-project', projectId).catch((error: unknown) => failure(reasonFromError(error))),
+  subscribePopups: (listener) => {
+    const receive = (_event: unknown, payload: OpenDesignHostBrowserPopupEvent) => listener(payload);
+    ipcRenderer.on('browser:popup-event', receive);
+    return () => ipcRenderer.removeListener('browser:popup-event', receive);
+  },
   clearData: async (options?: OpenDesignHostBrowserClearDataOptions): Promise<OpenDesignHostActionResult> => {
     try {
       return await ipcRenderer.invoke('browser:clear-data', options ?? null);

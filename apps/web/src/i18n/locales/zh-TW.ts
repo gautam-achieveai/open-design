@@ -1,6 +1,11 @@
 import type { Dict } from "../types";
 
 export const zhTW: Dict = {
+  "homeHero.chip.activeUiDevelopment": "持續 UI 開發",
+  "homeHero.chip.activeUiDevelopmentDesc": "透過瀏覽器回饋改善現有網站",
+  "homeHero.chip.activeUiDevelopmentHint": "開啟或匯入現有原始碼專案，然後提供預覽網址或註解。",
+  "homeHero.uiDevelopmentTitle": "一起改善現有介面",
+  "homeHero.uiDevelopmentSubtitle": "開啟或匯入現有原始碼專案，然後提供預覽網址或註解。",
   'billing.wallet': '錢包餘額',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} 小時',
@@ -2288,6 +2293,7 @@ export const zhTW: Dict = {
   "chat.annotationSentWithoutScreenshot":
     "未能擷取預覽，已傳送標註（不含截圖）。",
   "chat.annotationTimeout": "標註傳送逾時，請重試",
+  'chat.annotationContextLoading': "正在載入標註詳情…",
   "chat.annotationFailed": "標註傳送失敗，請重試",
   "chat.annotationProjectCreateFailed": "無法建立專案，因此未送出標註。",
   "chat.annotationUploadFailed": "附件上傳失敗，請重試。",

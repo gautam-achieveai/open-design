@@ -1,3 +1,4 @@
+import { createDesignBrowserPopupController } from './browser-popups.js';
 import { execFile } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
 import { appendFile, mkdir, realpath, stat, writeFile } from "node:fs/promises";
@@ -28,6 +29,7 @@ import type {
   OpenDesignHostBrowserListTargetsResult,
   OpenDesignHostBrowserRegisterTargetResult,
   OpenDesignHostCaptureResult,
+  OpenDesignHostCaptureClip,
   OpenDesignHostPreviewNavigationFailure,
   OpenDesignHostProjectImportInit,
   OpenDesignHostUpdaterActionOptions,
@@ -332,6 +334,11 @@ const BROWSER_TARGET_IPC_CHANNELS = [
   "browser:unregister-target",
   "browser:list-targets",
   "browser:execute",
+  "browser:list-popups",
+  "browser:bind-popup",
+  "browser:present-popup",
+  "browser:popup-command",
+  "browser:close-popup-project",
 ] as const;
 const UPDATER_IPC_CHANNELS = [
   "od:update:status",
@@ -1887,8 +1894,8 @@ function parsePrintReadyPdfOptions(value: unknown): PrintReadyPdfOptions {
   return deck === true ? { deck: true } : {};
 }
 
-// Parses the optional renderer-supplied capture clip into an Electron
-// Rectangle. Returns undefined (capture the full page) when the payload is
+// Parses the optional renderer-supplied clip in renderer CSS coordinates.
+// Returns undefined (capture the full page) when the payload is
 // missing, not an object, or carries an invalid clip; valid clips are
 // rounded and clamped so x/y stay >= 0 and width/height stay >= 1.
 function parseCaptureClip(value: unknown): Electron.Rectangle | undefined {
@@ -1915,6 +1922,40 @@ function parseCaptureClip(value: unknown): Electron.Rectangle | undefined {
     width: Math.max(1, Math.round(width)),
     height: Math.max(1, Math.round(height)),
   };
+}
+
+export function registerHostPageCapture(window: BrowserWindow): void {
+  ipcMain.removeHandler('od:capture-page');
+  ipcMain.handle('od:capture-page', async (event, rawOptions: unknown): Promise<OpenDesignHostCaptureResult> => {
+    if (event.sender !== window.webContents) {
+      return { ok: false, reason: 'capture sender not allowed' };
+    }
+    try {
+      const cssClip = parseCaptureClip(rawOptions);
+      let clip: Electron.Rectangle | undefined;
+      let capturedCssRect: OpenDesignHostCaptureClip | undefined;
+      if (cssClip) {
+        // capturePage expects DIP coordinates, while the renderer measures CSS
+        // pixels. Use only host page zoom; display scale belongs to the image.
+        const zoom = window.webContents.getZoomFactor();
+        const x = Math.ceil(cssClip.x * zoom), y = Math.ceil(cssClip.y * zoom);
+        const right = Math.floor((cssClip.x + cssClip.width) * zoom);
+        const bottom = Math.floor((cssClip.y + cssClip.height) * zoom);
+        // Round inward so capture cannot expand beyond the accepted clip.
+        if (right <= x || bottom <= y) throw new Error('capture clip is smaller than one native pixel');
+        clip = { x, y, width: right - x, height: bottom - y };
+        capturedCssRect = { x: x / zoom, y: y / zoom, width: clip.width / zoom, height: clip.height / zoom };
+      }
+      const image = clip
+        ? await window.webContents.capturePage(clip)
+        : await window.webContents.capturePage();
+      const size = image.getSize();
+      return { ok: true, dataUrl: image.toDataURL(), w: size.width, h: size.height,
+        ...(capturedCssRect ? { capturedCssRect } : {}) };
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+  });
 }
 
 function unavailableUpdaterStatus(): DesktopUpdateStatusSnapshot {
@@ -2489,6 +2530,18 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
   const browserCdp = createDesignBrowserCdpController(
     session.fromPartition(DESIGN_BROWSER_PARTITION),
   );
+  const browserPopups = createDesignBrowserPopupController(window, session.fromPartition(DESIGN_BROWSER_PARTITION), browserCdp, (event) => {
+    if (!window.webContents.isDestroyed()) window.webContents.send("browser:popup-event", event);
+  });
+  window.webContents.on("did-start-navigation", (_event, _url, inPlace, mainFrame) => {
+    if (mainFrame && !inPlace) browserPopups.close();
+  });
+  window.on("hide", browserPopups.hideAll);
+  ipcMain.handle("browser:list-popups", (event, projectId) => { requireMainWindowSender(event); return browserPopups.list(projectId); });
+  ipcMain.handle("browser:bind-popup", (event, request) => { requireMainWindowSender(event); return browserPopups.bind(request); });
+  ipcMain.handle("browser:present-popup", (event, request) => { requireMainWindowSender(event); return browserPopups.present(request); });
+  ipcMain.handle("browser:popup-command", (event, request) => { requireMainWindowSender(event); return browserPopups.command(request); });
+  ipcMain.handle("browser:close-popup-project", (event, projectId) => { requireMainWindowSender(event); return browserPopups.closeProject(projectId); });
   window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const src = typeof params.src === "string" ? params.src : "";
     const partition = typeof params.partition === "string" ? params.partition : "";
@@ -2515,7 +2568,7 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     };
     guestWebContents.on("will-navigate", blockDisallowed);
     guestWebContents.on("will-redirect", blockDisallowed);
-    guestWebContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    browserPopups.attachGuest(guestWebContents);
     void browserCdp.attachGuest(guestWebContents).catch((error) => {
       console.error("[open-design desktop] failed to attach Design Browser CDP", {
         error: error instanceof Error ? error.message : String(error),
@@ -2560,7 +2613,9 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     "browser:register-target",
     (event, target: unknown): OpenDesignHostBrowserRegisterTargetResult => {
       requireMainWindowSender(event);
-      return browserCdp.registerTarget(target);
+      const result = browserCdp.registerTarget(target);
+      if (result.ok) browserPopups.registerOpener(result.target);
+      return result;
     },
   );
   ipcMain.handle("browser:unregister-target", (event, target: unknown): OpenDesignHostActionResult => {
@@ -2713,22 +2768,7 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     }
   });
 
-  ipcMain.removeHandler('od:capture-page');
-  ipcMain.handle('od:capture-page', async (event, rawOptions: unknown): Promise<OpenDesignHostCaptureResult> => {
-    if (event.sender !== window.webContents) {
-      return { ok: false, reason: 'capture sender not allowed' };
-    }
-    try {
-      const clip = parseCaptureClip(rawOptions);
-      const image = clip
-        ? await window.webContents.capturePage(clip)
-        : await window.webContents.capturePage();
-      const size = image.getSize();
-      return { ok: true, dataUrl: image.toDataURL(), w: size.width, h: size.height };
-    } catch (error) {
-      return { ok: false, reason: error instanceof Error ? error.message : String(error) };
-    }
-  });
+  registerHostPageCapture(window);
 
   window.on("focus", () => showWindowButtons(window));
   window.on("blur", () => showWindowButtons(window));
@@ -3087,6 +3127,7 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
       for (const channel of BROWSER_TARGET_IPC_CHANNELS) {
         ipcMain.removeHandler(channel);
       }
+      browserPopups.close();
       browserCdp.close();
       ipcMain.removeHandler("browser:clear-data");
       if (splash != null && !splash.isDestroyed()) splash.close();

@@ -2668,7 +2668,7 @@ describe("desktop updater", () => {
       expect(spawned[0]?.command).toBe("/bin/sh");
       expect(spawned[0]?.options).toEqual({ cwd: runtimeBase, detached: true, stdio: "ignore", windowsHide: true });
       const [scriptPath, pidArg, installerArg, timeoutArg] = spawned[0]?.args ?? [];
-      expect(scriptPath).toEqual(expect.stringContaining(join(root, "helpers", "open-installer-after-quit-")));
+      expect(scriptPath).toEqual(expect.stringContaining(join(await realpath(root), "helpers", "open-installer-after-quit-")));
       expect(pidArg).toBe("4242");
       expect(installerArg).toBe(checked.downloadPath);
       expect(timeoutArg).toBe("600");
@@ -2741,9 +2741,9 @@ describe("desktop updater", () => {
         "600000",
       ]));
       expect(launcherPath).toEqual(expect.stringMatching(/open-installer-after-quit-.+\.launcher\.ps1$/));
-      expect(launcherPath).toEqual(expect.stringContaining(join(root, "helpers", "open-installer-after-quit-")));
+      expect(launcherPath).toEqual(expect.stringContaining(join(await realpath(root), "helpers", "open-installer-after-quit-")));
       expect(scriptPath).toEqual(expect.stringMatching(/open-installer-after-quit-.+\.ps1$/));
-      expect(scriptPath).toEqual(expect.stringContaining(join(root, "helpers", "open-installer-after-quit-")));
+      expect(scriptPath).toEqual(expect.stringContaining(join(await realpath(root), "helpers", "open-installer-after-quit-")));
       expect(logPath).toEqual(expect.stringMatching(/open-installer-after-quit-.+\.log$/));
       const launcher = await readFile(launcherPath ?? "", "utf8");
       expect(launcher).toContain("Start-Process -FilePath $PowerShellPath -WindowStyle Hidden");

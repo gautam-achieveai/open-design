@@ -477,7 +477,8 @@ describe('ComposerPlusMenu pick-row caret protection', () => {
       expect(flyout?.style.bottom).toBe('');
       expect(flyout?.style.width).toBe('');
 
-      const css = readFileSync(join(process.cwd(), 'src/styles/home/plus-menu.css'), 'utf8');
+      const css = readFileSync(join(process.cwd(), 'src/styles/home/plus-menu.css'), 'utf8')
+        .replace(/\r\n/g, '\n');
       expect(css).toContain('.plus-menu__submenu-row {\n  position: relative;\n}');
       expect(css).toContain('.plus-menu__flyout {\n  position: absolute;\n  left: 100%;');
     } finally {

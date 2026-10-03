@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -9,7 +10,7 @@ import {
   reportRunCompletedFromDaemon,
 } from '../src/langfuse-bridge.js';
 import { buildPromptStackTelemetry } from '../src/prompt-telemetry.js';
-import { readObjectEvidence } from '../src/services/evidence-delivery.js';
+import { evidenceStore, readObjectEvidence } from '../src/services/evidence-delivery.js';
 
 interface FakeMessage {
   id: string;
@@ -618,13 +619,21 @@ describe('langfuse-bridge.reportRunCompletedFromDaemon', () => {
   });
 
   afterEach(async () => {
-    if (telemetryRelayUrl === undefined) delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-    else process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL = telemetryRelayUrl;
-    if (objectRelayUrl === undefined) delete process.env.OPEN_DESIGN_OBJECT_RELAY_URL;
-    else process.env.OPEN_DESIGN_OBJECT_RELAY_URL = objectRelayUrl;
-    await rm(dataDir, { recursive: true, force: true });
-    vi.restoreAllMocks();
-    vi.unstubAllEnvs();
+    try {
+      // The outbox belongs to this unique test directory. Windows cannot
+      // remove its SQLite files while the cached connection is still open.
+      if (existsSync(path.join(dataDir, 'telemetry', 'outbox.sqlite'))) {
+        (await evidenceStore(dataDir)).close();
+      }
+      await rm(dataDir, { recursive: true, force: true });
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      if (telemetryRelayUrl === undefined) delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
+      else process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL = telemetryRelayUrl;
+      if (objectRelayUrl === undefined) delete process.env.OPEN_DESIGN_OBJECT_RELAY_URL;
+      else process.env.OPEN_DESIGN_OBJECT_RELAY_URL = objectRelayUrl;
+    }
   });
 
   async function writeAppCfg(cfg: Record<string, unknown>) {
@@ -3360,9 +3369,16 @@ function makeDbWithListMessages(messagesByConvo: Record<string, FakeMessage[]>) 
   // producedFiles. Tests pass producedFiles directly, so we round-trip
   // through JSON.stringify to match the real-world shape.
   return {
-    prepare(_sql: string) {
+    prepare(sql: string) {
       return {
+        get() {
+          return undefined;
+        },
         all(cid: string) {
+          // This fixture has no browser image or annotation records.
+          if (/\bFROM\s+edge_(?:chat_images|annotation_message_images|annotation_message_contexts)\b/i.test(sql)) {
+            return [];
+          }
           return (messagesByConvo[cid] ?? []).map((m) => ({
             id: m.id,
             role: m.role,

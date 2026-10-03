@@ -309,7 +309,7 @@ export function registerEdgeAnnotationRoutes(app: Express, deps: EdgeAnnotationR
     }
     try {
       const url = typeof body.url === 'string' && body.url.length <= 8192 ? new URL(body.url) : null;
-      if (!url || !['http:', 'https:', 'file:'].includes(url.protocol)) {
+      if (!url || (!['http:', 'https:', 'file:'].includes(url.protocol) && url.href !== 'about:blank')) {
         sendApiError(res, 400, 'BAD_REQUEST', 'a browser page URL is required');
         return;
       }
@@ -340,7 +340,7 @@ export function registerEdgeAnnotationRoutes(app: Express, deps: EdgeAnnotationR
     }
     try {
       const url = typeof body.url === 'string' && body.url.length <= 8192 ? new URL(body.url) : null;
-      if (!url || !['http:', 'https:', 'file:'].includes(url.protocol)) {
+      if (!url || (!['http:', 'https:', 'file:'].includes(url.protocol) && url.href !== 'about:blank')) {
         sendApiError(res, 400, 'BAD_REQUEST', 'a browser page URL is required');
         return;
       }

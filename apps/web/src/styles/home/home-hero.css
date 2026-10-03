@@ -1181,9 +1181,8 @@
 .home-hero__lexical .composer-input-placeholder {
   top: 0;
   left: 0;
-  /* Same weight as the text it stands in for. */
-  font-weight: 600;
-  color: var(--text-soft);
+  font-weight: 500;
+  color: var(--text-faint);
 }
 /* Typewriter placeholder carousel — a pointer-events-none overlay aligned to
    the editor's first text line (matches .composer-input-placeholder metrics).
@@ -1200,12 +1199,12 @@
   user-select: none;
   font-size: 13px;
   line-height: 1.6;
-  color: var(--text-soft);
+  color: var(--text-faint);
   overflow: hidden;
 }
 .home-hero__carousel-text {
-  /* Matches the placeholder it animates over (and the prompt text below it). */
-  font-weight: 600;
+  /* Keep example prompts lighter than entered text. */
+  font-weight: 500;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1223,7 +1222,7 @@
   width: 1px;
   height: 17px;
   align-self: center;
-  margin: 0 0 0 1px;
+  margin-inline-end: 1px;
   background: var(--accent);
   animation: home-hero-caret-blink 1.05s steps(1, end) infinite;
 }
@@ -3043,6 +3042,7 @@
   appearance: none;
   min-width: 0;
   min-height: 112px;
+  height: auto;
   display: flex;
   align-items: flex-start;
   padding: 12px;
@@ -3054,6 +3054,7 @@
   font-size: 13px;
   line-height: 1.35;
   text-align: left;
+  white-space: normal;
   cursor: pointer;
   box-shadow: var(--shadow-xs);
   transition:

@@ -22,6 +22,14 @@ function declarations(selector: string): string {
   return blocks.join('\n');
 }
 
+describe('home hero — prompt examples', () => {
+  it('wraps long prompts inside each card instead of inheriting button nowrap', () => {
+    expect(declarations('.home-hero__prompt-example')).toMatch(/white-space:\s*normal/);
+    expect(declarations('.home-hero__prompt-example')).toMatch(/(?:^|\s)height:\s*auto/);
+    expect(declarations('.home-hero__prompt-example span')).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+});
+
 describe('home hero — template list rows', () => {
   it('OPEND-2687: the hover fill carries the same air above and below the row content', () => {
     const row = declarations('.home-hero__plugin-preset-row');
@@ -56,6 +64,12 @@ describe('home hero — template list rows', () => {
 });
 
 describe('home hero — placeholder caret', () => {
+  it('keeps previews faint while using the lightest supported font weight', () => {
+    expect(declarations('.home-hero__lexical .composer-input-placeholder')).toMatch(/font-weight:\s*500/);
+    expect(declarations('.home-hero__lexical .composer-input-placeholder')).toMatch(/color:\s*var\(--text-faint\)/);
+    expect(declarations('.home-hero__carousel-text')).toMatch(/font-weight:\s*500/);
+    expect(declarations('.home-hero__lexical .home-hero__carousel')).toMatch(/color:\s*var\(--text-faint\)/);
+  });
   it('OPEND-2698: the typewriter caret matches the native caret it stands in for', () => {
     const caret = declarations('.home-hero__carousel-caret');
     // Native Chromium caret on the 14px composer text: 1px wide, 17px tall

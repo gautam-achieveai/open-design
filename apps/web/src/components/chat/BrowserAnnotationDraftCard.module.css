@@ -1,0 +1,60 @@
+.card {
+  position: relative;
+  display: inline-flex;
+  width: 72px;
+  height: 64px;
+  flex: 0 0 auto;
+}
+.preview {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--chat-border-soft);
+  border-radius: 10px;
+  background: var(--chat-bg-panel);
+  color: var(--chat-text-muted);
+}
+.preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.fallback {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  font-size: 9px;
+}
+.remove {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--chat-border-soft);
+  border-radius: 50%;
+  background: var(--chat-bg-panel);
+  color: var(--chat-text-muted);
+}
+.details {
+  max-height: 70vh;
+  overflow: auto;
+  padding: 12px;
+  color: var(--chat-text);
+  background: var(--chat-bg-panel);
+}
+.details pre,
+.details p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.details img {
+  display: block;
+  max-width: 100%;
+  max-height: 40vh;
+  margin: 0 auto 12px;
+  object-fit: contain;
+}

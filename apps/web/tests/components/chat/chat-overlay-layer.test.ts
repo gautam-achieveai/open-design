@@ -110,7 +110,7 @@ function cssFilesUnder(dir: string): string[] {
 const CHAT_RULES: StyleRule[] = (() => {
   const rules: StyleRule[] = [];
   for (const file of cssFilesUnder(CHAT_DIR)) {
-    parseRules(stripComments(readFileSync(file, 'utf8')), relative(SRC, file), rules);
+    parseRules(stripComments(readFileSync(file, 'utf8')), relative(SRC, file).replace(/\\/g, '/'), rules);
   }
   return rules;
 })();

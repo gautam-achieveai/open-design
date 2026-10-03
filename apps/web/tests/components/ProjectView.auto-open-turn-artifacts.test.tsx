@@ -262,9 +262,20 @@ async function runTurn(options: {
   // pre-turn snapshot is already captured by the send above.
   fetchProjectFiles.mockResolvedValue(options.afterFiles);
 
-  void chatPaneHarness.onSend!('Generate four images', [], []);
-  await waitFor(() => expect(handlers).toBeTruthy());
-  handlers!.onDone(options.doneText ?? 'Done.');
+  await act(async () => {
+    void chatPaneHarness.onSend!('Generate four images', [], []);
+  });
+  // Callback registration can precede the assistant's committed render. The
+  // completion path checks that committed run before opening its artifacts.
+  await waitFor(() => {
+    expect(handlers).toBeTruthy();
+    expect(chatPaneHarness.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'assistant', runId: 'run-batch-images' }),
+    ]));
+  });
+  await act(async () => {
+    handlers!.onDone(options.doneText ?? 'Done.');
+  });
 }
 
 const IMAGE_TURN_FILES = [

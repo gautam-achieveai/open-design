@@ -33,6 +33,10 @@ const pendingNormalization = new Set([
   'apps/web/src/styles/viewer/composio.css',
 ]);
 
+function fileId(file: string): string {
+  return relative(repoRoot, file).replace(/\\/g, '/');
+}
+
 function cssFiles(root: string): string[] {
   return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
     const path = `${root}/${entry.name}`;
@@ -65,7 +69,7 @@ function ladderViolations(file: string): string[] {
   for (const match of css.matchAll(/font-weight\s*:\s*(\d+)\b/g)) {
     const weight = Number(match[1]);
     if (isForbiddenWeight(weight)) {
-      violations.push(`${relative(repoRoot, file)}: ${weight}`);
+      violations.push(`${fileId(file)}: ${weight}`);
     }
   }
   for (const match of css.matchAll(/(?:^|[;{])\s*font\s*:\s*([^;}]+)/g)) {
@@ -74,13 +78,13 @@ function ladderViolations(file: string): string[] {
 
     const explicitWeight = shorthand.match(/^(?:(?:normal|italic|oblique)\s+)?([1-9]00)\b/);
     if (!explicitWeight) {
-      violations.push(`${relative(repoRoot, file)}: font shorthand implicit 400`);
+      violations.push(`${fileId(file)}: font shorthand implicit 400`);
       continue;
     }
 
     const weight = Number(explicitWeight[1]);
     if (isForbiddenWeight(weight)) {
-      violations.push(`${relative(repoRoot, file)}: font shorthand ${weight}`);
+      violations.push(`${fileId(file)}: font shorthand ${weight}`);
     }
   }
   return violations;
@@ -88,7 +92,7 @@ function ladderViolations(file: string): string[] {
 
 describe('product UI font-weight normalization', () => {
   const files = styleRoots.flatMap(cssFiles);
-  const isPending = (file: string) => pendingNormalization.has(relative(repoRoot, file));
+  const isPending = (file: string) => pendingNormalization.has(fileId(file));
 
   it('defaults unspecified text and buttons to the 600 step', () => {
     const baseCss = withoutFontFaces(
@@ -118,7 +122,7 @@ describe('product UI font-weight normalization', () => {
         /:where\(\.(?:home-hero|composer|plus-menu__popup)\)\s*button\s*\{[^}]*font-weight/.test(
           css.replace(/\/\*[\s\S]*?\*\//g, ''),
         )
-        ? [relative(repoRoot, file)]
+        ? [fileId(file)]
         : [];
     });
     expect(standIns).toEqual([]);
@@ -131,7 +135,7 @@ describe('product UI font-weight normalization', () => {
 
   it('keeps the pending list limited to files that still need it', () => {
     const stale = files.filter((file) => isPending(file) && ladderViolations(file).length === 0);
-    expect(stale.map((file) => relative(repoRoot, file))).toEqual([]);
+    expect(stale.map(fileId)).toEqual([]);
   });
 
   it('preserves the real ranges registered by the bundled font files', () => {

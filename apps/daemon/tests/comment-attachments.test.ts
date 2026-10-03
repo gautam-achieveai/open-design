@@ -41,6 +41,24 @@ afterEach(() => {
 });
 
 describe('preview comment persistence', () => {
+  it('retains remaining measured style-menu fields across save, list and agent context', () => {
+    const style = {
+      opacity: '0.8', borderColor: 'rgb(32, 33, 36)', borderWidth: '1px', width: '600px',
+      height: '20.1562px', marginTop: '0px', marginRight: '1px', marginBottom: '12px', marginLeft: '-2px',
+    };
+    const db = seededDb();
+    const saved = upsertPreviewComment(db, 'project-1', 'conversation-1', {
+      target: target({ filePath: 'browser:https://example.test', style }), note: 'Refine the heading',
+    });
+    expect(saved?.style).toEqual(style);
+    const listed = listPreviewComments(db, 'project-1', 'conversation-1')[0];
+    expect(listed?.style).toEqual(style);
+    const attachments = normalizeCommentAttachments([commentAttachment({ style: listed?.style })]);
+    expect(attachments[0]?.style).toEqual(style);
+    const hint = renderCommentAttachmentHint(attachments);
+    for (const [key, value] of Object.entries(style)) expect(hint).toContain(`${key}: ${value}`);
+  });
+
   it('keeps critique migration wired while adding pod columns on a fresh database', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-comments-'));
     const db = openDatabase(tempDir);

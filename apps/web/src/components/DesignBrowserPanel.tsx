@@ -1,3 +1,5 @@
+import { createPopupBrowserSurface } from './browser-popup-surface';
+import { getHostBrowserPopups, type OpenDesignHostBrowserPopup } from '@open-design/host';
 import {
   useCallback,
   useEffect,
@@ -15,7 +17,8 @@ import {
   isOpenDesignHostAvailable,
 } from '@open-design/host';
 import type { TrackingReferenceBoardCategory } from '@open-design/contracts/analytics';
-import type { BrowserAnnotationPostRequest } from '@open-design/contracts';
+import type { BrowserAnnotationPostRequest, JsonValue } from '@open-design/contracts';
+import { isBrowserStylePatch } from '@open-design/contracts';
 import { useAnalytics } from '../analytics/provider';
 import {
   trackReferenceBoardClick,
@@ -43,10 +46,11 @@ import {
   readBrowserControlMetadata,
   withBrowserControlMetadata,
   type EmbeddedBrowserControlSession,
+  type EmbeddedBrowserControlSessionOptions,
   type EmbeddedBrowserControlStatus,
   type EmbeddedBrowserTarget,
 } from '../runtime/embedded-browser-control';
-import { captureHostRegionSnapshot } from '../runtime/exports';
+import { captureHostRegionSnapshot, type PreviewSnapshot } from '../runtime/exports';
 import type {
   ChatAttachment,
   ChatCommentAttachment,
@@ -55,6 +59,7 @@ import type {
   PreviewCommentTarget,
 } from '../types';
 import {
+  BROWSER_VIEWPORT_PRESETS,
   BROWSER_CANCEL_PICKER_SCRIPT,
   BROWSER_CAPTURE_PAGE_ARCHIVE_SCRIPT,
   BROWSER_PAGE_ARCHIVE_INDEX_FILE,
@@ -64,7 +69,7 @@ import {
   type BrowserPageArchiveManifest,
   type BrowserElementSnapshot,
   type BrowserViewportId,
-  browserApplyStyleScript,
+  browserApplyStylesScript,
   browserApplyTextScript,
   browserCommentFilePath,
   browserElementPickerScript,
@@ -88,6 +93,7 @@ import { BoardComposerPopover } from './BoardComposerPopover';
 import { EdgeAnnotationsPanel } from './EdgeAnnotationsPanel';
 import { PreviewDrawOverlay } from './PreviewDrawOverlay';
 import { RemixIcon } from './RemixIcon';
+import { CustomSelect } from './CustomSelect';
 import { useProjectCollabContext } from '../collab/collab-context';
 import { workspaceProjectHeaders } from '../collab/workspace-identity';
 
@@ -313,6 +319,8 @@ function isBenignWebviewLoadAbort(error: unknown): boolean {
 }
 
 interface DesignBrowserPanelProps {
+  popup?: OpenDesignHostBrowserPopup;
+  onBrowserRetentionChange?: (tabId: string, pending: boolean) => void;
   initialIconUrl?: string;
   initialTitle?: string;
   initialUrl?: string;
@@ -348,6 +356,9 @@ export interface BrowserPageInfo {
 
 const EMPTY_URL = 'about:blank';
 const DESIGN_BROWSER_PARTITION = 'persist:open-design-design-browser';
+// Electron reads this at guest attachment, before React calls the ref. Use a
+// string attribute: React omits unknown boolean attributes such as allowpopups.
+const DESIGN_BROWSER_POPUP_ATTRIBUTES: Record<string, string> = { allowpopups: 'true' };
 const HISTORY_LIMIT = DESIGN_BROWSER_HISTORY_LIMIT;
 const HISTORY_SUGGESTION_LIMIT = 20;
 const EMPTY_PREVIEW_COMMENTS: PreviewComment[] = [];
@@ -979,6 +990,8 @@ export function DesignBrowserPanel({
   sendDisabled = false,
   browserTabId,
   browserTabActive = true,
+  popup,
+  onBrowserRetentionChange,
 }: DesignBrowserPanelProps) {
   const t = useT();
   const { workspaceContext } = useProjectCollabContext();
@@ -1000,6 +1013,7 @@ export function DesignBrowserPanel({
   const [navigationIndex, setNavigationIndex] = useState(initialState.navigationIndex);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [viewportMenuOpen, setViewportMenuOpen] = useState(false);
   const [browserUseOpen, setBrowserUseOpen] = useState(false);
   const [edgeAnnotationsOpen, setEdgeAnnotationsOpen] = useState(false);
   const [browserDiagnosticsOpen, setBrowserDiagnosticsOpen] = useState(false);
@@ -1012,16 +1026,165 @@ export function DesignBrowserPanel({
   const [isLoading, setIsLoading] = useState(false);
   const [webviewNode, setWebviewNode] = useState<WebviewElement | null>(null);
   const [webContentsId, setWebContentsId] = useState<number | null>(null);
+  const currentWebviewRef = useRef(webviewNode);
+  currentWebviewRef.current = webviewNode;
+  const [popupViewport, setPopupViewport] = useState<HTMLDivElement | null>(null);
+  const [popupPixels, setPopupPixels] = useState<string | null>(null);
+  const popupRef = useRef(popup);
+  popupRef.current = popup;
+  const popupSurface = useMemo(() => popupViewport && popupRef.current
+    ? createPopupBrowserSurface(popupViewport, popupRef.current) : null, [popupViewport, popup?.surfaceId]);
+  useEffect(() => {
+    if (!popupSurface) return;
+    const disconnect = popupSurface.connect();
+    setWebviewNode(popupSurface.page);
+    setWebContentsId(popupSurface.page.getWebContentsId());
+    return () => { disconnect(); void popupSurface.present(false).catch(() => {}); setWebviewNode(null); setWebContentsId(null); };
+  }, [popupSurface]);
+  useEffect(() => { if (popup && popupSurface) popupSurface.update(popup); }, [popup, popupSurface]);
   const [browserControlStatus, setBrowserControlStatus] =
     useState<EmbeddedBrowserControlStatus>('unavailable');
   const [drawOverlayOpen, setDrawOverlayOpen] = useState(false);
+  const viewportFrameRef = useRef<HTMLDivElement | null>(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [viewport, setViewportState] = useState<BrowserViewportId>(() => loadBrowserViewport(projectId));
+  const [viewportChanging, setViewportChanging] = useState(false);
+  const [viewportError, setViewportError] = useState<string | null>(null);
+  const viewportRef = useRef(viewport);
+  viewportRef.current = viewport;
+  const viewportRequestRef = useRef(0);
+  const viewportReadyRef = useRef<{ check: () => void; reject: (error: Error) => void } | null>(null);
+  useEffect(() => () => {
+    viewportReadyRef.current?.reject(new Error('Browser viewport is no longer available'));
+  }, [projectId]);
+  const viewportGuardDiagnosticsRef = useRef(0);
+  const browserActiveRef = useRef(browserTabActive);
+  browserActiveRef.current = browserTabActive;
+  const popupPresentationRef = useRef<(() => Promise<void>) | null>(null);
+  const applyViewportRef = useRef<NonNullable<EmbeddedBrowserControlSessionOptions['applyViewport']>>(async () => { throw new Error('Browser viewport is not ready'); });
+  const applyViewport = useCallback<NonNullable<EmbeddedBrowserControlSessionOptions['applyViewport']>>((preset, expiresAt) => applyViewportRef.current(preset, expiresAt), []);
   const setViewport = useCallback((nextViewport: BrowserViewportId) => {
     saveBrowserViewport(projectId, nextViewport);
     setViewportState(nextViewport);
   }, [projectId]);
+  const viewportPreset = BROWSER_VIEWPORT_PRESETS.find((preset) => preset.id === viewport)!;
+  applyViewportRef.current = async (preset, expiresAt = Date.now() + 30_000) => {
+    const request = ++viewportRequestRef.current;
+    const frame = viewportFrameRef.current;
+    if (!browserTabActive || !frame || frame.getBoundingClientRect().width <= 0) {
+      throw new Error('Activate this browser tab before changing its viewport');
+    }
+    viewportReadyRef.current?.reject(new Error('Browser viewport changed while applying the preset; retry the command'));
+    const requestedPreset = BROWSER_VIEWPORT_PRESETS.find((candidate) => candidate.id === preset)!;
+    const ready = new Promise<void>((resolve, reject) => {
+      let available: DOMRect | null = null;
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        if (viewportReadyRef.current === pending) viewportReadyRef.current = null;
+        if (error) reject(error); else resolve();
+      };
+      const pending = { reject: (error: Error) => finish(error), check: () => {
+        if (Date.now() >= expiresAt) return finish(new Error('Browser command expired before execution.'));
+        if (request !== viewportRequestRef.current || frame !== viewportFrameRef.current || !frame.isConnected
+          || !browserActiveRef.current || document.visibilityState === 'hidden') {
+          return finish(new Error('Browser viewport is no longer available'));
+        }
+        if (viewportRef.current !== preset || frame.dataset.viewport !== preset) return;
+        const parent = frame.parentElement?.getBoundingClientRect();
+        const rect = frame.getBoundingClientRect();
+        if (!parent || parent.width <= 0 || parent.height <= 0 || rect.width <= 0 || rect.height <= 0) {
+          return finish(new Error('Browser viewport has no visible frame'));
+        }
+        if (available && (parent.width !== available.width || parent.height !== available.height)) {
+          return finish(new Error('Browser viewport changed while applying the preset; retry the command'));
+        }
+        available = parent;
+        const width = Math.min(requestedPreset.width ?? parent.width, parent.width);
+        const height = Math.min(requestedPreset.height ?? parent.height, parent.height);
+        if (Math.abs(rect.width - width) <= 1 && Math.abs(rect.height - height) <= 1) finish();
+      } };
+      const timer = setTimeout(() => finish(new Error('Browser command expired before execution.')), Math.max(0, expiresAt - Date.now()));
+      viewportReadyRef.current = pending;
+      setViewport(preset);
+      // The existing ResizeObserver acknowledges fitted layout. A committed
+      // React preset alone can still expose the previous CSS frame dimensions.
+      pending.check();
+    });
+    await ready;
+    const requestedRect = frame.getBoundingClientRect();
+    // Bounded numeric diagnostics distinguish committed style from frame layout.
+    // Never include page content, URLs or arbitrary computed-style text.
+    const describeFrame = () => {
+      const computedWidth = Number.parseFloat(getComputedStyle(frame).width);
+      const parentRect = frame.parentElement?.getBoundingClientRect();
+      return { currentFrame: frame === viewportFrameRef.current, domPresetMatches: frame.dataset.viewport === preset,
+        inlineWidthMatches: frame.style.width === (requestedPreset.width ? `min(${requestedPreset.width}px, 100%)` : '100%'),
+        clientWidth: frame.clientWidth, offsetWidth: frame.offsetWidth,
+        computedWidth: Number.isFinite(computedWidth) ? computedWidth : null,
+        parentWidth: parentRect?.width ?? null };
+    };
+    const beforePresentation = describeFrame();
+    // Child views live outside DOM composition. Their geometry must be applied
+    // before the shared command reports the fitted frame to UI or CLI callers.
+    await popupPresentationRef.current?.();
+    if (Date.now() >= expiresAt) throw new Error('Browser command expired before execution.');
+    const rect = frame.getBoundingClientRect();
+    if (request !== viewportRequestRef.current || viewportRef.current !== preset || !browserActiveRef.current
+      || !frame.isConnected || rect.width !== requestedRect.width || rect.height !== requestedRect.height) {
+      if (viewportGuardDiagnosticsRef.current++ < 20) console.warn(JSON.stringify({ logger: 'browser.viewport.guard',
+        event: 'changed-during-presentation', request, currentRequest: viewportRequestRef.current,
+        presetMatches: viewportRef.current === preset, active: browserActiveRef.current, connected: frame.isConnected,
+        requestedWidth: requestedRect.width, requestedHeight: requestedRect.height,
+        measuredWidth: rect.width, measuredHeight: rect.height,
+        beforePresentation, afterPresentation: describeFrame() }));
+      throw new Error('Browser viewport changed while applying the preset; retry the command');
+    }
+    const size = { width: Math.round(rect.width), height: Math.round(rect.height) };
+    if (size.width <= 0 || size.height <= 0) throw new Error('Browser viewport has no visible frame');
+    setViewportSize(size);
+    return { preset, ...size };
+  };
+  const selectViewport = async (preset: BrowserViewportId) => {
+    setViewportChanging(true);
+    setViewportError(null);
+    try {
+      if (browserControlStatus === 'connected' && browserTabId) {
+        await executeEmbeddedBrowserOperation(projectId, { operation: 'viewport', preset }, {
+          tabId: browserTabId,
+          ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
+        });
+      } else {
+        await applyViewport(preset);
+      }
+    } catch (error) {
+      setViewportError(error instanceof Error ? error.message : 'Browser viewport change failed');
+    } finally { setViewportChanging(false); }
+  };
+  useEffect(() => {
+    const frame = viewportFrameRef.current;
+    if (!frame) return;
+    const measure = () => {
+      const rect = frame.getBoundingClientRect();
+      const next = { width: Math.round(rect.width), height: Math.round(rect.height) };
+      setViewportSize((current) => current.width === next.width && current.height === next.height ? current : next);
+      viewportReadyRef.current?.check();
+    };
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    observer?.observe(frame);
+    if (frame.parentElement) observer?.observe(frame.parentElement);
+    window.addEventListener('resize', measure); document.addEventListener('visibilitychange', measure); measure();
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); document.removeEventListener('visibilitychange', measure); };
+  }, [viewport, browserTabActive]);
   const [activeTool, setActiveTool] = useState<BrowserTool | null>(null);
   const [activeCommentTarget, setActiveCommentTarget] = useState<BrowserElementSnapshot | null>(null);
+  const activeCommentTargetRef = useRef(activeCommentTarget);
+  activeCommentTargetRef.current = activeCommentTarget;
+  const captureCleanupRef = useRef<Promise<File | null> | null>(null);
+  const liveEditRevisionRef = useRef(0);
+  const liveEditInFlightRef = useRef(false);
+  const [applyingBrowserEdit, setApplyingBrowserEdit] = useState(false);
+  const applyStyleRef = useRef<NonNullable<EmbeddedBrowserControlSessionOptions['applyStyle']>>(async () => { throw new Error('Browser style editing is not ready'); });
+  const applyStyle = useCallback<NonNullable<EmbeddedBrowserControlSessionOptions['applyStyle']>>((request, expiresAt) => applyStyleRef.current(request, expiresAt), []);
   const browserPostRef = useRef<{ key: string; request: BrowserAnnotationPostRequest } | null>(null);
   const browserPostingRef = useRef(false);
   const annotationUrlRef = useRef('');
@@ -1029,6 +1192,7 @@ export function DesignBrowserPanel({
   const [commentDraft, setCommentDraft] = useState('');
   const [queuedCommentNotes, setQueuedCommentNotes] = useState<string[]>([]);
   const [browserImages, setBrowserImages] = useState<File[]>([]);
+  const annotationCaptureDiagnosticsRef = useRef(0);
   const [browserImagePreviews, setBrowserImagePreviews] = useState<{ file: File; url: string }[]>([]);
   const [browserPreviewIndex, setBrowserPreviewIndex] = useState<number | null>(null);
   const [sendingComment, setSendingComment] = useState(false);
@@ -1061,8 +1225,8 @@ export function DesignBrowserPanel({
   const archiveSaving = savingActions.archive;
   const briefSaving = savingActions.brief;
   const screenshotSaving = savingActions.screenshot;
-  const canGoBack = navigationIndex > 0;
-  const canGoForward = navigationIndex >= 0 && navigationIndex < navigationStack.length - 1;
+  const canGoBack = popup ? popup.canGoBack : navigationIndex > 0;
+  const canGoForward = popup ? popup.canGoForward : navigationIndex >= 0 && navigationIndex < navigationStack.length - 1;
 
   const setSavingAction = useCallback((action: BrowserSavingAction, saving: boolean) => {
     setSavingActions((current) => (
@@ -1102,16 +1266,10 @@ export function DesignBrowserPanel({
     return () => registerBrandBrowser(projectId, browserTabId, null);
   }, [browserTabId, projectId, webviewNode, currentUrl, desktopHostAvailable]);
   const assignWebviewNode = useCallback((node: HTMLWebViewElement | null) => {
-    // Set `allowpopups` imperatively rather than as a JSX prop. React's DOM
-    // renderer does not treat `allowpopups` as a known boolean attribute, so
-    // passing it through JSX logs "Received `true` for a non-boolean
-    // attribute" at runtime (only reproducible once the webview branch mounts
-    // in the desktop host). The attribute must still reach Electron's <webview>
-    // as a present string so the guest page may open popups.
-    if (node) node.setAttribute('allowpopups', 'true');
+    if (browserTabId && getHostBrowserPopups()) onBrowserRetentionChange?.(browserTabId, Boolean(node));
     if (!node) setWebContentsId(null);
     setWebviewNode(node as WebviewElement | null);
-  }, []);
+  }, [browserTabId, onBrowserRetentionChange]);
 
   useEffect(() => {
     setViewportState(loadBrowserViewport(projectId));
@@ -1309,7 +1467,7 @@ export function DesignBrowserPanel({
       setLoadUrl(url);
       return;
     }
-    if (loadUrl === EMPTY_URL) {
+    if (loadUrl === EMPTY_URL && !popup) {
       setLoadUrl(url);
       return;
     }
@@ -1326,7 +1484,7 @@ export function DesignBrowserPanel({
       if (isBenignWebviewLoadAbort(error)) return;
       setLoadUrl(url);
     }
-  }, [loadUrl, webviewNode]);
+  }, [loadUrl, webviewNode, popup]);
 
   const navigateTo = useCallback((rawAddress: string) => {
     const nextUrl = normalizeBrowserAddress(rawAddress);
@@ -1345,8 +1503,8 @@ export function DesignBrowserPanel({
       setLoadUrl(EMPTY_URL);
       recordNavigation(nextUrl);
     }
-    if (nextUrl !== EMPTY_URL) loadWebviewUrl(nextUrl);
-  }, [commitHistory, loadWebviewUrl, recordNavigation]);
+    if (nextUrl !== EMPTY_URL || popup) loadWebviewUrl(nextUrl);
+  }, [commitHistory, loadWebviewUrl, recordNavigation, popup]);
 
   useEffect(() => {
     if (!navigateRequest) return;
@@ -1523,7 +1681,44 @@ export function DesignBrowserPanel({
   const pageIconUrl = pageHistoryEntry?.iconUrl || restoredIconUrlRef.current || faviconUrl(currentUrl);
   // Drive the start-page/webview branch off the load target, not the committed
   // URL, so a transient about:blank navigation event can't unmount the webview.
-  const isBlank = loadUrl === EMPTY_URL;
+  useEffect(() => {
+    if (!popupSurface || !popupViewport) return;
+    let disposed = false;
+    let lastVisible: boolean | null = null;
+    let lastGeometry = '';
+    let captureGeneration = 0;
+    const present = async () => {
+      const externalDialog = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"], [aria-modal="true"], [role="menu"]')].find((element) => !element.closest('[aria-hidden="true"], [hidden]'));
+      const occluded = Boolean(menuOpen || viewportMenuOpen || suggestionsOpen || browserUseOpen || browserDiagnosticsOpen || edgeAnnotationsOpen
+        || drawOverlayOpen || activeCommentTarget || browserPreviewIndex !== null || externalDialog);
+      const visible = browserTabActive && !occluded && document.visibilityState !== 'hidden';
+      const rect = popupViewport.getBoundingClientRect();
+      const geometry = `${rect.x}:${rect.y}:${rect.width}:${rect.height}`;
+      await popupSurface.present(visible);
+      if (lastVisible !== visible || lastGeometry !== geometry) {
+        lastVisible = visible;
+        lastGeometry = geometry;
+        const generation = ++captureGeneration;
+        if (visible) setPopupPixels(null);
+        else if (browserTabActive && occluded) {
+          const image = await popupSurface.page.capturePage();
+          if (!disposed && lastVisible === false && generation === captureGeneration) setPopupPixels(image.toDataURL());
+        }
+      }
+    };
+    popupPresentationRef.current = present;
+    const refresh = () => { void present().catch(() => { /* A closing page has no surface to present. */ }); };
+    const resize = new ResizeObserver(refresh); resize.observe(popupViewport);
+    const mutation = new MutationObserver(refresh); mutation.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['role', 'aria-modal', 'aria-hidden', 'class'] });
+    window.addEventListener('resize', refresh); document.addEventListener('scroll', refresh, true);
+    document.addEventListener('visibilitychange', refresh); refresh();
+    return () => { disposed = true; if (popupPresentationRef.current === present) popupPresentationRef.current = null;
+      resize.disconnect(); mutation.disconnect(); window.removeEventListener('resize', refresh);
+      document.removeEventListener('scroll', refresh, true); document.removeEventListener('visibilitychange', refresh); void popupSurface.present(false).catch(() => {}); };
+  }, [popupSurface, popupViewport, browserTabActive, menuOpen, viewportMenuOpen, suggestionsOpen, browserUseOpen, browserDiagnosticsOpen,
+    edgeAnnotationsOpen, drawOverlayOpen, activeCommentTarget, browserPreviewIndex]);
+
+  const isBlank = !popup && loadUrl === EMPTY_URL;
   const browserControlTarget = useMemo<EmbeddedBrowserTarget | null>(() => (
     desktopHostAvailable && browserTabId && webContentsId
       ? {
@@ -1597,9 +1792,14 @@ export function DesignBrowserPanel({
       return undefined;
     }
     const session = createEmbeddedBrowserControlSession({
+      applyViewport,
+      applyStyle,
       ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
       target: browserControlTarget,
-      onStatus: setBrowserControlStatus,
+      onStatus: (status) => {
+        setBrowserControlStatus(status);
+        if (!popup && browserTabId && status !== 'connecting') onBrowserRetentionChange?.(browserTabId, false);
+      },
     });
     browserControlSessionRef.current = session;
     return () => {
@@ -1669,14 +1869,15 @@ export function DesignBrowserPanel({
     let cancelled = false;
     let running = false;
     const refresh = async () => {
-      if (cancelled || running) return;
+      if (cancelled || running || liveEditInFlightRef.current) return;
       running = true;
+      const editRevision = liveEditRevisionRef.current;
       try {
         const result = await node.executeJavaScript<unknown>(
           browserMeasureTargetsScript(browserFilePath, targets),
           true,
         );
-        if (cancelled || !Array.isArray(result)) return;
+        if (cancelled || liveEditInFlightRef.current || editRevision !== liveEditRevisionRef.current || !Array.isArray(result)) return;
         const next = new Map<string, BrowserElementSnapshot>();
         for (const item of result) {
           if (!item || typeof item !== 'object') continue;
@@ -1694,11 +1895,6 @@ export function DesignBrowserPanel({
             current && current.selector === activeSnapshot.selector && !browserSnapshotsEqual(current, activeSnapshot)
               ? { ...current, ...activeSnapshot }
               : current
-          ));
-          setTextDraft((current) => (
-            activeTool === 'inspect' || activeTool === 'edit'
-              ? current
-              : activeSnapshot.text
           ));
         }
       } catch {
@@ -1875,45 +2071,92 @@ export function DesignBrowserPanel({
     }
   }
 
+  function diagnoseAnnotationCapture(phase: string, reason: string, started: number,
+    dimensions: Record<string, number | undefined> = {}) {
+    if (annotationCaptureDiagnosticsRef.current++ >= 20) return;
+    console.warn(JSON.stringify({ logger: 'browser.annotation.capture', mode: popupSurface ? 'popup' : 'ordinary',
+      phase, reason, elapsedMs: Math.round(performance.now() - started),
+      ...Object.fromEntries(Object.entries(dimensions).filter(([, value]) => Number.isFinite(value))) }));
+  }
+
   async function captureBrowserElementAnnotation(
     target: BrowserElementSnapshot,
   ): Promise<File | null> {
+    const started = performance.now();
+    let phase = 'initial';
+    const reject = (reason: string, dimensions?: Record<string, number | undefined>) => {
+      diagnoseAnnotationCapture('rejected', reason, started, dimensions); return null;
+    };
     const node = webviewNode;
-    if (!node || !target.maskRects || !target.viewport) return null;
+    diagnoseAnnotationCapture('started', 'capture-requested', started, { maskCount: target.maskRects?.length,
+      targetWidth: target.position.width, targetHeight: target.position.height,
+      viewportWidth: target.viewport?.width, viewportHeight: target.viewport?.height });
+    if (!node) return reject('node-unavailable');
+    if (!target.maskRects) return reject('masks-unavailable');
+    if (!target.viewport) return reject('viewport-unavailable');
     const initialUrl = node.getURL?.() || currentUrl;
     const frame = node.getBoundingClientRect();
     if (Math.abs(frame.width - target.viewport.width) > 1
-      || Math.abs(frame.height - target.viewport.height) > 1) return null;
+      || Math.abs(frame.height - target.viewport.height) > 1) return reject('frame-viewport-mismatch',
+        { frameWidth: frame.width, frameHeight: frame.height });
     const left = Math.max(frame.left, frame.left + target.position.x);
     const top = Math.max(frame.top, frame.top + target.position.y);
     const right = Math.min(frame.right, frame.left + target.position.x + target.position.width);
     const bottom = Math.min(frame.bottom, frame.top + target.position.y + target.position.height);
-    if (right <= left || bottom <= top) return null;
+    if (right <= left || bottom <= top) return reject('target-outside-frame');
 
     const hideText = target.maskRects.some((mask) => mask.textHidden === true);
     try {
-      if (hideText && await node.executeJavaScript<boolean>(browserAnnotationTextPaintScript(true), true) !== true) return null;
+      phase = 'hide-text';
+      if (hideText && await node.executeJavaScript<boolean>(browserAnnotationTextPaintScript(true), true) !== true) return reject('text-hide-failed');
+      phase = 'paint';
       await new Promise<void>((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       );
+      phase = 'measure-before';
       const before = browserSnapshotFromUnknown(await node.executeJavaScript<unknown>(
         browserMeasureTargetsScript(target.filePath, [{ elementId: target.elementId,
           selector: target.selector, key: 'capture' }]), true,
       ).then((items) => Array.isArray(items) ? items[0] : null).catch(() => null), target.filePath);
-      if (!before?.maskRects || !before.viewport || before.selector !== target.selector
-        || (node.getURL?.() || currentUrl) !== initialUrl
-        || JSON.stringify(before.position) !== JSON.stringify(target.position)
-        || JSON.stringify(before.maskRects) !== JSON.stringify(target.maskRects)
-        || JSON.stringify(before.viewport) !== JSON.stringify(target.viewport)) return null;
-      let snapshot = await captureHostRegionSnapshot({
-        left,
-        top,
-        width: right - left,
-        height: bottom - top,
-      });
-      if (!snapshot) {
+      const beforeRejection = !before?.maskRects ? 'before-masks-unavailable' : !before.viewport ? 'before-viewport-unavailable'
+        : before.selector !== target.selector ? 'before-selector-changed'
+        : (node.getURL?.() || currentUrl) !== initialUrl ? 'before-url-changed'
+        : JSON.stringify(before.position) !== JSON.stringify(target.position) ? 'before-position-changed'
+        : JSON.stringify(before.maskRects) !== JSON.stringify(target.maskRects) ? 'before-masks-changed'
+        : JSON.stringify(before.viewport) !== JSON.stringify(target.viewport) ? 'before-viewport-changed' : null;
+      if (beforeRejection) return reject(beforeRejection, { measuredWidth: before?.viewport?.width, measuredHeight: before?.viewport?.height });
+      let snapshot: PreviewSnapshot | null;
+      let actualCrop: { x: number; y: number; width: number; height: number } | undefined;
+      phase = 'capture';
+      if (popupSurface) {
+        // The host region contains the popup's placeholder, not its native
+        // WebContentsView. Crop only the owned child's decoded pixel surface.
+        const dataUrl = (await node.capturePage()).toDataURL();
+        phase = 'decode';
+        const size = await imageSizeFromDataUrl(dataUrl);
+        if (!size) return reject('child-decode-failed');
+        phase = 'crop';
+        snapshot = await cropDataUrl(dataUrl,
+          (left - frame.left) * size.w / frame.width,
+          (top - frame.top) * size.h / frame.height,
+          (right - left) * size.w / frame.width,
+          (bottom - top) * size.h / frame.height);
+      } else {
+        snapshot = await captureHostRegionSnapshot({ left, top, width: right - left, height: bottom - top });
+        if (snapshot && target.maskRects.length > 0) {
+          if (!snapshot.capturedCssRect) return reject('capture-geometry-unavailable');
+          const captured = snapshot.capturedCssRect;
+          actualCrop = { x: captured.x - frame.left, y: captured.y - frame.top,
+            width: captured.width, height: captured.height };
+        }
+      }
+      if (!snapshot && !popupSurface) {
+        // A full-frame fallback would discard the exact cropped CSS origin.
+        if (target.maskRects.length > 0) return reject('capture-geometry-unavailable');
+        phase = 'fallback-capture';
         const page = await captureBrowserSnapshot();
-        if (!page) return null;
+        if (!page) return reject('fallback-capture-unavailable');
+        phase = 'crop';
         const scaleX = page.w / Math.max(1, frame.width);
         const scaleY = page.h / Math.max(1, frame.height);
         snapshot = await cropDataUrl(
@@ -1924,36 +2167,47 @@ export function DesignBrowserPanel({
           (bottom - top) * scaleY,
         );
       }
-      if (!snapshot) return null;
-      if (hideText && await node.executeJavaScript<boolean>(browserAnnotationTextPaintScript(true, true), true) !== true) return null;
+      if (!snapshot) return reject('capture-crop-unavailable');
+      diagnoseAnnotationCapture('captured', 'pixels-available', started, { imageWidth: snapshot.w, imageHeight: snapshot.h });
+      phase = 'verify-text';
+      if (hideText && await node.executeJavaScript<boolean>(browserAnnotationTextPaintScript(true, true), true) !== true) return reject('text-hide-verification-failed');
+      phase = 'measure-after';
       const after = browserSnapshotFromUnknown(await node.executeJavaScript<unknown>(
         browserMeasureTargetsScript(target.filePath, [{ elementId: target.elementId,
           selector: target.selector, key: 'capture' }]), true,
       ).then((items) => Array.isArray(items) ? items[0] : null).catch(() => null), target.filePath);
-      if (!after?.maskRects || !after.viewport || after.selector !== target.selector
-        || (node.getURL?.() || currentUrl) !== initialUrl
-        || JSON.stringify(after.position) !== JSON.stringify(before.position)
-        || JSON.stringify(after.maskRects) !== JSON.stringify(before.maskRects)
-        || JSON.stringify(after.viewport) !== JSON.stringify(before.viewport)) return null;
+      const afterRejection = !after?.maskRects ? 'after-masks-unavailable' : !after.viewport ? 'after-viewport-unavailable'
+        : after.selector !== target.selector ? 'after-selector-changed'
+        : (node.getURL?.() || currentUrl) !== initialUrl ? 'after-url-changed'
+        : JSON.stringify(after.position) !== JSON.stringify(before!.position) ? 'after-position-changed'
+        : JSON.stringify(after.maskRects) !== JSON.stringify(before!.maskRects) ? 'after-masks-changed'
+        : JSON.stringify(after.viewport) !== JSON.stringify(before!.viewport) ? 'after-viewport-changed' : null;
+      if (afterRejection) return reject(afterRejection, { measuredWidth: after?.viewport?.width, measuredHeight: after?.viewport?.height });
+      phase = 'mask';
       const pixelMasks = browserAnnotationPixelMasks(target.position,
-        { x: 0, y: 0, width: frame.width, height: frame.height }, snapshot, target.maskRects);
-      if (!pixelMasks) return null;
+        { x: 0, y: 0, width: frame.width, height: frame.height }, snapshot, target.maskRects, actualCrop);
+      if (!pixelMasks) return reject('pixel-masks-invalid');
       snapshot = await maskBrowserAnnotationSnapshot(snapshot, pixelMasks);
-      if (!snapshot) return null;
+      if (!snapshot) return reject('pixel-masking-failed');
       // Keep chat crops bounded on high-DPI displays; large images must not turn
       // an otherwise valid note into a rejected post.
       for (let maxEdge = 1200; maxEdge >= 150; maxEdge = Math.floor(maxEdge / 2)) {
+        phase = 'resize';
         snapshot = await cropDataUrl(snapshot.dataUrl, 0, 0, snapshot.w, snapshot.h, maxEdge);
-        if (!snapshot) return null;
+        if (!snapshot) return reject('bounded-resize-failed');
         if (snapshot.dataUrl.length <= 4 * Math.ceil(256 * 1024 / 3) + 22) break;
       }
-      if (snapshot.dataUrl.length > 4 * Math.ceil(256 * 1024 / 3) + 22) return null;
+      if (snapshot.dataUrl.length > 4 * Math.ceil(256 * 1024 / 3) + 22) return reject('image-too-large');
+      phase = 'blob';
       const blob = await fetch(snapshot.dataUrl).then((response) => response.blob());
+      diagnoseAnnotationCapture('completed', 'file-ready', started, { imageWidth: snapshot.w, imageHeight: snapshot.h, bytes: blob.size });
       return new File(
         [blob],
         `browser-annotation-${Date.now()}.png`,
         { type: blob.type || 'image/png' },
       );
+    } catch (error) {
+      diagnoseAnnotationCapture('exception', phase, started); throw error;
     } finally {
       if (hideText) await node.executeJavaScript(browserAnnotationTextPaintScript(false), true).catch(() => {});
     }
@@ -2288,6 +2542,11 @@ export function DesignBrowserPanel({
   }
 
   function navigateHistoryBy(delta: -1 | 1) {
+    if (popup && webviewNode) {
+      if (delta < 0 && popup.canGoBack) webviewNode.goBack();
+      else if (delta > 0 && popup.canGoForward) webviewNode.goForward();
+      return;
+    }
     const targetIndex = navigationIndex + delta;
     const entry = navigationStack[targetIndex];
     if (!entry) return;
@@ -2407,13 +2666,25 @@ export function DesignBrowserPanel({
       setActiveTool(tool);
       if (tool === 'comment') {
         setCaptureChromeHidden(true);
+        const captureStarted = performance.now();
         let captureTimeout: ReturnType<typeof setTimeout>;
-        const deadline = new Promise<null>((resolve) => { captureTimeout = setTimeout(() => resolve(null), 1500); });
-        void Promise.race([captureBrowserElementAnnotation(snapshot), deadline]).then((file) => {
+        const deadline = new Promise<null>((resolve) => { captureTimeout = setTimeout(() => {
+          diagnoseAnnotationCapture('timeout', 'capture-deadline', captureStarted); resolve(null);
+        }, 1500); });
+        const capture = captureBrowserElementAnnotation(snapshot).finally(() => {
+          if (captureCleanupRef.current === capture) captureCleanupRef.current = null;
+        });
+        captureCleanupRef.current = capture;
+        void Promise.race([capture, deadline]).then((file) => {
+          diagnoseAnnotationCapture('result', file ? 'file-available' : 'no-file', captureStarted);
           if (file && pickerRequestIdRef.current === requestId && !browserPostingRef.current && !browserPostRef.current) {
             setBrowserImages([file]);
+            diagnoseAnnotationCapture('attached', 'image-staged', captureStarted, { bytes: file.size });
+          } else if (file) {
+            diagnoseAnnotationCapture('discarded', pickerRequestIdRef.current !== requestId ? 'request-superseded'
+              : browserPostingRef.current ? 'posting-started' : 'post-already-staged', captureStarted);
           }
-        }).catch(() => { /* Feedback can be posted without a screenshot. */ })
+        }).catch(() => { diagnoseAnnotationCapture('result', 'capture-exception', captureStarted); })
           .finally(() => { clearTimeout(captureTimeout); setCaptureChromeHidden(false); });
       }
       setStatusMessage(
@@ -2451,45 +2722,74 @@ export function DesignBrowserPanel({
     setStatusMessage(t('browserUse.added'));
   }
 
-  function updateActiveTargetStyle(prop: keyof PreviewAnnotationStyle, value: string) {
-    setActiveCommentTarget((current) => {
-      if (!current) return current;
-      const style = { ...(current.style ?? {}) };
-      if (prop === 'paddingTop') {
-        style.paddingTop = value;
-        style.paddingRight = value;
-        style.paddingBottom = value;
-        style.paddingLeft = value;
-      } else {
-        style[prop] = value;
-      }
-      return { ...current, style };
-    });
-  }
-
-  async function applyBrowserStyle(prop: keyof PreviewAnnotationStyle, value: string) {
-    const target = activeCommentTarget;
-    if (!target || !webviewNode) return;
-    updateActiveTargetStyle(prop, value);
-    const props: Array<keyof PreviewAnnotationStyle> = prop === 'paddingTop'
-      ? ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft']
-      : [prop];
+  async function applyMeasuredBrowserEdit(selector: string, script: string, expiresAt: number): Promise<JsonValue> {
+    const node = webviewNode;
+    if (!node || !browserActiveRef.current) throw new Error('Activate this browser tab before editing');
+    const target = activeCommentTargetRef.current;
+    const selected = target?.selector === selector ? target : null;
+    const pageUrl = node.getURL?.() || currentUrl;
+    const revision = ++liveEditRevisionRef.current;
+    const selection = ++pickerRequestIdRef.current;
+    liveEditInFlightRef.current = true;
+    // A capture deadline can settle before its paint suppression cleanup.
+    // Invalidate its attachment first, then await the underlying finalizer.
+    setBrowserImages((files) => files.filter((file) => !file.name.startsWith('browser-annotation-')));
+    setApplyingBrowserEdit(true);
+    const available = () => revision === liveEditRevisionRef.current && selection === pickerRequestIdRef.current
+      && node === currentWebviewRef.current && browserActiveRef.current && Date.now() < expiresAt
+      && (node.getURL?.() || currentUrl) === pageUrl
+      && (!selected || activeCommentTargetRef.current?.elementId === selected.elementId);
     try {
-      for (const item of props) {
-        await webviewNode.executeJavaScript(browserApplyStyleScript(target.selector, item, value), true);
+      await captureCleanupRef.current;
+      if (!available()) throw new Error('Browser selection changed or command expired');
+      if (await node.executeJavaScript(script, true) !== true) throw new Error('Browser edit was not applied');
+      if (!available()) throw new Error('Browser selection changed or command expired');
+      const result = await node.executeJavaScript<unknown>(browserMeasureTargetsScript(browserFilePath, [{
+        key: 'live-edit', selector, elementId: selected?.elementId ?? `dom:${selector}`,
+      }]), true);
+      const measured = Array.isArray(result) ? browserSnapshotFromUnknown(result[0], browserFilePath) : null;
+      if (!measured || measured.selector !== selector || !available()) throw new Error('Browser edit could not be measured');
+      if (selected) {
+        activeCommentTargetRef.current = measured;
+        setActiveCommentTarget(measured);
       }
-    } catch {
-      setStatusMessage(t('designBrowser.status.applyStyleFailed'));
+      return measured as unknown as JsonValue;
+    } finally {
+      if (revision === liveEditRevisionRef.current) {
+        liveEditInFlightRef.current = false;
+        setApplyingBrowserEdit(false);
+      }
     }
   }
 
-  async function applyBrowserText(value: string) {
-    const target = activeCommentTarget;
-    setTextDraft(value);
-    setActiveCommentTarget((current) => current ? { ...current, text: value } : current);
-    if (!target || !webviewNode) return;
+  applyStyleRef.current = async (request, expiresAt = Date.now() + 30_000) => {
+    if (!isBrowserStylePatch(request.styles)) throw new Error('Invalid browser style patch');
+    return applyMeasuredBrowserEdit(request.target.selector, browserApplyStylesScript(request.target.selector, request.styles), expiresAt);
+  };
+
+  async function applyBrowserStyle(prop: keyof PreviewAnnotationStyle, value: string, allPaddingSides = true) {
+    const target = activeCommentTargetRef.current;
+    if (!target) return;
+    const styles: Partial<PreviewAnnotationStyle> = prop === 'paddingTop' && allPaddingSides
+      ? { paddingTop: value, paddingRight: value, paddingBottom: value, paddingLeft: value }
+      : { [prop]: value };
     try {
-      await webviewNode.executeJavaScript(browserApplyTextScript(target.selector, value), true);
+      if (!browserTabId || browserControlStatus !== 'connected') throw new Error('Browser control is not connected');
+      setApplyingBrowserEdit(true);
+      await executeEmbeddedBrowserOperation(projectId, { operation: 'style', approved: true,
+        target: { selector: target.selector }, styles }, { tabId: browserTabId,
+        ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}) });
+    } catch {
+      setStatusMessage(t('designBrowser.status.applyStyleFailed'));
+    } finally { setApplyingBrowserEdit(false); }
+  }
+
+  async function applyBrowserText(value: string) {
+    const target = activeCommentTargetRef.current;
+    if (!target) return;
+    setTextDraft(value);
+    try {
+      await applyMeasuredBrowserEdit(target.selector, browserApplyTextScript(target.selector, value), Date.now() + 30_000);
     } catch {
       setStatusMessage(t('designBrowser.status.editTextFailed'));
     }
@@ -2660,6 +2960,13 @@ export function DesignBrowserPanel({
       onClose={clearBrowserTool}
       onSaveComment={() => saveBrowserComment()}
       onSendBatch={() => postBrowserAnnotation()}
+      compact
+      styleEditor={<BrowserInspectPanel embedded mode="edit" target={activeCommentTarget}
+        textDraft={textDraft} canSave={false} saving={sendingComment}
+        onApplyStyle={(prop, value, allSides) => { void applyBrowserStyle(prop, value, allSides); }}
+        onTextDraft={setTextDraft}
+        onCommitText={(value) => { void applyBrowserText(value); }}
+        onSave={() => {}} onClose={() => {}} />}
       onRemoveMember={() => {}}
       onDeleteComment={onRemovePreviewComment}
       images={browserImagePreviews}
@@ -2672,7 +2979,7 @@ export function DesignBrowserPanel({
       }))}
       onRemoveImage={removeBrowserImage}
       onPreviewImage={setBrowserPreviewIndex}
-      sending={sendingComment}
+      sending={sendingComment || applyingBrowserEdit}
       postOnly
       queueOnSend
       sendDisabled={!conversationId || !commentDraft.trim() && queuedCommentNotes.length === 0}
@@ -2720,6 +3027,27 @@ export function DesignBrowserPanel({
           >
             <Icon name={isLoading ? 'close' : 'reload'} size={isLoading ? 16 : 15} />
           </IconTooltipButton>
+        </div>
+        <div className="db-viewport-control">
+          <CustomSelect
+            className="db-viewport-select"
+            triggerClassName="db-viewport-trigger"
+            menuClassName="db-viewport-menu"
+            ariaLabel={t('designBrowser.viewportAria')}
+            title={t(`designBrowser.viewport.${viewport}` as keyof Dict)}
+            value={viewport}
+            disabled={viewportChanging}
+            iconOnly
+            onOpenChange={setViewportMenuOpen}
+            onChange={(value) => { void selectViewport(value as BrowserViewportId); }}
+            options={BROWSER_VIEWPORT_PRESETS.map((preset) => ({
+              value: preset.id,
+              label: t(`designBrowser.viewport.${preset.id}` as keyof Dict),
+              icon: <RemixIcon name={preset.id === 'mobile' ? 'smartphone-line' : preset.id === 'tablet' ? 'tablet-line' : 'computer-line'} size={16} />,
+            }))}
+          />
+          <output aria-live="polite">{viewportSize.width > 0 && viewportSize.height > 0 ? `${viewportSize.width} × ${viewportSize.height}` : '—'}</output>
+          {viewportError && <span role="alert">{viewportError}</span>}
         </div>
         <form className="db-address-form" onSubmit={handleAddressSubmit}>
           <BrowserSiteIcon
@@ -3056,14 +3384,21 @@ export function DesignBrowserPanel({
           sendDisabled={sendDisabled}
           sendDisabledReason={t('chat.annotationSendDisabledReason')}
         >
-          <div className="db-viewport-frame">
-            {isBlank ? (
+          <div ref={viewportFrameRef} className="db-viewport-frame" data-viewport={viewport}
+            style={{ width: viewportPreset.width ? `min(${viewportPreset.width}px, 100%)` : '100%',
+              height: viewportPreset.height ? `min(${viewportPreset.height}px, 100%)` : '100%', margin: 'auto' }}>
+            {popup ? (
+              <div ref={setPopupViewport} className="db-webview" data-popup-surface={popup.surfaceId} style={{ position: 'relative', overflow: 'hidden' }}>
+                {popupPixels ? <img src={popupPixels} alt="" style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none' }} /> : null}
+              </div>
+            ) : isBlank ? (
               <DesignBrowserStart
                 onNavigate={navigateTo}
                 projectId={projectId}
               />
             ) : desktopHostAvailable ? (
               <webview
+                {...DESIGN_BROWSER_POPUP_ATTRIBUTES}
                 ref={assignWebviewNode}
                 className="db-webview"
                 src={loadUrl}
@@ -3088,7 +3423,8 @@ export function DesignBrowserPanel({
                 canSave={editableProjectHtml}
                 saving={savingDomEdit}
                 onApplyStyle={(prop, value) => { void applyBrowserStyle(prop, value); }}
-                onTextDraft={(value) => { void applyBrowserText(value); }}
+                onTextDraft={setTextDraft}
+                onCommitText={(value) => { void applyBrowserText(value); }}
                 onSave={() => { void saveBrowserDomEdit(); }}
                 onClose={clearBrowserTool}
               />
@@ -3365,22 +3701,26 @@ function BrowserCommentComposer({
 }
 
 function BrowserInspectPanel({
+  embedded = false,
   canSave,
   mode,
   onApplyStyle,
   onClose,
   onSave,
   onTextDraft,
+  onCommitText,
   saving,
   target,
   textDraft,
 }: {
+  embedded?: boolean;
   canSave: boolean;
   mode: 'inspect' | 'edit';
-  onApplyStyle: (prop: keyof PreviewAnnotationStyle, value: string) => void;
+  onApplyStyle: (prop: keyof PreviewAnnotationStyle, value: string, allPaddingSides?: boolean) => void;
   onClose: () => void;
   onSave: () => void;
   onTextDraft: (value: string) => void;
+  onCommitText: (value: string) => void;
   saving: boolean;
   target: BrowserElementSnapshot;
   textDraft: string;
@@ -3392,8 +3732,8 @@ function BrowserInspectPanel({
   const radius = parsePx(draft.borderRadius, 0);
 
   return (
-    <aside className="inspect-panel db-inspect-panel" data-testid="browser-inspect-panel">
-      <header className="inspect-panel-head">
+    <aside className={`inspect-panel db-inspect-panel${embedded ? ' is-embedded' : ''}`} data-testid="browser-inspect-panel">
+      {!embedded && <header className="inspect-panel-head">
         <div className="inspect-panel-title">
           <strong title={target.label}>
             {mode === 'edit' ? t('designBrowser.inspect.editTitle') : t('designBrowser.inspect.tuneTitle')}
@@ -3403,7 +3743,7 @@ function BrowserInspectPanel({
         <button type="button" className="ghost" onClick={onClose} aria-label={t('designBrowser.inspect.closeTune')}>
           <Icon name="close" size={12} />
         </button>
-      </header>
+      </header>}
 
       <section className="inspect-section">
         <div className="inspect-section-label">{t('designBrowser.inspect.colors')}</div>
@@ -3497,11 +3837,60 @@ function BrowserInspectPanel({
             className="db-inspect-text"
             value={textDraft}
             onChange={(event) => onTextDraft(event.target.value)}
+            onBlur={(event) => { if (event.target.value !== target.text) onCommitText(event.target.value); }}
           />
         </section>
       ) : null}
 
-      <footer className="inspect-panel-footer">
+      {embedded && <section className="inspect-section">
+        <div className="inspect-row">
+          <label htmlFor="db-inspect-text-align">{t('manualEdit.align')}</label>
+          <select id="db-inspect-text-align" value={target.style?.textAlign === 'center' ? 'center' : ['right', 'end'].includes(target.style?.textAlign ?? '') ? 'right' : 'left'}
+            onChange={(event) => onApplyStyle('textAlign', event.target.value)}>
+            <option value="left">{t('manualEdit.textAlignLeft')}</option>
+            <option value="center">{t('manualEdit.textAlignCenter')}</option>
+            <option value="right">{t('manualEdit.textAlignRight')}</option>
+          </select>
+        </div>
+        <div className="inspect-row">
+          <label htmlFor="db-inspect-font-family">{t('manualEdit.fontFamily')}</label>
+          <input id="db-inspect-font-family" type="text" key={target.style?.fontFamily ?? ''}
+            defaultValue={target.style?.fontFamily ?? ''}
+            onBlur={(event) => { if (event.target.value !== target.style?.fontFamily) onApplyStyle('fontFamily', event.target.value); }} />
+        </div>
+        {([
+          ['opacity', 'manualEdit.opacity', '', 0, 1],
+          ['lineHeight', 'manualEdit.lineHeight', 'px', 0],
+          ['borderWidth', 'manualEdit.borderWidth', 'px', 0],
+          ['width', 'manualEdit.width', 'px', 1],
+          ['height', 'manualEdit.height', 'px', 1],
+        ] as const).map(([prop, label, unit, min, max]) => <div className="inspect-row" key={prop}>
+          <label htmlFor={`db-inspect-${prop}`}>{t(label)}</label>
+          <input id={`db-inspect-${prop}`} type="number" min={min} max={max} step="any"
+            key={target.style?.[prop] ?? ''} defaultValue={Number.parseFloat(target.style?.[prop] ?? (prop === 'opacity' ? '1' : '0')) || 0}
+            onBlur={(event) => { if (event.target.value && Number.isFinite(Number(event.target.value))) onApplyStyle(prop, `${event.target.value}${unit}`); }} />
+        </div>)}
+        <div className="inspect-row">
+          <label htmlFor="db-inspect-border-color">{t('manualEdit.borderColor')}</label>
+          <input id="db-inspect-border-color" type="color" value={cssColorToHex(target.style?.borderColor ?? '', '#1f1f1f')}
+            onChange={(event) => onApplyStyle('borderColor', event.target.value)} />
+        </div>
+        {(['padding', 'margin'] as const).map((group) => <section key={group}>
+          <div className="inspect-section-label">{t(group === 'padding' ? 'manualEdit.padding' : 'manualEdit.margin')}</div>
+          {(['Top', 'Right', 'Bottom', 'Left'] as const).map((side) => {
+            const prop = `${group}${side}` as keyof PreviewAnnotationStyle;
+            const sideLabel = { Top: 'manualEdit.sideTop', Right: 'manualEdit.sideRight', Bottom: 'manualEdit.sideBottom', Left: 'manualEdit.sideLeft' } as const;
+            return <div className="inspect-row" key={prop}>
+              <label htmlFor={`db-inspect-${prop}`}>{t(sideLabel[side])}</label>
+              <input id={`db-inspect-${prop}`} type="number" min={group === 'padding' ? 0 : undefined} step="any"
+                key={target.style?.[prop] ?? ''} defaultValue={Number.parseFloat(target.style?.[prop] ?? '0') || 0}
+                onBlur={(event) => { if (event.target.value && Number.isFinite(Number(event.target.value))) onApplyStyle(prop, `${event.target.value}px`, false); }} />
+            </div>;
+          })}
+        </section>)}
+      </section>}
+
+      {!embedded && <footer className="inspect-panel-footer">
         <button type="button" className="ghost" onClick={onClose}>{t('common.close')}</button>
         <button type="button" className="primary" disabled={!canSave || saving} onClick={onSave}>
           {saving
@@ -3510,7 +3899,7 @@ function BrowserInspectPanel({
               ? t('designBrowser.inspect.saveHtml')
               : t('designBrowser.inspect.liveOnly')}
         </button>
-      </footer>
+      </footer>}
     </aside>
   );
 }

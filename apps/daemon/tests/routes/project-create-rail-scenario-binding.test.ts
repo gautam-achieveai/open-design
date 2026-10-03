@@ -39,6 +39,11 @@ type RailSurface = {
 
 const CREATE_RAIL_SURFACES: RailSurface[] = [
   {
+    chipId: 'active-ui-development',
+    metadata: { kind: 'other', intent: 'active-ui-development' },
+    scenarioPluginId: 'od-active-ui-development',
+  },
+  {
     chipId: 'prototype',
     metadata: { kind: 'prototype' },
     scenarioPluginId: 'example-web-prototype',

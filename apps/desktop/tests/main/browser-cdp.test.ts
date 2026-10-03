@@ -85,6 +85,18 @@ class FakeGuest extends EventEmitter {
 }
 
 describe("Design Browser CDP controller", () => {
+  it("requires explicit main-process provenance for native popup targets sharing the browser session", async () => {
+    const guest = new FakeGuest();
+    vi.spyOn(guest, 'getType').mockReturnValue('window');
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
+    await expect(controller.attachGuest(guest as unknown as WebContents)).rejects.toThrow('not approved');
+    expect(controller.registerTarget({ projectId: 'p1', tabId: '__browser__:2', url: guest.getURL(), webContentsId: guest.id })).toMatchObject({ ok: false });
+    await controller.attachPopup(guest as unknown as WebContents);
+    expect(controller.registerTarget({ projectId: 'p1', tabId: '__browser__:2', url: guest.getURL(), webContentsId: guest.id })).toMatchObject({ ok: true });
+    expect(controller.listTargets()).toMatchObject({ ok: true, targets: [{ tabId: '__browser__:2' }] });
+    controller.close();
+    expect(controller.listTargets()).toEqual({ ok: true, targets: [] });
+  });
   it("redacts sensitive headers and structured body fields", () => {
     expect(redactBrowserHeaders({
       Authorization: "Bearer secret",

@@ -16,7 +16,12 @@ describe('embedded browser control routes', () => {
     server = null;
   });
 
-  it('registers, selects, polls, and completes a command over the shared HTTP contract', async () => {
+  it.each([
+    { command: { operation: 'snapshot' }, result: { operation: 'snapshot', snapshot: { role: 'document' } } },
+    { command: { operation: 'viewport', preset: 'mobile' }, result: { operation: 'viewport', preset: 'mobile', width: 390, height: 600 } },
+    { command: { operation: 'style', approved: true, target: { selector: 'h1' }, styles: { color: 'red' } },
+      result: { operation: 'style', applied: true, inspection: { selector: 'h1', position: { x: 1, y: 2, width: 160, height: 30 }, style: { color: 'red' } } } },
+  ])('registers, selects, polls, and completes $command.operation over the shared HTTP contract', async ({ command, result: operationResult }) => {
     const broker = createBrowserCommandBroker({ cleanupIntervalMs: 60_000 });
     const app = express();
     app.use(express.json());
@@ -59,7 +64,7 @@ describe('embedded browser control routes', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        command: { operation: 'snapshot' },
+        command,
         timeoutMs: 5_000,
       }),
     });
@@ -71,6 +76,17 @@ describe('embedded browser control routes', () => {
     expect(next.status).toBe(200);
     const nextBody = await next.json() as { command: { commandId: string } };
 
+    if (command.operation === 'style') {
+      for (const result of [{ operation: 'style', applied: false, inspection: operationResult.inspection },
+        { operation: 'style', applied: true, inspection: null }, { operation: 'style', applied: true, inspection: {} }]) {
+        const rejected = await fetch(`${base}/api/projects/p1/browser/tabs/tab-a/commands/${nextBody.command.commandId}/result`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ leaseId: registered.leaseId, ok: true, result }),
+        });
+        expect(rejected.status).toBe(400);
+      }
+    }
+
     const submitted = await fetch(
       `${base}/api/projects/p1/browser/tabs/tab-a/commands/${nextBody.command.commandId}/result`,
       {
@@ -79,7 +95,7 @@ describe('embedded browser control routes', () => {
         body: JSON.stringify({
           leaseId: registered.leaseId,
           ok: true,
-          result: { operation: 'snapshot', snapshot: { role: 'document' } },
+          result: operationResult,
         }),
       },
     );
@@ -90,7 +106,7 @@ describe('embedded browser control routes', () => {
     expect(result.status).toBe(200);
     expect(await result.json()).toMatchObject({
       tab: { projectId: 'p1', tabId: 'tab-a' },
-      result: { operation: 'snapshot', snapshot: { role: 'document' } },
+      result: operationResult,
     });
 
     const tabs = await fetch(`${base}/api/projects/p1/browser/tabs`);
@@ -152,6 +168,7 @@ describe('embedded browser control routes', () => {
     const { leaseId } = await registration.json() as { leaseId: string };
     const commands = [
       { operation: 'click', target: { selector: '#buy' } },
+      { operation: 'style', target: { selector: 'h1' }, styles: { color: 'red' } },
       {
         operation: 'type',
         target: { selector: '#email' },
@@ -174,6 +191,14 @@ describe('embedded browser control routes', () => {
           message: expect.stringContaining('command.approved'),
         },
       });
+    }
+
+    for (const styles of [{}, { color: '' }, { arbitraryCss: 'red' }, JSON.parse('{"__proto__":"red"}'), { width: 123 }]) {
+      const rejected = await fetch(`${base}/api/projects/p1/browser/commands`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command: { operation: 'style', approved: true, target: { selector: 'h1' }, styles }, timeoutMs: 100 }),
+      });
+      expect(rejected.status).toBe(400);
     }
 
     const next = await fetch(`${base}/api/projects/p1/browser/tabs/tab-a/commands/next`, {
@@ -225,6 +250,13 @@ describe('embedded browser control routes', () => {
       'p1',
       { mode: 'write', capability: 'writeFiles' },
     );
+
+    await fetch(`${base}/api/projects/p1/browser/commands`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: { operation: 'style', approved: true, target: { selector: 'h1' }, styles: { color: 'red' } } }),
+    });
+    expect(authorizeProjectRequest).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'p1',
+      { mode: 'write', capability: 'writeFiles' });
 
     await fetch(`${base}/api/projects/p1/browser/commands`, {
       method: 'POST',

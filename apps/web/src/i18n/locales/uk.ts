@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const uk: Dict = {
+  "homeHero.chip.activeUiDevelopment": "Активна розробка UI",
+  "homeHero.chip.activeUiDevelopmentDesc": "Покращуйте наявний сайт за відгуками в браузері",
+  "homeHero.chip.activeUiDevelopmentHint": "Відкрийте або імпортуйте наявний проєкт із вихідним кодом, потім надайте URL попереднього перегляду або анотації.",
+  "homeHero.uiDevelopmentTitle": "Покращимо ваш інтерфейс",
+  "homeHero.uiDevelopmentSubtitle": "Відкрийте або імпортуйте наявний проєкт із вихідним кодом, потім надайте URL попереднього перегляду або анотації.",
   'billing.wallet': 'Баланс гаманця',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} год',
@@ -2213,6 +2218,7 @@ export const uk: Dict = {
   'chat.annotationSentWithoutScreenshot': 'Не вдалося захопити попередній перегляд. Анотацію надіслано без знімка екрана.',
   'chat.annotationCaptureDisclosure': "Введений текст приховано під час захоплення; оригінальні межі та фони збережено. Непідтримувані елементи залишаються замаскованими.",
   'chat.annotationTimeout': 'Час очікування надсилання анотації вичерпано. Спробуйте ще раз.',
+  'chat.annotationContextLoading': "Завантаження деталей анотації…",
   'chat.annotationFailed': 'Не вдалося надіслати анотацію. Спробуйте ще раз.',
   'chat.annotationProjectCreateFailed': 'Не вдалося створити проєкт, тому анотацію не надіслано.',
   'chat.annotationUploadFailed': 'Не вдалося завантажити вкладення. Спробуйте ще раз.',

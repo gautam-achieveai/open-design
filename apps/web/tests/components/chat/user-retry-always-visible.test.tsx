@@ -25,7 +25,7 @@
  * 重试 `1`、时间与复制 `0`。不断言「两者相等」——都算成 `auto` / 同值时那种
  * 断言永远通过。
  *
- * 层叠按 `index.css` 的**真实导入顺序**整条注入(`readExpandedIndexCss()`),
+ * 层叠按 `index.css` 的**真实导入顺序**分段注入(`readExpandedIndexCssSegments()`),
  * 不是只塞 `chat.css`:本仓在「只 diff CSS 文本、没量层叠」上栽过 11 次,
  * 而 `.user-actions` 这一族在 chat.css 里本来就写了不止一处。
  *
@@ -34,24 +34,21 @@
  * 换完之后读到的仍然是**计算值**。
  */
 import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatPane } from '../../../src/components/ChatPane';
-import { readExpandedIndexCss } from '../../helpers/read-expanded-css';
+import { readExpandedIndexCssSegments } from '../../helpers/read-expanded-css';
+import { injectStyleSheets } from '../../helpers/style-sheet-fixture';
 import type { ChatMessage } from '../../../src/types';
 
 /** hover 档的探针类。`:hover` 与 `.x` 同为 (0,1,0),替换不动层叠。 */
 const HOVER_PROBE = 'od-probe-hover';
 
-const INDEX_CSS = readExpandedIndexCss();
-
-function injectStyles(mode: 'rest' | 'hover'): void {
-  const style = document.createElement('style');
-  style.textContent =
-    mode === 'hover' ? INDEX_CSS.replace(/:hover\b/g, `.${HOVER_PROBE}`) : INDEX_CSS;
-  style.dataset.odTestSheet = mode;
-  document.head.appendChild(style);
-}
+// Parse the complete cascade once, outside timed hooks. Without the probe
+// class it measures rest; adding the class enables the same hover rules.
+const sheets = injectStyleSheets(
+  readExpandedIndexCssSegments().map((css) => css.replace(/:hover\b/g, `.${HOVER_PROBE}`)),
+);
 
 const failedUser: ChatMessage = {
   id: 'user-send-failed-1',
@@ -110,15 +107,21 @@ const retryButton = () => screen.getByTestId('user-send-failed');
 const copyButton = () => document.querySelector<HTMLElement>('.msg.user .user-copy-btn')!;
 const timeStamp = () => document.querySelector<HTMLElement>('.msg.user .user-actions-time')!;
 
+beforeEach(() => {
+  sheets.assertIntact();
+});
+
 afterEach(() => {
   cleanup();
-  document.querySelectorAll('style[data-od-test-sheet]').forEach((n) => n.remove());
   document.querySelectorAll('.app').forEach((n) => n.remove());
+});
+
+afterAll(() => {
+  sheets.remove();
 });
 
 describe('这把尺子看得见缺陷', () => {
   beforeEach(() => {
-    injectStyles('rest');
     mountFailedMessage();
   });
 
@@ -139,7 +142,6 @@ describe('这把尺子看得见缺陷', () => {
 
 describe('静止态:重试常驻,时间与复制让位', () => {
   beforeEach(() => {
-    injectStyles('rest');
     mountFailedMessage();
   });
 
@@ -172,7 +174,6 @@ describe('静止态:重试常驻,时间与复制让位', () => {
 
 describe('hover 态:时间与复制浮出,重试不变', () => {
   beforeEach(() => {
-    injectStyles('hover');
     mountFailedMessage();
     document.querySelector('.msg.user .user-text-wrap')!.classList.add(HOVER_PROBE);
   });

@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -92,6 +92,13 @@ describe('od browser CLI', () => {
           }));
           return;
         }
+        if (body && JSON.parse(body).command?.operation === 'style') {
+          const command = JSON.parse(body).command;
+          res.end(JSON.stringify({ commandId: 'command-1', tab: { projectId: 'p1', tabId: 'tab-a' },
+            result: { operation: 'style', applied: true, inspection: { selector: command.target.selector,
+              position: { x: 1, y: 2, width: 160, height: 30 }, style: command.styles } } }));
+          return;
+        }
         res.end(JSON.stringify({
           commandId: 'command-1',
           tab: {
@@ -118,15 +125,58 @@ describe('od browser CLI', () => {
     requests.length = 0;
   });
 
-  async function runCli(args: string[]) {
+  // Integration: real CLI processes prove flag parsing, file/stdin and HTTP parity.
+  it('posts approved typed styles from a file to the shared browser command route (integration)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'od-browser-styles-'));
+    try {
+      const path = join(dir, 'styles.json');
+      const styles = { color: 'red', marginLeft: '-2px' };
+      await writeFile(path, JSON.stringify(styles));
+      const args = ['browser', 'style', '--project', 'p1', '--tab', 'tab-a', '--selector', 'h1',
+        '--styles-file', path, '--json', '--daemon-url', baseUrl];
+      const refused = await runCli(args);
+      expect(refused.code).toBe(2);
+      expect(requests).toHaveLength(0);
+      const applied = await runCli([...args, '--approve']);
+      expect(applied.code).toBe(0);
+      expect(JSON.parse(applied.stdout).commandId).toBe('command-1');
+      expect(JSON.parse(applied.stdout).result).toMatchObject({ operation: 'style', applied: true });
+      expect(JSON.parse(requests[0]!.body)).toMatchObject({ tabId: 'tab-a',
+        command: { operation: 'style', approved: true, target: { selector: 'h1' }, styles } });
+      await writeFile(path, '{"__proto__":"red"}');
+      const invalid = await runCli([...args, '--approve']);
+      expect(invalid.code).toBe(2);
+      expect(requests).toHaveLength(1);
+      const stdinArgs = args.map((value) => value === path ? '-' : value);
+      const piped = await runCli([...stdinArgs, '--approve'], JSON.stringify(styles));
+      expect(piped.code).toBe(0);
+      expect(JSON.parse(requests[1]!.body).command.styles).toEqual(styles);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('posts a finite viewport preset to the shared command route with JSON output', async () => {
+    const result = await runCli(['browser', 'viewport', 'mobile', '--project', 'p1', '--tab', 'tab-a', '--json', '--daemon-url', baseUrl]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).commandId).toBe('command-1');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ method: 'POST', url: '/api/projects/p1/browser/commands' });
+    expect(JSON.parse(requests[0]!.body)).toMatchObject({ command: { operation: 'viewport', preset: 'mobile' }, tabId: 'tab-a' });
+    const invalid = await runCli(['browser', 'viewport', 'phone', '--project', 'p1', '--daemon-url', baseUrl]);
+    expect(invalid.code).toBe(2);
+    expect(requests).toHaveLength(1);
+  });
+
+  async function runCli(args: string[], input?: string) {
     const env = { ...process.env };
     delete env.NODE_OPTIONS;
     try {
-      const { stdout, stderr } = await execFileP(
+      const completion = execFileP(
         process.execPath,
         [TSX_CLI, CLI_SRC, ...args],
         { cwd: DAEMON_ROOT, env, timeout: 20_000, maxBuffer: 4 * 1024 * 1024 },
       );
+      if (input !== undefined) completion.child.stdin?.end(input);
+      const { stdout, stderr } = await completion;
       return { stdout, stderr, code: 0 };
     } catch (error) {
       const failed = error as { stdout?: string; stderr?: string; code?: number | null };

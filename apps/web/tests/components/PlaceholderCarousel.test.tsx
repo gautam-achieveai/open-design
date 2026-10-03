@@ -14,6 +14,21 @@ afterEach(() => {
 });
 
 describe('PlaceholderCarousel', () => {
+  it('places the decorative caret before the example prompt', () => {
+    window.localStorage.setItem(VISUAL_STABILITY_STORAGE_KEY, '1');
+    render(
+      <PlaceholderCarousel
+        active
+        scenarios={[{ id: 'first', text: 'Example prompt', chipId: 'prototype' }]}
+        onScenarioChange={vi.fn()}
+      />,
+    );
+
+    const carousel = screen.getByTestId('home-hero-carousel');
+    expect(Array.from(carousel.children, (child) => child.textContent))
+      .toEqual(['', 'Example prompt']);
+  });
+
   it('pins the first full scenario without scheduling carousel advances in visual stability mode', async () => {
     vi.useFakeTimers();
     vi.stubGlobal('matchMedia', vi.fn(() => ({

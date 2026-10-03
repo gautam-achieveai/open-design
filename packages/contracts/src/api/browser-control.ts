@@ -1,14 +1,18 @@
 import type { JsonValue } from '../common.js';
 import type { ApiError } from '../errors.js';
+import type { PreviewAnnotationStyle } from './comments.js';
+import { normalizeEdgeAnnotationStyle } from './edge-annotations.js';
 
 export const BROWSER_OPERATION_NAMES = [
   'snapshot',
   'inspect',
+  'style',
   'screenshot',
   'click',
   'type',
   'scroll',
   'navigate',
+  'viewport',
   'console',
   'network-list',
   'network-get',
@@ -77,10 +81,52 @@ export type BrowserElementTarget = { selector: string };
 export interface BrowserSnapshotOperation {
   operation: 'snapshot';
 }
+export type BrowserViewportId = 'desktop' | 'tablet' | 'mobile';
+export interface BrowserViewportOperation {
+  operation: 'viewport';
+  preset: BrowserViewportId;
+}
+export function isBrowserViewportId(value: unknown): value is BrowserViewportId {
+  return value === 'desktop' || value === 'tablet' || value === 'mobile';
+}
 
 export interface BrowserInspectOperation {
   operation: 'inspect';
   target: BrowserElementTarget;
+}
+
+export interface BrowserStyleOperation {
+  operation: 'style';
+  approved: true;
+  target: BrowserElementTarget;
+  styles: Partial<PreviewAnnotationStyle>;
+}
+
+/** Live patches use the same bounded property/value vocabulary as measured styles. */
+export function isBrowserStylePatch(value: unknown): value is Partial<PreviewAnnotationStyle> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  const keys = Object.keys(value);
+  if (!keys.length) return false;
+  const normalized = normalizeEdgeAnnotationStyle(value);
+  const record = value as Record<string, unknown>;
+  return keys.every((key) => Object.hasOwn(normalized, key)
+    && typeof record[key] === 'string' && record[key].trim().length > 0
+    && record[key] === normalized[key as keyof PreviewAnnotationStyle]);
+}
+
+/** A style mutation succeeds only with a current measured, styled element. */
+export function isBrowserStyleInspection(value: unknown): value is JsonValue {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const position = record.position;
+  if (typeof record.selector !== 'string' || !record.selector.trim() || record.selector.length > 8_192
+    || !position || typeof position !== 'object' || Array.isArray(position)
+    || !Object.keys(normalizeEdgeAnnotationStyle(record.style)).length) return false;
+  const rect = position as Record<string, unknown>;
+  return ['x', 'y', 'width', 'height'].every((key) => typeof rect[key] === 'number' && Number.isFinite(rect[key]))
+    && (rect.width as number) > 0 && (rect.height as number) > 0;
 }
 
 export interface BrowserScreenshotOperation {
@@ -144,8 +190,10 @@ export interface BrowserNetworkFailuresOperation {
 }
 
 export type BrowserOperationRequest =
+  | BrowserViewportOperation
   | BrowserSnapshotOperation
   | BrowserInspectOperation
+  | BrowserStyleOperation
   | BrowserScreenshotOperation
   | BrowserClickOperation
   | BrowserTypeOperation
@@ -157,8 +205,10 @@ export type BrowserOperationRequest =
   | BrowserNetworkFailuresOperation;
 
 export type BrowserOperationResult =
+  | { operation: 'viewport'; preset: BrowserViewportId; width: number; height: number }
   | { operation: 'snapshot'; snapshot: JsonValue }
   | { operation: 'inspect'; inspection: JsonValue }
+  | { operation: 'style'; applied: true; inspection: JsonValue }
   | {
       operation: 'screenshot';
       data: string;

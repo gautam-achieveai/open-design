@@ -1118,6 +1118,7 @@ if (isDirectEntry()) {
             }
           },
           registerDesktopAuth: async (secret) => {
+            const startedAt = Date.now();
             try {
               const result = await client.invoke<RegisterDesktopAuthResult>(
                 APP_KEYS.DAEMON,
@@ -1125,8 +1126,14 @@ if (isDirectEntry()) {
                 { secret: secret.toString("base64") },
                 { timeoutMs: REGISTER_DESKTOP_AUTH_TIMEOUT_MS },
               );
-              return result.accepted === true;
-            } catch {
+              const accepted = result.accepted === true;
+              console.info(JSON.stringify({ logger: "desktop.auth", event: "registration-result", accepted, durationMs: Date.now() - startedAt }));
+              return accepted;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "";
+              const category = message.includes("runtime is starting") ? "runtime-starting"
+                : /timed? out|timeout/i.test(message) ? "timeout" : "transport-error";
+              console.warn(JSON.stringify({ logger: "desktop.auth", event: "registration-failed", category, durationMs: Date.now() - startedAt }));
               return false;
             }
           },

@@ -364,6 +364,7 @@ describe('chromium empty-capture retry', () => {
       join(probeDir, 'main.cjs'),
       `
 const { app, nativeImage } = require('electron');
+app.setPath('userData', require('node:fs').mkdtempSync(require('node:path').join(__dirname, 'profile-')));
 ${ELECTRON_CAPTURE_UNTIL_PAINTED_SOURCE}
 function pngWithUniformAlpha(alpha) {
   const bitmap = Buffer.alloc(16);
@@ -1413,6 +1414,7 @@ async function runDpr2LayeredBackgroundCapture(): Promise<{
     join(probeDir, 'main.cjs'),
     `
 const { app, BrowserWindow, nativeImage } = require('electron');
+app.setPath('userData', require('node:fs').mkdtempSync(require('node:path').join(__dirname, 'profile-')));
 
 const SLIDE_SELECTOR = '.slide';
 const collectLayeredPptxBackgroundTargets = ${collectLayeredPptxBackgroundTargets.toString()};
@@ -1621,6 +1623,7 @@ async function probePseudoTextClipCaptures(): Promise<{
     join(probeDir, 'main.cjs'),
     `
 const { app, BrowserWindow, nativeImage } = require('electron');
+app.setPath('userData', require('node:fs').mkdtempSync(require('node:path').join(__dirname, 'profile-')));
 
 ${ELECTRON_CAPTURE_UNTIL_PAINTED_SOURCE}
 
@@ -1777,6 +1780,7 @@ async function runLayeredBackgroundMediaProbe(): Promise<LayeredBackgroundProbe>
     join(probeDir, 'main.cjs'),
     `
 const { app, BrowserWindow, nativeImage } = require('electron');
+app.setPath('userData', require('node:fs').mkdtempSync(require('node:path').join(__dirname, 'profile-')));
 const { readFile } = require('node:fs/promises');
 const { gunzipSync, inflateRawSync } = require('node:zlib');
 

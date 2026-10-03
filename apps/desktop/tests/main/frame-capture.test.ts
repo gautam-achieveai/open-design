@@ -113,7 +113,8 @@ describe('deterministic Electron frame capture', () => {
   });
 
   test('uses zero-padded names that match the FFmpeg printf pattern', () => {
-    expect(frameFilePath('/tmp/frames', 42)).toBe('/tmp/frames/frame-00000042.png');
+    const outputDir = join(tmpdir(), 'frames');
+    expect(frameFilePath(outputDir, 42)).toBe(join(outputDir, 'frame-00000042.png'));
   });
 
   test('rejects audio compositions instead of silently producing a muted video', async () => {
@@ -290,6 +291,7 @@ globalThis.__odFrameRenderer={
   await writeFile(join(probeDir, 'main.cjs'), `
 const { app } = require('electron');
 const { readFile } = require('node:fs/promises');
+app.setPath('userData', require('node:fs').mkdtempSync(require('node:path').join(__dirname, 'profile-')));
 
 app.whenReady().then(async () => {
   const { renderDeterministicFrames } = await import(process.env.OD_FRAME_CAPTURE_MODULE_URL);

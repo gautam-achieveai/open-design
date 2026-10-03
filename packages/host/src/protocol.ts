@@ -130,7 +130,11 @@ export type OpenDesignHostPdfPrintOptions = {
 
 export type OpenDesignHostCaptureClip = { x: number; y: number; width: number; height: number };
 export type OpenDesignHostCaptureOptions = { clip?: OpenDesignHostCaptureClip };
-export type OpenDesignHostCaptureSuccess = { dataUrl: string; h: number; ok: true; w: number };
+export type OpenDesignHostCaptureSuccess = {
+  dataUrl: string; h: number; ok: true; w: number;
+  /** Actual clipped pixel surface expressed in host renderer CSS coordinates. */
+  capturedCssRect?: OpenDesignHostCaptureClip;
+};
 export type OpenDesignHostCaptureResult = OpenDesignHostCaptureSuccess | OpenDesignHostFailure;
 
 export type OpenDesignHostPreviewNavigationFailure = {
@@ -549,6 +553,31 @@ export type OpenDesignHostUpdaterOpenDialogRequest = {
 
 export type OpenDesignHostUpdaterOpenDialogListener = (request: OpenDesignHostUpdaterOpenDialogRequest) => void;
 
+/** Transient native child context. Never persist its surface identifier. */
+export type OpenDesignHostBrowserPopup = {
+  surfaceId: string;
+  projectId: string;
+  openerTabId: string;
+  ancestorTabIds: string[];
+  tabId?: string;
+  webContentsId: number;
+  url: string;
+  title: string;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  disposition: string;
+};
+export type OpenDesignHostBrowserPopupEvent = { kind: 'updated' | 'closed'; popup: OpenDesignHostBrowserPopup }
+  | { kind: 'console'; popup: OpenDesignHostBrowserPopup; message: string };
+export type OpenDesignHostBrowserPopupRequest = { projectId: string; surfaceId: string };
+export type OpenDesignHostBrowserPopupCommand = OpenDesignHostBrowserPopupRequest & (
+  | { kind: 'back' | 'forward' | 'reload' | 'reload-hard' | 'stop' | 'focus' | 'close' | 'capture' }
+  | { kind: 'navigate'; url: string }
+  | { kind: 'evaluate'; code: string; userGesture?: boolean }
+);
+export type OpenDesignHostBrowserPopupResult = { ok: true; value?: unknown } | OpenDesignHostFailure;
+
 export type OpenDesignHostBridge = {
   // Optional so older host builds still satisfy the bridge shape; callers
   // must feature-detect before invoking.
@@ -556,6 +585,12 @@ export type OpenDesignHostBridge = {
     setTheme(theme: OpenDesignHostAppearanceTheme): void;
   };
   browser: {
+    listPopups?(projectId: string): Promise<{ ok: true; popups: OpenDesignHostBrowserPopup[] } | OpenDesignHostFailure>;
+    subscribePopups?(listener: (event: OpenDesignHostBrowserPopupEvent) => void): () => void;
+    bindPopup?(request: OpenDesignHostBrowserPopupRequest & { tabId: string }): Promise<OpenDesignHostBrowserPopupResult>;
+    presentPopup?(request: OpenDesignHostBrowserPopupRequest & { bounds: { x: number; y: number; width: number; height: number }; visible: boolean; revision: number }): Promise<OpenDesignHostBrowserPopupResult>;
+    popupCommand?(request: OpenDesignHostBrowserPopupCommand): Promise<OpenDesignHostBrowserPopupResult>;
+    closePopupProject?(projectId: string): Promise<OpenDesignHostActionResult>;
     clearData(options?: OpenDesignHostBrowserClearDataOptions): Promise<OpenDesignHostActionResult>;
     // Optional so version-2 web bundles continue to recognize older desktop
     // hosts; callers must feature-detect the shared embedded-browser control.

@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const id: Dict = {
+  "homeHero.chip.activeUiDevelopment": "Pengembangan UI aktif",
+  "homeHero.chip.activeUiDevelopmentDesc": "Perbaiki situs yang ada dengan masukan browser",
+  "homeHero.chip.activeUiDevelopmentHint": "Buka atau impor proyek sumber yang ada, lalu bagikan URL pratinjau atau anotasi.",
+  "homeHero.uiDevelopmentTitle": "Mari perbaiki UI Anda",
+  "homeHero.uiDevelopmentSubtitle": "Buka atau impor proyek sumber yang ada, lalu bagikan URL pratinjau atau anotasi.",
   'billing.wallet': 'Saldo dompet',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} jam',
@@ -2213,6 +2218,7 @@ export const id: Dict = {
   'chat.annotationSentWithoutScreenshot': 'Tidak dapat menangkap pratinjau. Anotasi dikirim tanpa tangkapan layar.',
   'chat.annotationCaptureDisclosure': "Teks yang dimasukkan disembunyikan saat pengambilan; bingkai dan latar asli dipertahankan. Kontrol yang tidak didukung tetap ditutupi.",
   'chat.annotationTimeout': 'Annotation send timed out. Please try again.',
+  'chat.annotationContextLoading': "Memuat detail anotasi…",
   'chat.annotationFailed': 'Annotation send failed. Please try again.',
   'chat.annotationProjectCreateFailed': 'Could not create a project, so the annotation was not sent.',
   'chat.annotationUploadFailed': 'Attachment upload failed. Please try again.',

@@ -8,7 +8,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const read = (relative: string) => readFileSync(new URL(relative, import.meta.url), 'utf8');
+const read = (relative: string) => readFileSync(new URL(relative, import.meta.url), 'utf8')
+  .replace(/\r\n/g, '\n');
 
 const shellCss = read('../../src/styles/shell.css');
 const routinesCss = read('../../src/styles/viewer/routines.css');

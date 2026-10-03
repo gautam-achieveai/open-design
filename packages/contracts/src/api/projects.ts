@@ -193,6 +193,8 @@ export interface DesignSystemReviewEntry {
 
 export interface ProjectMetadata {
   kind: ProjectKind;
+  // `active-ui-development`: source edits to an existing app; binds its
+  // editing scenario without a prototype-generation strategy.
   // `live-artifact`: the data-backed live dashboard flow (drives the
   // live-artifact skill/system-prompt path). `web-clone`: website reproduction
   // projects from the Home `Website clone` card — stored as prototypes so they
@@ -205,6 +207,7 @@ export interface ProjectMetadata {
   // GPU / off-main-thread scenario cards — analytics-only discriminators for the
   // powered-artifact chips.
   intent?:
+    | 'active-ui-development'
     | 'live-artifact'
     | 'web-clone'
     | 'document'

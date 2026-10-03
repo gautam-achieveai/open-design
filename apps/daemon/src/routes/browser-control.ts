@@ -7,7 +7,7 @@ import type {
   RegisterBrowserTabRequest,
   SubmitBrowserCommandResultRequest,
 } from '@open-design/contracts';
-import { API_ERROR_CODES, isBrowserOperationName } from '@open-design/contracts';
+import { API_ERROR_CODES, isBrowserOperationName, isBrowserViewportId, isBrowserStylePatch, isBrowserStyleInspection } from '@open-design/contracts';
 import type { AuthorizeProjectRequest } from '../collab/project-request-authority.js';
 import type { BrowserCommandBroker } from '../services/browser-command-broker.js';
 import { BrowserBrokerError } from '../services/browser-command-broker.js';
@@ -95,6 +95,17 @@ function parseOperation(raw: unknown): BrowserOperationRequest {
     throw new BrowserBrokerError('BAD_REQUEST', 'command.operation is invalid', 400);
   }
   switch (body.operation) {
+    case 'style': {
+      const approved = requireApproval(body);
+      const target = parseTarget(body.target);
+      if (target.selector.length > 8_192 || !isBrowserStylePatch(body.styles)) {
+        throw new BrowserBrokerError('BAD_REQUEST', 'styles must be a nonempty bounded object of allowed style strings', 400);
+      }
+      return { operation: 'style', approved, target, styles: body.styles };
+    }
+    case 'viewport':
+      if (!isBrowserViewportId(body.preset)) throw new BrowserBrokerError('BAD_REQUEST', 'preset must be desktop, tablet, or mobile', 400);
+      return { operation: 'viewport', preset: body.preset };
     case 'snapshot':
       return { operation: 'snapshot' };
     case 'inspect':
@@ -223,6 +234,13 @@ function parseResult(raw: unknown): BrowserOperationResult {
     throw new BrowserBrokerError('BAD_REQUEST', 'result must be JSON-safe', 400);
   }
   switch (value.operation) {
+    case 'style':
+      if (value.applied === true && isBrowserStyleInspection(value.inspection)) return value as unknown as BrowserOperationResult;
+      break;
+    case 'viewport':
+      if (isBrowserViewportId(value.preset) && typeof value.width === 'number' && Number.isFinite(value.width) && value.width > 0
+        && typeof value.height === 'number' && Number.isFinite(value.height) && value.height > 0) return value as unknown as BrowserOperationResult;
+      break;
     case 'snapshot':
       if (value.snapshot === undefined) break;
       return value as unknown as BrowserOperationResult;
@@ -482,7 +500,8 @@ export function registerBrowserControlRoutes(
       const consequential = command.operation === 'click'
         || command.operation === 'type'
         || command.operation === 'scroll'
-        || command.operation === 'navigate';
+        || command.operation === 'navigate'
+        || command.operation === 'style';
       if (!await authorize(req, res, consequential ? 'write' : 'read')) return;
       const result = await broker.execute(
         requiredParam(req, 'projectId'),

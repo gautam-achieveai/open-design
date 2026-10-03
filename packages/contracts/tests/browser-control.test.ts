@@ -3,20 +3,44 @@ import { describe, expect, it } from 'vitest';
 import {
   BROWSER_OPERATION_NAMES,
   isBrowserOperationName,
+  isBrowserStylePatch,
+  isBrowserStyleInspection,
   type BrowserOperationRequest,
   type BrowserOperationResult,
 } from '../src/index.js';
 
 describe('embedded browser control contracts', () => {
+  it('bounds style patches and requires measured style results', () => {
+    expect(isBrowserStylePatch({ color: 'rgb(32, 33, 36)', marginLeft: '-2px' })).toBe(true);
+    for (const value of [null, [], {}, { arbitrary: 'red' }, { color: '' }, { width: 20 },
+      { color: 'red; display: none' }, { fontFamily: 'token=private-value' },
+      { width: '1'.repeat(161) }, JSON.parse('{"__proto__":"red"}'), { constructor: 'red' }]) {
+      expect(isBrowserStylePatch(value)).toBe(false);
+    }
+    const inspection = { selector: 'h1', position: { x: -1, y: 20, width: 160, height: 30 }, style: { color: 'red' } };
+    expect(isBrowserStyleInspection(inspection)).toBe(true);
+    expect(isBrowserStyleInspection({ ...inspection, style: { color: 'red', fontFamily: '"宋体"' } })).toBe(true);
+    for (const value of [null, false, {}, { ...inspection, style: {} },
+      { ...inspection, style: { color: 'token=private-value' } },
+      { ...inspection, position: { ...inspection.position, width: 0 } }]) {
+      expect(isBrowserStyleInspection(value)).toBe(false);
+    }
+    const request: BrowserOperationRequest = { operation: 'style', approved: true, target: { selector: 'h1' }, styles: { color: 'red' } };
+    const result: BrowserOperationResult = { operation: 'style', applied: true, inspection };
+    expect(JSON.parse(JSON.stringify({ request, result }))).toEqual({ request, result });
+  });
+
   it('pins the complete operation vocabulary', () => {
     expect(BROWSER_OPERATION_NAMES).toEqual([
       'snapshot',
       'inspect',
+      'style',
       'screenshot',
       'click',
       'type',
       'scroll',
       'navigate',
+      'viewport',
       'console',
       'network-list',
       'network-get',

@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const fr: Dict = {
+  "homeHero.chip.activeUiDevelopment": "Développement UI continu",
+  "homeHero.chip.activeUiDevelopmentDesc": "Améliorez un site existant avec les retours du navigateur",
+  "homeHero.chip.activeUiDevelopmentHint": "Ouvrez ou importez le projet source existant, puis partagez une URL d’aperçu ou des annotations.",
+  "homeHero.uiDevelopmentTitle": "Améliorons votre interface",
+  "homeHero.uiDevelopmentSubtitle": "Ouvrez ou importez le projet source existant, puis partagez une URL d’aperçu ou des annotations.",
   'billing.wallet': 'Solde du portefeuille',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} heures',
@@ -2213,6 +2218,7 @@ export const fr: Dict = {
   'chat.annotationSentWithoutScreenshot': 'Impossible de capturer l’aperçu. L’annotation a été envoyée sans capture d’écran.',
   'chat.annotationCaptureDisclosure': "Le texte saisi a été masqué pendant la capture ; les bordures et fonds originaux sont conservés. Les contrôles non pris en charge restent masqués.",
   'chat.annotationTimeout': 'L’envoi de l’annotation a expiré. Veuillez réessayer.',
+  'chat.annotationContextLoading': "Chargement des détails de l’annotation…",
   'chat.annotationFailed': 'L’envoi de l’annotation a échoué. Veuillez réessayer.',
   'chat.annotationProjectCreateFailed': 'Impossible de créer un projet, donc l’annotation n’a pas été envoyée.',
   'chat.annotationUploadFailed': 'L’envoi de la pièce jointe a échoué. Veuillez réessayer.',

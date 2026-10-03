@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const ja: Dict = {
+  "homeHero.chip.activeUiDevelopment": "継続的なUI開発",
+  "homeHero.chip.activeUiDevelopmentDesc": "ブラウザーのフィードバックで既存サイトを改善",
+  "homeHero.chip.activeUiDevelopmentHint": "既存のソースプロジェクトを開くかインポートし、プレビューURLや注釈を共有してください。",
+  "homeHero.uiDevelopmentTitle": "既存のUIを改善しましょう",
+  "homeHero.uiDevelopmentSubtitle": "既存のソースプロジェクトを開くかインポートし、プレビューURLや注釈を共有してください。",
   'billing.wallet': 'ウォレット残高',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} 時間',
@@ -2213,6 +2218,7 @@ export const ja: Dict = {
   'chat.annotationSentWithoutScreenshot': 'プレビューをキャプチャできませんでした。注釈はスクリーンショットなしで送信されました。',
   'chat.annotationCaptureDisclosure': "撮影中は入力されたテキストを非表示にし、元の枠線と背景を保持します。未対応のコントロールはマスクされます。",
   'chat.annotationTimeout': '注釈の送信がタイムアウトしました。もう一度お試しください。',
+  'chat.annotationContextLoading': "注釈の詳細を読み込み中…",
   'chat.annotationFailed': '注釈の送信に失敗しました。もう一度お試しください。',
   'chat.annotationProjectCreateFailed': 'プロジェクトを作成できなかったため、注釈は送信されませんでした。',
   'chat.annotationUploadFailed': '添付ファイルのアップロードに失敗しました。もう一度お試しください。',

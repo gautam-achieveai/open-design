@@ -3,11 +3,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { act, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { OpenDesignHostBrowserPopup, OpenDesignHostBrowserPopupCommand } from '@open-design/host';
 import { installMockOpenDesignHost } from '@open-design/host/testing';
 
 import { DesignBrowserPanel } from '../../src/components/DesignBrowserPanel';
 import { I18nProvider } from '../../src/i18n';
 import { writeProjectTextFile } from '../../src/providers/registry';
+import * as browserControl from '../../src/runtime/embedded-browser-control';
 
 // The panel imports these writers from the registry at module load; stub them so
 // rendering never reaches the network.
@@ -40,6 +42,8 @@ afterEach(() => {
   restoreHost?.();
   restoreHost = null;
   vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   window.localStorage.clear();
 });
 
@@ -68,8 +72,25 @@ function getAddressDisplay(container: HTMLElement) {
 }
 
 describe('DesignBrowserPanel <webview> navigation', () => {
+  it('enables pop-ups before the webview is inserted and Electron attaches its guest', () => {
+    const allowPopupsAtInsertion: (string | null)[] = [];
+    const appendChild = Node.prototype.appendChild;
+    vi.spyOn(Node.prototype, 'appendChild').mockImplementation(function <T extends Node>(this: Node, child: T): T {
+      if (child instanceof HTMLElement && child.tagName === 'WEBVIEW') {
+        allowPopupsAtInsertion.push(child.getAttribute('allowpopups'));
+      }
+      return appendChild.call(this, child) as T;
+    });
+
+    render(<DesignBrowserPanel projectId="popup-initial-attribute" initialUrl="http://localhost:1234/"
+      onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+
+    expect(allowPopupsAtInsertion).toEqual(['true']);
+  });
+
   it('captures a value-masked native screenshot when annotating a form field', async () => {
-    const capturePage = vi.fn(async () => ({ ok: true as const, dataUrl: 'data:image/png;base64,AAAA', w: 200, h: 100 }));
+    const capturePage = vi.fn(async (options?: { clip?: { x: number; y: number; width: number; height: number } }) => ({
+      ok: true as const, dataUrl: 'data:image/png;base64,AAAA', w: 200, h: 100, capturedCssRect: options?.clip }));
     restoreHost?.();
     restoreHost = installMockOpenDesignHost({ host: { capture: { page: capturePage } } });
     const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1"
@@ -92,8 +113,152 @@ describe('DesignBrowserPanel <webview> navigation', () => {
     expect(screen.getByPlaceholderText('Comment on this element…')).toBeTruthy();
   });
 
+  it.each(['valid', 'legacy', 'malformed', 'unavailable'] as const)(
+    'uses exact ordinary host capture geometry before attaching masked evidence: %s', async (kind) => {
+      const dataUrl = 'data:image/png;base64,cGl4ZWxz';
+      const captured = { x: 278 / 1.2, y: 290 / 1.2, width: 287 / 1.2, height: 191 / 1.2 };
+      let captures = 0;
+      const capturePage = vi.fn(async () => {
+        if (++captures === 1 && kind === 'unavailable') return { ok: false as const, reason: 'host capture unavailable' };
+        return { ok: true as const, dataUrl, w: 287, h: 191,
+          ...(kind === 'legacy' ? {} : { capturedCssRect: kind === 'malformed' ? { ...captured, width: NaN } : captured }) };
+      });
+      restoreHost?.(); restoreHost = installMockOpenDesignHost({ host: { capture: { page: capturePage } } });
+      vi.stubGlobal('Image', class {
+        naturalWidth = 287; naturalHeight = 191; onload?: () => void;
+        set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+      });
+      const drawImage = vi.fn(), fillRect = vi.fn();
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage, fillRect } as unknown as CanvasRenderingContext2D);
+      vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue(dataUrl);
+      const fetchMock = vi.fn(async (url: string) => url.startsWith('data:')
+        ? { blob: async () => new Blob(['crop'], { type: 'image/png' }) } : { ok: true });
+      vi.stubGlobal('fetch', fetchMock);
+      const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com"
+        onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+      const node = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+      node.getBoundingClientRect = () => ({ left: 30, top: 40, right: 1030, bottom: 840,
+        width: 1000, height: 800, x: 30, y: 40, toJSON() {} } as DOMRect);
+      const target = { elementId: 'dom:#field', selector: '#field', label: 'input', text: '', htmlHint: 'input',
+        position: { x: 201, y: 201, width: 240, height: 160 }, viewport: { width: 1000, height: 800 },
+        maskRects: [{ x: 1, y: 1, width: 10, height: 10 }, { x: 25, y: 25, width: 10, height: 10, textHidden: true }] };
+      let restored = false;
+      node.executeJavaScript = vi.fn(async (script: string) => {
+        if (script.includes('function snapshotFor(el, ev)')) return target;
+        if (script.includes('const targets =')) return [{ ...target, key: 'capture' }];
+        if (script.includes('data-od-annotation-text')) {
+          if (script.includes('if (false) {')) restored = true;
+          return true;
+        }
+        return null;
+      });
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+      await waitFor(() => expect(restored).toBe(true));
+      expect(capturePage).toHaveBeenCalledTimes(1);
+      if (kind === 'valid') {
+        fireEvent.click(await screen.findByRole('button', { name: /^Attach image \(1\)/ }));
+        await screen.findByRole('button', { name: /^browser-annotation-/ });
+        expect(fillRect).toHaveBeenCalledWith(0, 0, 13, 13);
+      } else expect(fillRect).not.toHaveBeenCalled();
+      fireEvent.change(screen.getByPlaceholderText('Comment on this element…'), { target: { value: 'Review the field' } });
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add to chat draft' })); });
+      await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/edge-annotations/draft'))).toBe(true));
+      const post = fetchMock.mock.calls.find(([url]) => url.endsWith('/edge-annotations/draft'))!;
+      const payload = JSON.parse((post as unknown as [string, { body: string }])[1].body);
+      if (kind === 'valid') expect(payload.screenshotDataUrl).toMatch(/^data:image\/png;base64,/);
+      else expect(payload.screenshotDataUrl).toBeUndefined();
+    });
+
+  it.each(['stable', 'navigation', 'viewport', 'mask', 'capture-failure', 'decode-failure'] as const)(
+    'captures the original popup annotation with actual pixel scaling and masking: %s', async (change) => {
+      const nativeDataUrl = 'data:image/png;base64,cG9wdXA=';
+      const hostCapture = vi.fn(async () => ({ ok: true as const,
+        dataUrl: 'data:image/png;base64,aG9zdA==', w: 900, h: 600 }));
+      const imageSizes = new Map([[nativeDataUrl, { w: 600, h: 600 }]]);
+      vi.stubGlobal('Image', class {
+        onload?: () => void; onerror?: () => void; naturalWidth = 0; naturalHeight = 0; srcValue = '';
+        set src(value: string) {
+          this.srcValue = value;
+          const size = imageSizes.get(value);
+          if (size && change !== 'decode-failure') {
+            this.naturalWidth = size.w; this.naturalHeight = size.h;
+            queueMicrotask(() => this.onload?.());
+          } else queueMicrotask(() => this.onerror?.());
+        }
+      });
+      const drawImage = vi.fn(), fillRect = vi.fn(); let images = 0;
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage, fillRect } as unknown as CanvasRenderingContext2D);
+      vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockImplementation(function (this: HTMLCanvasElement) {
+        const url = `data:image/png;base64,${btoa(`crop-${++images}`)}`;
+        imageSizes.set(url, { w: this.width, h: this.height }); return url;
+      });
+      const target = { elementId: 'dom:#field', selector: '#field', label: 'input', text: '', htmlHint: 'input',
+        position: { x: -10, y: 20, width: 110, height: 50 }, viewport: { width: 300, height: 200 },
+        maskRects: [{ x: 10, y: 0, width: 20, height: 10, textHidden: true }, { x: 35, y: 15, width: 10, height: 10 }] };
+      const popup: OpenDesignHostBrowserPopup = { surfaceId: 'popup:annotation', projectId: 'p1', openerTabId: '__browser__:1',
+        ancestorTabIds: ['__browser__:1'], tabId: '__browser__:2', webContentsId: 77, url: 'about:blank', title: 'Written child',
+        loading: false, canGoBack: false, canGoForward: false, disposition: 'new-window' };
+      let measured = 0, restored = false, currentPageUrl = popup.url;
+      const popupCommand = vi.fn(async (request: OpenDesignHostBrowserPopupCommand) => {
+        if (request.kind === 'capture') {
+          if (change === 'capture-failure') return { ok: false as const, reason: 'capture unavailable' };
+          return { ok: true as const, value: nativeDataUrl };
+        }
+        if (request.kind !== 'evaluate') return { ok: true as const };
+        if (request.code.includes('function snapshotFor(el, ev)')) return { ok: true as const, value: target };
+        if (request.code.includes('const targets =') && request.code.includes('"key":"capture"')) {
+          measured++;
+          if (measured === 2 && change === 'navigation') currentPageUrl = 'https://example.com/changed';
+          return { ok: true as const, value: [{ ...target, key: 'capture',
+            ...(measured === 2 && change === 'viewport' ? { viewport: { width: 301, height: 200 } } : {}),
+            ...(measured === 2 && change === 'mask' ? { maskRects: [] } : {}) }] };
+        }
+        if (request.code.includes('data-od-annotation-text')) {
+          if (request.code.includes('if (false) {')) restored = true;
+          return { ok: true as const, value: true };
+        }
+        return { ok: true as const, value: null };
+      });
+      restoreHost?.();
+      restoreHost = installMockOpenDesignHost({ host: { capture: { page: hostCapture }, browser: {
+        listPopups: async () => ({ ok: true, popups: [popup] }), subscribePopups: () => () => {},
+        bindPopup: async () => ({ ok: true }), popupCommand,
+        presentPopup: async (request) => ({ ok: true, value: { revision: request.revision, bounds: request.bounds } }),
+      } } });
+      vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+      const fetchMock = vi.fn(async (url: string) => url.startsWith('data:')
+        ? { blob: async () => new Blob(['crop'], { type: 'image/png' }) } : { ok: true });
+      vi.stubGlobal('fetch', fetchMock);
+      const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" browserTabId="__browser__:2"
+        popup={popup} onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+      const surface = container.querySelector('[data-popup-surface]')! as HTMLElement & { getURL(): string };
+      surface.getBoundingClientRect = () => ({ left: 30, top: 40, right: 330, bottom: 240,
+        width: 300, height: 200, x: 30, y: 40, toJSON() {} } as DOMRect);
+      surface.getURL = () => currentPageUrl;
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+      await waitFor(() => expect(restored).toBe(true));
+      expect(hostCapture).not.toHaveBeenCalled();
+      if (change === 'stable') {
+        fireEvent.click(await screen.findByRole('button', { name: /^Attach image \(1\)/ }));
+        await screen.findByRole('button', { name: /^browser-annotation-/ });
+      }
+      const note = screen.getByPlaceholderText('Comment on this element…');
+      fireEvent.change(note, { target: { value: 'Review the field' } });
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add to chat draft' })); });
+      await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/edge-annotations/draft'))).toBe(true));
+      const post = fetchMock.mock.calls.find(([url]) => url.endsWith('/edge-annotations/draft'));
+      expect(post).toBeTruthy();
+      const payload = JSON.parse((post as unknown as [string, { body: string }])[1].body);
+      if (change === 'stable') {
+        expect(drawImage.mock.calls[0]!.slice(1)).toEqual([0, 60, 200, 150, 0, 0, 200, 150]);
+        expect(fillRect).toHaveBeenCalledWith(50, 45, 20, 30);
+        expect(payload.screenshotDataUrl).toMatch(/^data:image\/png;base64,/);
+      } else expect(payload.screenshotDataUrl).toBeUndefined();
+    });
+
   it('omits a native screenshot if a field moves between the two geometry checks', async () => {
-    const capturePage = vi.fn(async () => ({ ok: true as const, dataUrl: 'data:image/png;base64,AAAA', w: 200, h: 100 }));
+    const capturePage = vi.fn(async (options?: { clip?: { x: number; y: number; width: number; height: number } }) => ({
+      ok: true as const, dataUrl: 'data:image/png;base64,AAAA', w: 200, h: 100, capturedCssRect: options?.clip }));
     restoreHost?.();
     restoreHost = installMockOpenDesignHost({ host: { capture: { page: capturePage } } });
     const fetchMock = vi.fn(async (_url: string, _options: { body: string }) => ({ ok: true }));
@@ -1061,5 +1226,362 @@ describe('DesignBrowserPanel <webview> navigation', () => {
     await waitFor(() => {
       expect(screen.getByText(/Saved page snapshot/)).toBeTruthy();
     });
+  });
+});
+
+
+describe('DesignBrowserPanel compact style edits', () => {
+  it.each([true, false])('posts only confirmed live style changes: %s', async (applied) => {
+    let options: browserControl.EmbeddedBrowserControlSessionOptions | undefined;
+    vi.spyOn(browserControl, 'createEmbeddedBrowserControlSession').mockImplementation((value) => {
+      options = value; value.onStatus?.('connected');
+      return { ready: Promise.resolve(true), stop: async () => {}, updateTarget: () => {} };
+    });
+    vi.spyOn(browserControl, 'executeEmbeddedBrowserOperation').mockImplementation(async (_project, request) => {
+      if (request.operation !== 'style') throw new Error('Unexpected fixture operation');
+      return { commandId: 'fixture-style', tab: { projectId: 'style-context', tabId: 'tab-style', url: 'https://example.com', title: 'Fixture' }, result: { operation: 'style', applied: true,
+        inspection: await options!.applyStyle!(request) } };
+    });
+    restoreHost?.();
+    restoreHost = installMockOpenDesignHost({ host: { capture: { page: async () => ({ ok: false as const, reason: 'fixture unavailable' }) } } });
+    const fetchMock = vi.fn(async (_url: string) => ({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { queueMicrotask(() => callback(0)); return 1; });
+    const { container } = render(<DesignBrowserPanel projectId="style-context" conversationId="c1" browserTabId="tab-style"
+      initialUrl="https://example.com" onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+    const node = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    const target = { elementId: 'dom:#heading', selector: '#heading', label: 'h1', text: 'Heading', htmlHint: 'h1',
+      style: { color: '#0D0C22' }, position: { x: 10, y: 10, width: 100, height: 30 },
+      maskRects: [], viewport: { width: 300, height: 200 } };
+    node.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, width: 300, height: 200,
+      right: 300, bottom: 200, toJSON() {} } as DOMRect);
+    let mutated = false;
+    node.executeJavaScript = vi.fn(async (script: string) => {
+      if (script.includes('function snapshotFor(el, ev)')) return target;
+      if (script.includes('const targets =')) return [{ ...target, style: { color: mutated ? '#ff0000' : '#0D0C22' }, key: 'capture' }];
+      if (script.includes('el.style[')) { mutated = applied; return applied; }
+      if (script.includes('el.textContent =')) return true;
+      return null;
+    });
+    Object.assign(node, { getWebContentsId: () => 77, getURL: () => 'https://example.com' });
+    fireEvent(node, new Event('dom-ready'));
+    await waitFor(() => expect(options?.applyStyle).toBeTypeOf('function'));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    fireEvent.change(screen.getByPlaceholderText('Comment on this element…'), { target: { value: 'Update the heading' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Computed styles' }));
+    await act(async () => { fireEvent.change(screen.getByLabelText('Text', { selector: 'input' }), { target: { value: '#ff0000' } }); });
+    expect(screen.getByPlaceholderText('Comment on this element…')).toHaveProperty('value', 'Update the heading');
+    if (applied) {
+      const textInput = screen.getByRole('textbox', { name: 'Element text' });
+      await act(async () => { fireEvent.change(textInput, { target: { value: 'hello ' } }); });
+      await act(async () => { fireEvent.blur(textInput); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+      expect(screen.getByRole('textbox', { name: 'Element text' })).toHaveProperty('value', 'hello ');
+    }
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add to chat draft' })); });
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/edge-annotations/draft'))).toBe(true));
+    const post = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/edge-annotations/draft'))!;
+    const payload = JSON.parse((post as unknown as [string, { body: string }])[1].body);
+    expect(payload.target.style.color).toBe(applied ? '#ff0000' : '#0D0C22');
+    expect(payload.note).toBe('Update the heading');
+  });
+
+  it('awaits capture cleanup and rejects same-node navigation before applying a style', async () => {
+    let options: browserControl.EmbeddedBrowserControlSessionOptions | undefined;
+    vi.spyOn(browserControl, 'createEmbeddedBrowserControlSession').mockImplementation((value) => {
+      options = value; value.onStatus?.('connected');
+      return { ready: Promise.resolve(true), stop: async () => {}, updateTarget: () => {} };
+    });
+    let finishCapture!: (value: { ok: false; reason: string }) => void;
+    const capturePage = vi.fn(async () => ({ ok: false as const, reason: 'fixture complete' }))
+      .mockImplementationOnce(() => new Promise<{ ok: false; reason: string }>((resolve) => { finishCapture = resolve; }));
+    restoreHost?.(); restoreHost = installMockOpenDesignHost({ host: { capture: { page: capturePage } } });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { queueMicrotask(() => callback(0)); return 1; });
+    const { container } = render(<DesignBrowserPanel projectId="style-cleanup" conversationId="c1" browserTabId="tab-style"
+      initialUrl="https://example.com" onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+    const node = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    const target = { elementId: 'dom:#heading', selector: '#heading', label: 'h1', text: 'Heading', htmlHint: 'h1',
+      style: { color: '#0D0C22' }, position: { x: 10, y: 10, width: 100, height: 30 },
+      maskRects: [], viewport: { width: 300, height: 200 } };
+    let url = 'https://example.com';
+    let mutations = 0;
+    Object.assign(node, { getWebContentsId: () => 77, getURL: () => url });
+    node.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, width: 300, height: 200,
+      right: 300, bottom: 200, toJSON() {} } as DOMRect);
+    node.executeJavaScript = vi.fn(async (script: string) => {
+      if (script.includes('function snapshotFor(el, ev)')) return target;
+      if (script.includes('const targets =')) return [{ ...target, key: 'capture' }];
+      if (script.includes('el.style[')) { mutations += 1; return true; }
+      return null;
+    });
+    fireEvent(node, new Event('dom-ready'));
+    await waitFor(() => expect(options?.applyStyle).toBeTypeOf('function'));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    await waitFor(() => expect(capturePage).toHaveBeenCalled());
+    await screen.findByRole('button', { name: 'Computed styles' }, { timeout: 3000 });
+    let outcome!: Promise<unknown>;
+    await act(async () => { outcome = options!.applyStyle!({ operation: 'style', approved: true,
+      target: { selector: '#heading' }, styles: { color: '#ff0000' } }).catch((error: Error) => error.message); });
+    expect(mutations).toBe(0);
+    url = 'https://example.com/another-page';
+    await act(async () => { finishCapture({ ok: false, reason: 'fixture complete' }); await outcome; });
+    expect(await outcome).toBe('Browser selection changed or command expired');
+    expect(mutations).toBe(0);
+  });
+});
+
+describe('DesignBrowserPanel native popup surface', () => {
+  it('hides the original native popup while the viewport listbox is open and restores it on dismissal', async () => {
+    const popup: OpenDesignHostBrowserPopup = { surfaceId: 'popup:viewport-menu', projectId: 'p1', openerTabId: '__browser__:1',
+      ancestorTabIds: ['__browser__:1'], tabId: '__browser__:2', webContentsId: 77, url: 'about:blank', title: 'Written child',
+      loading: false, canGoBack: false, canGoForward: false, disposition: 'new-window' };
+    const presentPopup = vi.fn(async (request: { visible: boolean; revision: number; bounds: unknown }) => ({ ok: true as const,
+      value: { revision: request.revision, bounds: request.bounds } }));
+    const popupCommand = vi.fn(async () => ({ ok: true as const, value: 'data:image/png;base64,cG9wdXA=' }));
+    restoreHost?.(); restoreHost = installMockOpenDesignHost({ host: { browser: { listPopups: async () => ({ ok: true, popups: [popup] }),
+      subscribePopups: () => () => {}, bindPopup: async () => ({ ok: true }), presentPopup, popupCommand } } });
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    const view = render(<DesignBrowserPanel projectId="p1" browserTabId="__browser__:2" popup={popup}
+      onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+    const original = view.container.querySelector('[data-popup-surface]');
+    await waitFor(() => expect(presentPopup.mock.calls.at(-1)?.[0].visible).toBe(true));
+    const trigger = screen.getByRole('combobox', { name: /^Browser viewport/ });
+    fireEvent.click(trigger);
+    await waitFor(() => expect(presentPopup.mock.calls.at(-1)?.[0].visible).toBe(false));
+    expect(screen.getByRole('listbox', { name: 'Browser viewport' })).toBeTruthy();
+    fireEvent.keyDown(trigger, { key: 'Escape' });
+    await waitFor(() => expect(presentPopup.mock.calls.at(-1)?.[0].visible).toBe(true));
+    expect(screen.queryByRole('listbox', { name: 'Browser viewport' })).toBeNull();
+    fireEvent.click(trigger);
+    await waitFor(() => expect(presentPopup.mock.calls.at(-1)?.[0].visible).toBe(false));
+    fireEvent.mouseDown(document.body);
+    await waitFor(() => expect(presentPopup.mock.calls.at(-1)?.[0].visible).toBe(true));
+    expect(view.container.querySelector('[data-popup-surface]')).toBe(original);
+    expect(view.container.querySelector('webview')).toBeNull();
+  });
+
+  it('fits responsive presets, retains the live page node and restores the project selection', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { queueMicrotask(() => callback(0)); return 1; });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const width = Math.min(({ mobile: 390, tablet: 820 } as Record<string, number>)[this.dataset.viewport ?? ''] ?? 500, 500);
+      return { x: 0, y: 0, width, height: 650 } as DOMRect;
+    });
+    const props = { projectId: 'responsive', initialUrl: 'https://example.com/form', onOpenFile: () => {}, onRefreshFiles: () => {} };
+    const view = render(<DesignBrowserPanel {...props} />);
+    const page = view.container.querySelector('webview');
+    fireEvent.click(screen.getByRole('combobox', { name: 'Browser viewport: Desktop' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Mobile' }));
+    await waitFor(() => expect(view.container.querySelector('output')?.textContent).toBe('390 × 650'));
+    expect(view.container.querySelector('webview')).toBe(page);
+    expect(page?.getAttribute('src')).toBe(props.initialUrl);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Browser viewport: Mobile' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Tablet' }));
+    await waitFor(() => expect(view.container.querySelector('output')?.textContent).toBe('500 × 650'));
+    expect(window.localStorage.getItem('od:design-browser:responsive:viewport:v1')).toBe('tablet');
+    view.unmount();
+    const restored = render(<DesignBrowserPanel {...props} />);
+    expect((screen.getByRole('combobox', { name: 'Browser viewport: Tablet' }) as HTMLButtonElement).value).toBe('tablet');
+    expect(restored.container.querySelector('.db-viewport-frame')?.getAttribute('data-viewport')).toBe('tablet');
+  });
+
+  it('waits for the requested preset and rejects superseded viewport commands', async () => {
+    let options: browserControl.EmbeddedBrowserControlSessionOptions | undefined;
+    vi.spyOn(browserControl, 'createEmbeddedBrowserControlSession').mockImplementation((value) => {
+      options = value; return { ready: Promise.resolve(true), stop: async () => {}, updateTarget: () => {} };
+    });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const frame = this.closest('.db-viewport-frame') as HTMLElement | null;
+      return { x: 0, y: 0, width: (frame ?? this).dataset.viewport === 'mobile' ? 390 : 529, height: 536 } as DOMRect;
+    });
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { queueMicrotask(() => callback(0)); return 1; });
+    const popup: OpenDesignHostBrowserPopup = { surfaceId: 'popup:commit', projectId: 'p1', openerTabId: '__browser__:1',
+      ancestorTabIds: ['__browser__:1'], tabId: '__browser__:2', webContentsId: 77, url: 'about:blank', title: 'Child',
+      loading: false, canGoBack: false, canGoForward: false, disposition: 'new-window' };
+    const commandBounds: number[] = [];
+    let record = false;
+    restoreHost?.();
+    restoreHost = installMockOpenDesignHost({ host: { browser: { listPopups: async () => ({ ok: true, popups: [popup] }),
+      subscribePopups: () => () => {}, bindPopup: async () => ({ ok: true }), popupCommand: async () => ({ ok: true }),
+      presentPopup: async (request) => {
+        if (record) commandBounds.push(request.bounds.width);
+        // Exercise asynchronous native presentation without synchronous ACK.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        return { ok: true, value: { revision: request.revision, bounds: request.bounds } };
+      } } } });
+    render(<DesignBrowserPanel projectId="p1" browserTabId="__browser__:2" popup={popup}
+      onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+    await waitFor(() => expect(options?.applyViewport).toBeTypeOf('function'));
+    record = true;
+    let applying!: ReturnType<NonNullable<browserControl.EmbeddedBrowserControlSessionOptions['applyViewport']>>;
+    await act(async () => {
+      applying = options!.applyViewport!('mobile');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await applying.then((value) => ({ value }), (error: Error) => ({ error: error.message }));
+    });
+    expect(outcome).toEqual({ value: { preset: 'mobile', width: 390, height: 536 } });
+    expect(commandBounds.length).toBeGreaterThan(0);
+    expect(commandBounds.every((width) => width === 390)).toBe(true);
+
+    let superseded: Promise<unknown> | undefined;
+    let replacement: typeof applying | undefined;
+    await act(async () => {
+      superseded = options!.applyViewport!('desktop').catch((error: Error) => error.message);
+      replacement = options!.applyViewport!('mobile');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await expect(superseded).resolves.toContain('changed while applying');
+      await expect(replacement).resolves.toEqual({ preset: 'mobile', width: 390, height: 536 });
+    });
+  });
+
+  it('waits for fitted layout when the DOM preset and style commit before actual geometry', async () => {
+    let options: browserControl.EmbeddedBrowserControlSessionOptions | undefined;
+    vi.spyOn(browserControl, 'createEmbeddedBrowserControlSession').mockImplementation((value) => {
+      options = value; return { ready: Promise.resolve(true), stop: async () => {}, updateTarget: () => {} };
+    });
+    let actualWidth = 529;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const isFrame = this.classList.contains('db-viewport-frame') || Boolean(this.closest('.db-viewport-frame'));
+      return { x: 0, y: 0, width: isFrame ? actualWidth : 529, height: 536 } as DOMRect;
+    });
+    const observations = new Map<Element, () => void>();
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: () => void) {}
+      observe(node: Element) { observations.set(node, this.callback); }
+      disconnect() {}
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { queueMicrotask(() => callback(0)); return 1; });
+    const popup: OpenDesignHostBrowserPopup = { surfaceId: 'popup:layout', projectId: 'p1', openerTabId: '__browser__:1',
+      ancestorTabIds: ['__browser__:1'], tabId: '__browser__:2', webContentsId: 77, url: 'about:blank', title: 'Child',
+      loading: false, canGoBack: false, canGoForward: false, disposition: 'new-window' };
+    const presentedWidths: number[] = [];
+    let record = false;
+    restoreHost?.();
+    restoreHost = installMockOpenDesignHost({ host: { browser: {
+      listPopups: async () => ({ ok: true, popups: [popup] }), subscribePopups: () => () => {},
+      bindPopup: async () => ({ ok: true }), popupCommand: async () => ({ ok: true }),
+      presentPopup: async (request) => {
+        if (record) presentedWidths.push(request.bounds.width);
+        return { ok: true, value: { revision: request.revision, bounds: request.bounds } };
+      },
+    } } });
+    const view = render(<DesignBrowserPanel projectId="p1" browserTabId="__browser__:2" popup={popup}
+      onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+    await waitFor(() => expect(options?.applyViewport).toBeTypeOf('function'));
+    record = true;
+    let applying!: Promise<unknown>;
+    await act(async () => { applying = options!.applyViewport!('mobile').catch((error: Error) => ({ error: error.message })); });
+    const frame = view.container.querySelector('.db-viewport-frame') as HTMLElement;
+    expect(frame.dataset.viewport).toBe('mobile');
+    // jsdom does not accept CSS min() width. Real mounted diagnostics verify
+    // the committed inline style; geometry here stays independently controlled.
+    expect(frame.getBoundingClientRect().width).toBe(529);
+    expect(presentedWidths).toEqual([]);
+    await act(async () => {
+      actualWidth = 390;
+      observations.get(frame)?.();
+      await expect(applying).resolves.toEqual({ preset: 'mobile', width: 390, height: 536 });
+    });
+    expect(presentedWidths).toEqual([390]);
+
+    await act(async () => {
+      const expired = options!.applyViewport!('desktop', Date.now() + 25);
+      await expect(expired).rejects.toThrow('Browser command expired before execution.');
+    });
+    expect(presentedWidths).toEqual([390]);
+
+    let hidden!: Promise<unknown>;
+    await act(async () => { hidden = options!.applyViewport!('tablet').catch((error: Error) => error.message); });
+    act(() => {
+      view.rerender(<DesignBrowserPanel projectId="p1" browserTabId="__browser__:2" popup={popup}
+        browserTabActive={false} onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+    });
+    await act(async () => {
+      await expect(hidden).resolves.toBe('Browser viewport is no longer available');
+    });
+    act(() => {
+      view.rerender(<DesignBrowserPanel projectId="p1" browserTabId="__browser__:2" popup={popup}
+        onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+    });
+    let unmounted!: Promise<unknown>;
+    await act(async () => { unmounted = options!.applyViewport!('tablet').catch((error: Error) => error.message); });
+    act(() => { view.unmount(); });
+    await expect(unmounted).resolves.toBe('Browser viewport is no longer available');
+  });
+
+  it('keeps its lease callback stable and refuses a frame that changes during native ACK', async () => {
+    let options: browserControl.EmbeddedBrowserControlSessionOptions | undefined;
+    const session = vi.spyOn(browserControl, 'createEmbeddedBrowserControlSession').mockImplementation((value) => {
+      options = value; value.onStatus?.('connected');
+      return { ready: Promise.resolve(true), stop: async () => {}, updateTarget: () => {} };
+    });
+    let availableWidth = 900;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const frame = this.closest('.db-viewport-frame') as HTMLElement | null;
+      const width = Math.min(({ mobile: 390, tablet: 820 } as Record<string, number>)[(frame ?? this).dataset.viewport ?? ''] ?? availableWidth, availableWidth);
+      return { x: 0, y: 0, width, height: 650 } as DOMRect;
+    });
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { queueMicrotask(() => callback(0)); return 1; });
+    const popup: OpenDesignHostBrowserPopup = { surfaceId: 'popup:race', projectId: 'p1', openerTabId: '__browser__:1', ancestorTabIds: ['__browser__:1'],
+      tabId: '__browser__:2', webContentsId: 77, url: 'about:blank', title: 'Child', loading: false, canGoBack: false, canGoForward: false, disposition: 'new-window' };
+    let block = false; let release: (() => void) | undefined;
+    restoreHost?.();
+    restoreHost = installMockOpenDesignHost({ host: { browser: { listPopups: async () => ({ ok: true, popups: [popup] }), subscribePopups: () => () => {},
+      bindPopup: async () => ({ ok: true }), popupCommand: async () => ({ ok: true }),
+      presentPopup: async (request) => { if (block) await new Promise<void>((resolve) => { release = resolve; });
+        return { ok: true, value: { revision: request.revision, bounds: request.bounds } }; } } } });
+    render(<DesignBrowserPanel projectId="p1" browserTabId="__browser__:2" popup={popup} onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+    await waitFor(() => expect(options?.applyViewport).toBeTypeOf('function'));
+    block = true;
+    let applying!: ReturnType<NonNullable<browserControl.EmbeddedBrowserControlSessionOptions['applyViewport']>>;
+    act(() => { applying = options!.applyViewport!('mobile'); });
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    availableWidth = 300;
+    await act(async () => { release!(); await expect(applying).rejects.toThrow('changed while applying'); });
+    expect(session).toHaveBeenCalledTimes(1);
+  });
+  it('keeps a written blank document, uses native pre-adoption history and hides/restores around overlapping menus', async () => {
+    restoreHost?.();
+    const popup: OpenDesignHostBrowserPopup = { surfaceId: 'popup:1', projectId: 'p1', openerTabId: '__browser__:1',
+      ancestorTabIds: ['__browser__:1'], tabId: '__browser__:2', webContentsId: 77, url: 'about:blank', title: 'Written child',
+      loading: false, canGoBack: true, canGoForward: false, disposition: 'new-window' };
+    const popupCommand = vi.fn(async (request: OpenDesignHostBrowserPopupCommand) => ({ ok: true as const,
+      value: request.kind === 'capture' ? 'data:image/png;base64,popup' : undefined }));
+    const presentPopup = vi.fn(async (request: { visible: boolean; revision: number; bounds: unknown }) => ({ ok: true as const,
+      value: { revision: request.revision, bounds: request.bounds } }));
+    restoreHost = installMockOpenDesignHost({ host: { browser: { listPopups: async () => ({ ok: true, popups: [popup] }),
+      subscribePopups: () => () => {}, bindPopup: async () => ({ ok: true }), presentPopup, popupCommand } } });
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    const resizeCallbacks = new Map<Element, () => void>();
+    vi.stubGlobal('ResizeObserver', class { constructor(private callback: () => void) {} observe(node: Element) { resizeCallbacks.set(node, this.callback); } disconnect() {} });
+    const view = render(<DesignBrowserPanel projectId="p1" browserTabId="__browser__:2" popup={popup}
+      initialUrl="about:blank" initialTitle="Written child" onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+    expect(view.container.querySelector('[data-popup-surface="popup:1"]')).not.toBeNull();
+    expect(view.container.querySelector('webview')).toBeNull();
+    expect(view.container.querySelector('.db-start')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Go Back' }));
+    expect(popupCommand).toHaveBeenCalledWith({ projectId: 'p1', surfaceId: 'popup:1', kind: 'back' });
+    fireEvent.click(screen.getByRole('button', { name: 'Browser menu' }));
+    await waitFor(() => expect(view.container.querySelector('[data-popup-surface] img')).not.toBeNull());
+    expect(presentPopup.mock.calls.some((call) => (call[0] as { visible: boolean }).visible === false)).toBe(true);
+    const surface = view.container.querySelector('[data-popup-surface]')!;
+    const capturesBeforeResize = popupCommand.mock.calls.filter(([request]) => request.kind === 'capture').length;
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, width: 390, height: 600 } as DOMRect);
+    act(() => resizeCallbacks.get(surface)?.());
+    await waitFor(() => expect(popupCommand.mock.calls.filter(([request]) => request.kind === 'capture').length).toBeGreaterThan(capturesBeforeResize));
+    fireEvent.click(screen.getByRole('button', { name: 'Browser menu' }));
+    await waitFor(() => expect(view.container.querySelector('[data-popup-surface] img')).toBeNull());
+    expect((presentPopup.mock.calls.at(-1)?.[0] as { visible: boolean }).visible).toBe(true);
+    view.unmount();
+    expect((presentPopup.mock.calls.at(-1)?.[0] as { visible: boolean }).visible).toBe(false);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 });

@@ -39,6 +39,7 @@ const CANONICAL = new Map<string, { taskKind: string; pipelineStages: string[] }
 // starters sit here too: they are user-facing plugins for downstream
 // handoff, but they must not become the canonical tune-collab fallback.
 const SIBLINGS = new Map<string, { taskKind: string }>([
+  ['od-active-ui-development', { taskKind: 'tune-collab' }],
   ['od-default',          { taskKind: 'new-generation' }],
   ['od-media-generation', { taskKind: 'new-generation' }],
   ['od-plugin-authoring', { taskKind: 'new-generation' }],

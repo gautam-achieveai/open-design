@@ -45,6 +45,8 @@ export interface ComposerDraftExtras {
   /** Server-owned browser evidence IDs, never image bytes or URLs. */
   annotationIds?: string[];
   annotationImageIds?: string[];
+  /** Newly collected notes composed on send; older editor text stays untouched. */
+  hiddenAnnotationIds?: string[];
   context: ComposerDraftContext;
 }
 
@@ -211,6 +213,8 @@ export function sanitizeComposerDraftExtras(raw: unknown): ComposerDraftExtras {
     quotes: sanitizeQuotes(row.quotes),
     annotationIds: sanitizeAnnotationIds(row.annotationIds),
     annotationImageIds: sanitizeAnnotationIds(row.annotationImageIds).filter((id) =>
+      sanitizeAnnotationIds(row.annotationIds).includes(id)),
+    hiddenAnnotationIds: sanitizeAnnotationIds(row.hiddenAnnotationIds).filter((id) =>
       sanitizeAnnotationIds(row.annotationIds).includes(id)),
     context: {
       skillIds: stringArray(context.skillIds, DRAFT_MAX_CONTEXT_ITEMS),

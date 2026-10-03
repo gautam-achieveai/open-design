@@ -404,7 +404,8 @@ export function exportAsMd(source: string, title: string): void {
  * injected into a srcdoc preview iframe. Returns null if the bridge is not
  * present (e.g. URL-load mode) or the capture times out.
  */
-export type PreviewSnapshot = { dataUrl: string; w: number; h: number };
+export type PreviewSnapshot = { dataUrl: string; w: number; h: number;
+  capturedCssRect?: { x: number; y: number; width: number; height: number } };
 
 export type PreviewSnapshotOptions = { full?: boolean };
 
@@ -476,8 +477,9 @@ export async function requestPreviewSnapshot(
  * desktop host is present (pure web), so callers fall back to the bridge.
  *
  * `clipRect` is in CSS pixels relative to the viewport (e.g. an iframe's
- * getBoundingClientRect()); capturePage expects DIP page coordinates, which
- * match 1:1 for the top-level window (it never scrolls).
+ * getBoundingClientRect()). The desktop capture boundary converts these to
+ * Electron DIP coordinates using the actual host page zoom. Returned w/h are
+ * the captured image's pixel dimensions; display scale is not a clip factor.
  */
 export async function captureHostRegionSnapshot(
   clipRect: { left: number; top: number; width: number; height: number } | null,
@@ -494,7 +496,15 @@ export async function captureHostRegionSnapshot(
   try {
     const result = await captureHostPage(clip ? { clip } : undefined);
     if (result.ok && result.dataUrl && result.w >= 1 && result.h >= 1) {
-      return { dataUrl: result.dataUrl, w: result.w, h: result.h };
+      const captured = result.capturedCssRect;
+      const validCaptureRect = clip && captured && typeof captured === 'object' && !Array.isArray(captured)
+        && [captured.x, captured.y, captured.width, captured.height].every(Number.isFinite)
+        && captured.width > 0 && captured.height > 0
+        && captured.x >= clip.x && captured.y >= clip.y
+        && captured.x + captured.width <= clip.x + clip.width
+        && captured.y + captured.height <= clip.y + clip.height;
+      return { dataUrl: result.dataUrl, w: result.w, h: result.h,
+        ...(validCaptureRect ? { capturedCssRect: captured } : {}) };
     }
   } catch {
     /* fall through to null so the caller can use the bridge */

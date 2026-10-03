@@ -116,7 +116,7 @@ describe('browser annotations wait in the chat draft', () => {
     text, hasScreenshot: true, createdAt: 1,
   });
 
-  it('keeps captured evidence out of the body and stages its JSON alongside the note', async () => {
+  it('keeps note and context behind the image card while preserving send metadata', async () => {
     const onSend = vi.fn((..._args: Parameters<NonNullable<ComponentProps<typeof ChatComposer>['onSend']>>) => 'restore-draft' as const);
     renderComposer({ conversationId: 'conv-1', annotationDrafts: [{
       ...annotation(first, 'Change Save'), note: 'Change Save',
@@ -125,9 +125,10 @@ describe('browser annotations wait in the chat draft', () => {
         label: 'button', htmlHint: 'button', position: { x: 0, y: 0, width: 80, height: 30 } } },
     }], onSend });
     await flushMounts();
-    await waitFor(() => expect(composerText()).toBe('Change Save'));
+    await waitFor(() => expect(screen.getByTestId('staged-browser-annotation-image')).toBeTruthy());
+    expect(composerText().trim()).toBe('');
     expect(composerText()).not.toContain('DOM outline');
-    expect(screen.getByTestId('staged-browser-annotation-notes').textContent).toContain('annotation-context.json');
+    expect(screen.queryByRole('link', { name: 'annotation-context.json' })).toBeNull();
     pressEnter({ meta: true });
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     expect(onSend.mock.calls[0]?.[3]).toMatchObject({ annotationIds: [first] });
@@ -152,7 +153,7 @@ describe('browser annotations wait in the chat draft', () => {
     await flushMounts();
     await waitFor(() => expect(within(screen.getByTestId('staged-browser-annotation-notes'))
       .getAllByRole('button', { name: 'Remove comment attachment' })).toHaveLength(20));
-    expect(composerText()).toContain('Collected note 20');
+    expect(composerText().trim()).toBe('');
     expect(composerText()).not.toContain('Collected note 21');
     expect(screen.getByRole('status').textContent).toContain('Browser annotations still waiting: 1');
     expect(screen.getByRole('status').textContent).toContain('later message');
@@ -163,7 +164,8 @@ describe('browser annotations wait in the chat draft', () => {
       annotationImageIds: pending.slice(0, 20).map((item) => item.id),
     });
     await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
-    await waitFor(() => expect(composerText()).toContain('Collected note 21'));
+    await waitFor(() => expect(screen.getAllByTestId('staged-browser-annotation-image')).toHaveLength(1));
+    expect(composerText().trim()).toBe('');
     expect(composerText()).not.toContain('Collected note 1\n\n');
   });
 
@@ -183,7 +185,7 @@ describe('browser annotations wait in the chat draft', () => {
   it('preserves a user-edited note while discarding its captured context', async () => {
     renderComposer({ conversationId: 'conv-1', annotationDrafts: [annotation(first, 'Review Save')] });
     await flushMounts();
-    await waitFor(() => expect(composerText()).toBe('Review Save'));
+    await waitFor(() => expect(screen.getByTestId('staged-browser-annotation-image')).toBeTruthy());
     await typeAndSettle('Actually make Save stand out');
     const noteTray = screen.getByTestId('staged-browser-annotation-notes');
     act(() => within(noteTray).getByRole('button', { name: 'Remove comment attachment' }).click());
@@ -195,7 +197,7 @@ describe('browser annotations wait in the chat draft', () => {
     window.localStorage.setItem(KEY, 'Review Save\n\nTyped follow-up');
     renderComposer({ conversationId: 'conv-1', annotationDrafts: [annotation(first, 'Review Save')] });
     await flushMounts();
-    await waitFor(() => expect(composerText()).toBe('Review Save\n\nTyped follow-up\n\nReview Save'));
+    await waitFor(() => expect(composerText()).toBe('Review Save\n\nTyped follow-up'));
     const noteTray = screen.getByTestId('staged-browser-annotation-notes');
     act(() => within(noteTray).getByRole('button', { name: 'Remove comment attachment' }).click());
     await waitFor(() => expect(screen.queryByTestId('staged-browser-annotation-notes')).toBeNull());
@@ -208,11 +210,11 @@ describe('browser annotations wait in the chat draft', () => {
       annotation(first, 'Review Save'), annotation(second, 'Review Heading'),
     ] });
     await flushMounts();
-    await waitFor(() => expect(composerText()).toBe('  Typed opening  \n\nReview Save\n\nReview Heading'));
+    await waitFor(() => expect(composerText()).toBe('  Typed opening  '));
     const noteTray = screen.getByTestId('staged-browser-annotation-notes');
     act(() => within(noteTray).getAllByRole('button', { name: 'Remove comment attachment' })[0]?.click());
-    await waitFor(() => expect(within(noteTray).getAllByRole('button')).toHaveLength(1));
-    expect(composerText()).toBe('  Typed opening  \n\nReview Heading');
+    await waitFor(() => expect(within(noteTray).getAllByRole('button', { name: 'Remove comment attachment' })).toHaveLength(1));
+    expect(composerText()).toBe('  Typed opening  ');
   });
 
   it('preserves existing text, appends each note once, and blocks crop delivery after removal', async () => {
@@ -221,17 +223,18 @@ describe('browser annotations wait in the chat draft', () => {
     const view = renderComposer({ conversationId: 'conv-1',
       annotationDrafts: [annotation(first, 'Review Save')], onSend });
     await flushMounts();
-    await waitFor(() => expect(composerText()).toContain('Existing thought\n\nReview Save'));
+    await waitFor(() => expect(composerText()).toBe('Existing thought'));
     expect(onSend).not.toHaveBeenCalled();
     view.rerender(<ChatComposer projectId="project-1" conversationId="conv-1"
       projectFiles={[]} streaming={false} draftStorageKey={KEY}
       onEnsureProject={async () => 'project-1'} onSend={onSend} onStop={vi.fn()}
       annotationDrafts={[annotation(first, 'Review Save'), annotation(second, 'Review Heading')]} />);
-    await waitFor(() => expect(composerText()).toContain('Review Heading'));
-    expect(composerText().split('Review Save')).toHaveLength(2);
-    const removeCrop = screen.getAllByLabelText('Remove last image')[0];
-    act(() => removeCrop?.click());
-    await waitFor(() => expect(screen.getAllByTestId('staged-browser-annotation-image')).toHaveLength(1));
+    await waitFor(() => expect(screen.getAllByTestId('staged-browser-annotation-image')).toHaveLength(2));
+    expect(composerText()).toBe('Existing thought');
+    act(() => screen.getAllByRole('button', { name: 'Preview Attached images' })[0]?.click());
+    act(() => screen.getByLabelText('Remove last image').click());
+    act(() => within(screen.getByRole('dialog')).getByRole('button', { name: 'Close' }).click());
+    await waitFor(() => expect(screen.getAllByTestId('staged-browser-annotation-image').filter((card) => card.querySelector('img'))).toHaveLength(1));
     pressEnter({ meta: true });
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     expect(onSend.mock.calls[0]?.[3]).toMatchObject({
@@ -242,8 +245,8 @@ describe('browser annotations wait in the chat draft', () => {
     renderComposer({ conversationId: 'conv-1',
       annotationDrafts: [annotation(first, 'Review Save'), annotation(second, 'Review Heading')], onSend });
     await flushMounts();
-    await waitFor(() => expect(screen.getAllByTestId('staged-browser-annotation-image')).toHaveLength(1));
-    expect(composerText().split('Review Save')).toHaveLength(2);
+    await waitFor(() => expect(screen.getAllByTestId('staged-browser-annotation-image').filter((card) => card.querySelector('img'))).toHaveLength(1));
+    expect(composerText()).toBe('Existing thought');
   });
 });
 

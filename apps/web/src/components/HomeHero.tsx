@@ -1527,7 +1527,8 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
   const titlePinnedWord = activeChipId ? homeHeroChipLabel(activeChipId, t) : null;
   /* The rotating slot is aria-hidden, so the headline names itself here — the
      sentence with the pinned type, or with its first noun while it rotates. */
-  const titleAriaLabel = titleParts
+  const isUiDevelopment = activeChipId === 'active-ui-development';
+  const titleAriaLabel = isUiDevelopment ? t('homeHero.uiDevelopmentTitle') : titleParts
     ? `${titleParts.lead}${titlePinnedWord ?? titleRotatingWords[0] ?? ''}${titleParts.tail}`
     : undefined;
   let optionRenderIndex = 0;
@@ -1583,7 +1584,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
                 plain sentence and fall straight through to the `else`. Nothing
                 here knows which locale is which, so any translation can join
                 later by editing one string. */}
-            {titleParts ? (
+            {isUiDevelopment ? t('homeHero.uiDevelopmentTitle') : titleParts ? (
               <>
                 {titleParts.lead}
                 <RotatingTitleWord words={titleRotatingWords} pinned={titlePinnedWord} />
@@ -1594,7 +1595,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
             )}
           </h1>
           {/* One quiet line under the headline (per product). */}
-          <p className="home-hero__subtitle">{t('homeHero.subtitle')}</p>
+          <p className="home-hero__subtitle">{t(isUiDevelopment ? 'homeHero.uiDevelopmentSubtitle' : 'homeHero.subtitle')}</p>
         </>
       )}
 
@@ -4125,6 +4126,7 @@ function ShortcutsMenu({
 // Scenario subtitle shown under the title on the illustrated card rail.
 function homeHeroChipDescription(chipId: string, t: ReturnType<typeof useT>): string {
   switch (chipId) {
+    case 'active-ui-development': return t('homeHero.chip.activeUiDevelopmentDesc');
     case 'prototype': return t('homeHero.chip.prototypeDesc');
     case 'web-clone': return t('homeHero.chip.webCloneDesc');
     case 'wireframe': return t('homeHero.chip.wireframeDesc');
@@ -4166,6 +4168,7 @@ function fallbackPlaceholderScenarioText(
 // consumed once picked (e.g. "Open a chat that builds a clickable prototype").
 function homeHeroChipTitle(chip: HomeHeroChip, t: ReturnType<typeof useT>): string {
   switch (chip.id) {
+    case 'active-ui-development': return t('homeHero.chip.activeUiDevelopmentHint');
     case 'prototype': return t('homeHero.chip.prototypeNext');
     case 'web-clone': return t('homeHero.chip.webCloneNext');
     case 'wireframe': return t('homeHero.chip.wireframeNext');
@@ -4611,6 +4614,12 @@ function fallbackPluginPresetPrompt(
 
 const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
   "en": {
+    "active-ui-development": [
+      "Apply browser annotations to the existing site and verify the fixes at the marked elements.",
+      "Improve the existing user flow from feedback and verify the affected interactions.",
+      "Audit responsive layouts and keyboard accessibility in the existing site, then fix the highest-impact issues.",
+      "Research a better interaction pattern for the current flow, implement a focused improvement, and verify it.",
+    ],
     "web-clone": [
       "Website URL to clone: https://open-design.ai",
     ],
@@ -4670,6 +4679,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "id": {
+    "active-ui-development": [
+      "Terapkan anotasi browser ke situs yang ada dan verifikasi perbaikan pada elemen yang ditandai.",
+      "Perbaiki alur pengguna yang ada berdasarkan masukan dan verifikasi interaksi terkait.",
+      "Audit tata letak responsif dan aksesibilitas keyboard situs yang ada, lalu perbaiki masalah paling berdampak.",
+      "Teliti pola interaksi yang lebih baik untuk alur saat ini, terapkan perbaikan terarah, dan verifikasi.",
+    ],
     prototype: [
       "Desain website berkonversi tinggi untuk AI CRM dengan hero yang jelas, alur cerita fitur, bukti pendukung, dan CTA uji coba",
       "Buat dashboard desktop untuk basis pengetahuan tim dengan pencarian, pembaruan terbaru, perizinan, dan titik masuk kolaborasi",
@@ -4708,6 +4723,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "de": {
+    "active-ui-development": [
+      "Setze Browser-Anmerkungen auf der bestehenden Website um und prüfe die markierten Elemente.",
+      "Verbessere den bestehenden Nutzerablauf anhand von Feedback und prüfe die betroffenen Interaktionen.",
+      "Prüfe responsive Layouts und Tastaturzugänglichkeit der bestehenden Website und behebe die wichtigsten Probleme.",
+      "Recherchiere ein besseres Interaktionsmuster für den aktuellen Ablauf, setze eine gezielte Verbesserung um und prüfe sie.",
+    ],
     prototype: [
       "Entwirf eine konversionsstarke Website für ein AI CRM mit klarer Hero-Sektion, Feature-Story, Belegen und Trial-CTA",
       "Erstelle ein Desktop-Dashboard für eine Team-Wissensdatenbank mit Suche, aktuellen Updates, Berechtigungen und Einstiegspunkten für die Zusammenarbeit",
@@ -4746,6 +4767,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "zh-CN": {
+    "active-ui-development": [
+      "根据浏览器批注修改现有网站，并验证标记元素的修复效果。",
+      "根据反馈改进现有用户流程，并验证相关交互。",
+      "检查现有网站的响应式布局和键盘无障碍体验，修复影响最大的问题。",
+      "研究更适合当前流程的交互方式，实施针对性改进并验证效果。",
+    ],
     "web-clone": [
       "想要复刻的网站链接：https://open-design.ai",
     ],
@@ -4787,6 +4814,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "zh-TW": {
+    "active-ui-development": [
+      "根據瀏覽器註解修改現有網站，並驗證標記元素的修復效果。",
+      "根據回饋改善現有使用者流程，並驗證相關互動。",
+      "檢查現有網站的響應式版面與鍵盤無障礙體驗，修復影響最大的問題。",
+      "研究更適合目前流程的互動方式，實施針對性改善並驗證效果。",
+    ],
     prototype: [
       "為 AI CRM 設計一個高轉換率的網站，包含清晰的主視覺、功能故事、佐證亮點與試用 CTA",
       "為團隊知識庫打造桌面儀表板，包含搜尋、近期更新、權限管理與協作入口",
@@ -4825,6 +4858,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "pt-BR": {
+    "active-ui-development": [
+      "Aplique as anotações do navegador ao site existente e verifique as correções nos elementos marcados.",
+      "Melhore o fluxo de uso existente com base no feedback e verifique as interações afetadas.",
+      "Revise os layouts responsivos e a acessibilidade por teclado do site existente e corrija os problemas de maior impacto.",
+      "Pesquise um padrão de interação melhor para o fluxo atual, implemente uma melhoria pontual e verifique.",
+    ],
     prototype: [
       "Crie um site de alta conversão para um AI CRM com um hero claro, narrativa de recursos, provas sociais e CTA de teste grátis",
       "Crie um dashboard desktop para uma base de conhecimento de equipe com busca, atualizações recentes, permissões e pontos de entrada para colaboração",
@@ -4863,6 +4902,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "es-ES": {
+    "active-ui-development": [
+      "Aplica las anotaciones del navegador al sitio existente y verifica las correcciones en los elementos marcados.",
+      "Mejora el flujo de uso existente a partir de los comentarios y verifica las interacciones afectadas.",
+      "Revisa los diseños adaptables y la accesibilidad por teclado del sitio existente y corrige los problemas de mayor impacto.",
+      "Investiga un patrón de interacción mejor para el flujo actual, implementa una mejora concreta y verifícala.",
+    ],
     prototype: [
       "Diseña una web de alta conversión para un AI CRM con un hero claro, narrativa de funciones, pruebas de valor y un CTA de prueba gratuita",
       "Crea un panel de escritorio para una base de conocimiento de equipo con búsqueda, novedades recientes, permisos y accesos a la colaboración",
@@ -4901,6 +4946,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "ru": {
+    "active-ui-development": [
+      "Примените аннотации браузера к существующему сайту и проверьте исправления отмеченных элементов.",
+      "Улучшите существующий пользовательский сценарий по отзывам и проверьте затронутые взаимодействия.",
+      "Проверьте адаптивную вёрстку и доступность с клавиатуры существующего сайта, затем исправьте самые важные проблемы.",
+      "Исследуйте лучший способ взаимодействия для текущего сценария, внесите точечное улучшение и проверьте его.",
+    ],
     prototype: [
       "Спроектируйте конверсионный сайт для AI CRM с понятным hero-блоком, рассказом о возможностях, аргументами и CTA на пробный период",
       "Создайте десктопный дашборд для командной базы знаний с поиском, недавними обновлениями, правами доступа и точками входа для совместной работы",
@@ -4939,6 +4990,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "fa": {
+    "active-ui-development": [
+      "یادداشت‌های مرورگر را در سایت موجود اعمال کنید و اصلاح عناصر علامت‌گذاری‌شده را بررسی کنید.",
+      "مسیر فعلی کاربر را بر اساس بازخورد بهبود دهید و تعامل‌های مرتبط را بررسی کنید.",
+      "چیدمان واکنش‌گرا و دسترس‌پذیری با صفحه‌کلید سایت موجود را بررسی و مهم‌ترین مشکلات را اصلاح کنید.",
+      "الگوی تعامل بهتری برای مسیر فعلی پژوهش کنید، بهبود هدفمندی اعمال کنید و آن را بررسی کنید.",
+    ],
     prototype: [
       "یک وب‌سایت پربازده برای یک AI CRM طراحی کن با بخش معرفی شفاف، روایت ویژگی‌ها، نکات اثبات‌کننده و CTA برای آزمایش رایگان",
       "یک داشبورد دسکتاپ برای پایگاه دانش تیمی بساز با جست‌وجو، به‌روزرسانی‌های اخیر، دسترسی‌ها و نقاط ورود به همکاری",
@@ -4977,6 +5034,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "ar": {
+    "active-ui-development": [
+      "طبّق التعليقات التوضيحية من المتصفح على الموقع القائم وتحقق من إصلاح العناصر المحددة.",
+      "حسّن مسار المستخدم الحالي بناءً على الملاحظات وتحقق من التفاعلات المتأثرة.",
+      "راجع التخطيطات المتجاوبة وإمكانية الوصول بلوحة المفاتيح في الموقع القائم وأصلح المشكلات الأكثر تأثيرًا.",
+      "ابحث عن نمط تفاعل أفضل للمسار الحالي ونفّذ تحسينًا محددًا وتحقق منه.",
+    ],
     prototype: [
       "صمّم موقعًا عالي التحويل لمنتج AI CRM مع قسم رئيسي واضح وقصة للميزات ونقاط إثبات وزر CTA لتجربة المنتج",
       "أنشئ لوحة تحكم لسطح المكتب لقاعدة معرفة جماعية تتضمن البحث والتحديثات الأخيرة والصلاحيات ونقاط دخول للتعاون",
@@ -5015,6 +5078,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "ja": {
+    "active-ui-development": [
+      "ブラウザーの注釈を既存サイトに反映し、指定された要素の修正を検証してください。",
+      "フィードバックに基づいて既存のユーザーフローを改善し、関連する操作を検証してください。",
+      "既存サイトのレスポンシブ表示とキーボード操作のアクセシビリティを確認し、影響の大きい問題を修正してください。",
+      "現在のフローに適した操作パターンを調査し、必要な改善を実装して検証してください。",
+    ],
     prototype: [
       "AI CRM 向けに、ヒーロー・機能ストーリー・実績・トライアル CTA を備えた高コンバージョンの Web サイトをデザインして",
       "チームのナレッジベース向けに、検索・最近の更新・権限状態・コラボ導線を備えたデスクトップのダッシュボードを作って",
@@ -5053,6 +5122,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "ko": {
+    "active-ui-development": [
+      "브라우저 주석을 기존 사이트에 반영하고 표시된 요소의 수정 결과를 확인하세요.",
+      "피드백에 따라 기존 사용자 흐름을 개선하고 관련 상호작용을 확인하세요.",
+      "기존 사이트의 반응형 레이아웃과 키보드 접근성을 점검하고 영향이 큰 문제를 수정하세요.",
+      "현재 흐름에 더 적합한 상호작용 패턴을 조사하고 필요한 개선을 구현한 뒤 확인하세요.",
+    ],
     prototype: [
       "명확한 히어로, 기능 스토리, 신뢰 지표, 체험판 CTA를 갖춘 AI CRM용 고전환 website를 디자인해 줘",
       "검색, 최근 업데이트, 권한 관리, 협업 진입점을 담은 팀 지식 베이스용 데스크톱 대시보드를 만들어 줘",
@@ -5091,6 +5166,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "pl": {
+    "active-ui-development": [
+      "Zastosuj adnotacje z przeglądarki w istniejącej witrynie i sprawdź poprawki zaznaczonych elementów.",
+      "Ulepsz istniejącą ścieżkę użytkownika na podstawie uwag i sprawdź powiązane interakcje.",
+      "Sprawdź responsywne układy i dostępność klawiaturą istniejącej witryny, a następnie napraw najważniejsze problemy.",
+      "Zbadaj lepszy wzorzec interakcji dla obecnej ścieżki, wprowadź konkretną poprawę i ją sprawdź.",
+    ],
     prototype: [
       "Zaprojektuj skuteczną sprzedażowo stronę dla AI CRM z czytelną sekcją hero, opowieścią o funkcjach, dowodami skuteczności i CTA do wersji próbnej",
       "Stwórz desktopowy dashboard dla zespołowej bazy wiedzy z wyszukiwarką, ostatnimi aktualizacjami, uprawnieniami i punktami wejścia do współpracy",
@@ -5129,6 +5210,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "hu": {
+    "active-ui-development": [
+      "Alkalmazd a böngésző megjegyzéseit a meglévő webhelyen, és ellenőrizd a megjelölt elemek javításait.",
+      "Javítsd a meglévő felhasználói folyamatot a visszajelzések alapján, és ellenőrizd az érintett interakciókat.",
+      "Vizsgáld meg a meglévő webhely reszponzív elrendezését és billentyűzetes hozzáférhetőségét, majd javítsd a legfontosabb problémákat.",
+      "Kutass jobb interakciós mintát a jelenlegi folyamathoz, valósíts meg célzott javítást, és ellenőrizd.",
+    ],
     prototype: [
       "Tervezz magas konverziójú weboldalt egy AI CRM számára, jól látható hero szekcióval, funkciókat bemutató történettel, bizonyítékokkal és próbaverziós CTA-val",
       "Készíts asztali irányítópultot egy csapat tudásbázisához kereséssel, friss frissítésekkel, jogosultságokkal és együttműködési belépési pontokkal",
@@ -5167,6 +5254,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "fr": {
+    "active-ui-development": [
+      "Appliquez les annotations du navigateur au site existant et vérifiez les corrections sur les éléments marqués.",
+      "Améliorez le parcours existant à partir des retours et vérifiez les interactions concernées.",
+      "Vérifiez les mises en page adaptatives et l’accessibilité au clavier du site existant, puis corrigez les problèmes prioritaires.",
+      "Recherchez un meilleur modèle d’interaction pour le parcours actuel, appliquez une amélioration ciblée et vérifiez-la.",
+    ],
     prototype: [
       "Concevez un site web à fort taux de conversion pour un AI CRM, avec un hero clair, un récit des fonctionnalités, des preuves concrètes et un CTA d'essai",
       "Créez un dashboard desktop pour une base de connaissances d'équipe, avec recherche, mises à jour récentes, permissions et points d'entrée vers la collaboration",
@@ -5205,6 +5298,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "uk": {
+    "active-ui-development": [
+      "Застосуйте анотації браузера до наявного сайту та перевірте виправлення позначених елементів.",
+      "Покращте наявний шлях користувача за відгуками та перевірте пов’язані взаємодії.",
+      "Перевірте адаптивні макети й доступність із клавіатури наявного сайту та виправте найважливіші проблеми.",
+      "Дослідіть кращий шаблон взаємодії для поточного процесу, внесіть цільове покращення й перевірте його.",
+    ],
     prototype: [
       "Створіть вебсайт із високою конверсією для AI CRM із чітким hero-блоком, історією про функції, доказами цінності та CTA для пробного доступу",
       "Створіть десктопний дашборд для командної бази знань із пошуком, останніми оновленнями, правами доступу та точками входу для співпраці",
@@ -5243,6 +5342,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "tr": {
+    "active-ui-development": [
+      "Tarayıcı açıklamalarını mevcut siteye uygulayın ve işaretli öğelerdeki düzeltmeleri doğrulayın.",
+      "Mevcut kullanıcı akışını geri bildirime göre iyileştirin ve etkilenen etkileşimleri doğrulayın.",
+      "Mevcut sitenin duyarlı düzenlerini ve klavye erişilebilirliğini inceleyin, ardından en etkili sorunları düzeltin.",
+      "Mevcut akış için daha iyi bir etkileşim modeli araştırın, odaklı bir iyileştirme uygulayın ve doğrulayın.",
+    ],
     prototype: [
       "AI CRM için net bir hero alanı, özellik hikayesi, kanıt noktaları ve deneme CTA'sı içeren, dönüşümü yüksek bir website tasarla",
       "Bir ekip bilgi tabanı için arama, son güncellemeler, izinler ve iş birliği giriş noktaları içeren bir masaüstü kontrol paneli oluştur",
@@ -5281,6 +5386,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "th": {
+    "active-ui-development": [
+      "นำคำอธิบายประกอบจากเบราว์เซอร์ไปแก้ไขเว็บไซต์เดิมและตรวจสอบผลที่องค์ประกอบที่ทำเครื่องหมายไว้",
+      "ปรับปรุงขั้นตอนผู้ใช้เดิมตามความคิดเห็นและตรวจสอบการโต้ตอบที่เกี่ยวข้อง",
+      "ตรวจสอบเลย์เอาต์ที่รองรับหลายขนาดจอและการเข้าถึงด้วยแป้นพิมพ์ของเว็บไซต์เดิม แล้วแก้ไขปัญหาที่มีผลกระทบสูงสุด",
+      "ค้นคว้ารูปแบบการโต้ตอบที่เหมาะกับขั้นตอนปัจจุบัน ปรับปรุงเฉพาะจุดและตรวจสอบผล",
+    ],
     prototype: [
       "ออกแบบเว็บไซต์ที่กระตุ้นการเปลี่ยนเป็นลูกค้าสำหรับ AI CRM พร้อม hero ที่ชัดเจน เรื่องราวฟีเจอร์ จุดพิสูจน์ความน่าเชื่อถือ และ CTA ทดลองใช้",
       "สร้างแดชบอร์ดบนเดสก์ท็อปสำหรับฐานความรู้ของทีม พร้อมการค้นหา อัปเดตล่าสุด สิทธิ์การเข้าถึง และจุดเริ่มต้นการทำงานร่วมกัน",
@@ -5319,6 +5430,12 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
     ],
   },
   "it": {
+    "active-ui-development": [
+      "Applica le annotazioni del browser al sito esistente e verifica le correzioni sugli elementi segnati.",
+      "Migliora il flusso utente esistente in base al feedback e verifica le interazioni coinvolte.",
+      "Controlla i layout adattabili e l’accessibilità da tastiera del sito esistente, poi correggi i problemi più importanti.",
+      "Ricerca un modello di interazione migliore per il flusso attuale, implementa un miglioramento mirato e verificalo.",
+    ],
     prototype: [
       "Progetta un sito web ad alta conversione per un AI CRM con una hero chiara, lo storytelling delle funzionalità, prove concrete e una CTA per la prova gratuita",
       "Crea una dashboard desktop per la knowledge base di un team con ricerca, aggiornamenti recenti, permessi e punti di accesso alla collaborazione",
@@ -5359,6 +5476,7 @@ const HOME_PROMPT_EXAMPLES: Record<Locale, Record<string, string[]>> = {
 };
 
 export const HOME_PROMPT_EXAMPLE_CHIP_IDS = [
+  'active-ui-development',
   'prototype',
   'deck',
   'image',

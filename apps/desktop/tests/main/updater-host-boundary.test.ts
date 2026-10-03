@@ -74,7 +74,8 @@ describe("desktop updater host boundary", () => {
     const wiring = main.slice(wiringStart, wiringEnd > wiringStart ? wiringEnd : undefined);
     expect(wiring).toContain("catch {\n              return null;");
     expect(wiring.match(/return null;/g)).toHaveLength(2);
-    expect(wiring).toContain("catch {\n              return false;");
+    const registration = wiring.slice(wiring.indexOf("registerDesktopAuth: async (secret) => {"));
+    expect(registration).toMatch(/catch(?:\s*\([^)]*\))?\s*\{[\s\S]*?return false;/);
   });
 
   it("keeps obsolete installed-outer policy outside generic desktop while exposing the SHOW hook", () => {

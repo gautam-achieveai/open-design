@@ -14,6 +14,9 @@ import {
 } from "react";
 import { createPortal } from 'react-dom';
 import { Button } from '@open-design/components';
+import { BrowserAnnotationDraftCard } from './chat/BrowserAnnotationDraftCard';
+import { chatSeam } from './chat/ChatRoot';
+import annotationDraftStyles from './chat/BrowserAnnotationDraftCard.module.css';
 import { ThinkingOrb } from './composer/ThinkingOrb';
 import { useI18n } from '../i18n';
 import { localizePluginDescription, localizePluginTitle } from './plugins-home/localization';
@@ -703,7 +706,18 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     const [selectedAnnotationImageIds, setSelectedAnnotationImageIds] = useState<string[]>(
       () => restoredExtrasRef.current.annotationImageIds ?? [],
     );
+    const [hiddenAnnotationIds, setHiddenAnnotationIds] = useState<string[]>(
+      () => restoredExtrasRef.current.hiddenAnnotationIds ?? [],
+    );
+    const hiddenAnnotations = hiddenAnnotationIds.map((id) => annotationDrafts.find((item) =>
+      item.id === id && item.projectId === projectId && item.conversationId === conversationId));
+    const awaitingAnnotationContext = hiddenAnnotations.some((item) => !item);
     const [annotationPreviewId, setAnnotationPreviewId] = useState<string | null>(null);
+    const annotationPreviewTriggerRef = useRef<HTMLElement | null>(null);
+    function closeAnnotationPreview() {
+      setAnnotationPreviewId(null);
+      annotationPreviewTriggerRef.current?.focus();
+    }
     const [annotationDiscardError, setAnnotationDiscardError] = useState<string | null>(null);
     const streamingAnnotationSendPendingRef = useRef(false);
     // Remembers the entry_from that the deferred streaming send must carry once
@@ -1060,10 +1074,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
         Math.max(0, DRAFT_MAX_ANNOTATIONS - selectedAnnotationIds.length));
       if (unseen.length === 0) return;
       for (const item of unseen) appliedAnnotationIdsRef.current.add(item.id);
-      const next = [draftRef.current, ...unseen.map((item) => item.note ?? item.text)].filter(Boolean).join('\n\n');
-      draftRef.current = next;
-      setDraft(next);
-      editorRef.current?.setText(next);
+      setHiddenAnnotationIds((current) => sanitizeAnnotationIds([...current, ...unseen.map((item) => item.id)]));
       setSelectedAnnotationIds((current) => sanitizeAnnotationIds([...current, ...unseen.map((item) => item.id)]));
       setSelectedAnnotationImageIds((current) => sanitizeAnnotationIds([...current,
         ...unseen.filter((item) => item.hasScreenshot).map((item) => item.id)]));
@@ -1146,6 +1157,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
         quotes: quotes ?? [],
         annotationIds: selectedAnnotationIds,
         annotationImageIds: selectedAnnotationImageIds,
+        hiddenAnnotationIds,
         context: {
           skillIds: stagedSkills.map((item) => item.id),
           mcpServerIds: stagedMcpServers.map((item) => item.id),
@@ -1163,6 +1175,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       quotes,
       selectedAnnotationIds,
       selectedAnnotationImageIds,
+      hiddenAnnotationIds,
       stagedSkills,
       stagedMcpServers,
       stagedConnectors,
@@ -1516,6 +1529,9 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
           setStaged(orderedAttachments);
           nextAttachmentOrderRef.current = nextChatAttachmentOrder(orderedAttachments);
           setStagedVisualComments(commentAttachments);
+          // Queued text already contains its notes; never compose them twice.
+          setHiddenAnnotationIds([]);
+          for (const id of sanitizeAnnotationIds(meta?.annotationIds)) appliedAnnotationIdsRef.current.add(id);
           setSelectedAnnotationIds(sanitizeAnnotationIds(meta?.annotationIds));
           setSelectedAnnotationImageIds(sanitizeAnnotationIds(meta?.annotationImageIds).filter((id) =>
             sanitizeAnnotationIds(meta?.annotationIds).includes(id)));
@@ -1607,6 +1623,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       setStagedVisualComments([]);
       draftRef.current = '';
       setSelectedAnnotationIds([]);
+      setHiddenAnnotationIds([]);
       setSelectedAnnotationImageIds([]);
       setAnnotationPreviewId(null);
       setStagedSkills([]);
@@ -1736,7 +1753,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
      * 清空芯片必须意味着「已经带走」(OPEND-2551 同一族)。
      */
     function composeOutgoingPrompt(body: string): string {
-      return `${quotePromptPrefix(quotes ?? [])}${body}`.trim();
+      const notes = hiddenAnnotations.map((item) => item?.note ?? item?.text ?? '').filter(Boolean);
+      return `${quotePromptPrefix(quotes ?? [])}${[body, ...notes].filter(Boolean).join('\n\n')}`.trim();
     }
 
     function sendComposedTurn(
@@ -1745,6 +1763,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       nextCommentAttachments: ChatCommentAttachment[],
       meta?: ChatSendMeta,
     ): boolean {
+      if (awaitingAnnotationContext) return false;
       setStreamingAnnotationSendPending(false);
       if (!prompt && attachments.length === 0 && nextCommentAttachments.length === 0
         && selectedAnnotationIds.length === 0) return false;
@@ -2532,6 +2551,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
             acked = true;
             detail.ack?.(result);
           };
+          if (awaitingAnnotationContext && (detail.action === 'send' || detail.action === 'queue')) {
+            ack({ ok: false, message: t('chat.annotationContextLoading') });
+            return;
+          }
           let uploaded: ChatAttachment[] = [];
           let visualAttachmentInput: Parameters<typeof buildVisualAnnotationAttachment>[0] | null = null;
           let visualAttachment: ChatCommentAttachment | null = null;
@@ -2640,8 +2663,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
               const nextCommentAttachments = currentCommentAttachments(visualAttachment ? [visualAttachment] : []);
               // Mark draw-overlay → run: tag entry_from='mark' so the dashboard
               // separates annotation-driven runs from plain composer sends.
-              sendComposedTurn(prompt, attachments, nextCommentAttachments, { ...queueMeta(currentRunContextMeta()), entryFrom: 'mark' });
-              ack({ ok: true });
+              const accepted = sendComposedTurn(prompt, attachments, nextCommentAttachments, { ...queueMeta(currentRunContextMeta()), entryFrom: 'mark' });
+              ack(accepted ? { ok: true } : { ok: false, message: t('chat.annotationFailed') });
               return;
             }
 
@@ -2668,8 +2691,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
               const nextCommentAttachments = currentCommentAttachments(visualAttachment ? [visualAttachment] : []);
               // Mark draw-overlay → run: tag entry_from='mark' so the dashboard
               // separates annotation-driven runs from plain composer sends.
-              sendComposedTurn(prompt, attachments, nextCommentAttachments, { ...currentRunContextMeta(), entryFrom: 'mark' });
-              ack({ ok: true });
+              const accepted = sendComposedTurn(prompt, attachments, nextCommentAttachments, { ...currentRunContextMeta(), entryFrom: 'mark' });
+              ack(accepted ? { ok: true } : { ok: false, message: t('chat.annotationFailed') });
               return;
             }
 
@@ -2698,6 +2721,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       projectId,
       // 引用要折进这条路发出去的正文,闭包必须拿到当下这一份。
       quotes,
+      annotationDrafts,
+      hiddenAnnotationIds,
+      selectedAnnotationIds,
+      selectedAnnotationImageIds,
       selectedWorkspaceContexts,
       staged,
       stagedConnectors,
@@ -2729,7 +2756,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     useEffect(() => {
       if (!streamingAnnotationSendPending || !streamingAnnotationSendPendingRef.current) return;
-      if (streaming || sendDisabled) return;
+      if (streaming || sendDisabled || awaitingAnnotationContext) return;
       // Read the ref, not the closed-over `draft`: the accumulating annotation
       // handler writes draftRef synchronously, so the ref is authoritative even
       // if this effect's render closure predates the last accumulation.
@@ -2756,6 +2783,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       stagedVisualComments,
       streaming,
       streamingAnnotationSendPending,
+      annotationDrafts,
+      hiddenAnnotationIds,
+      selectedAnnotationIds,
+      selectedAnnotationImageIds,
     ]);
 
     // Paste handler invoked by the editor's PastePlugin. `files` are the items
@@ -3108,21 +3139,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
           'x-od-workspace-member-id': workspaceContext.workspaceMemberId,
         } } : {}) });
         if (!response.ok) throw new Error(t('chat.annotationFailed'));
-        const annotation = annotationDrafts.find((item) => item.id === id);
-        const note = annotation?.note ?? annotation?.text;
-        if (note) {
-          const text = draftRef.current;
-          let index = text.lastIndexOf(note);
-          while (index >= 0 && (index > 0 && text.slice(index - 2, index) !== '\n\n'
-            || index + note.length < text.length && text.slice(index + note.length, index + note.length + 2) !== '\n\n')) {
-            index = text.lastIndexOf(note, index - 1);
-          }
-          if (index >= 0) {
-            const start = index >= 2 ? index - 2 : index;
-            const end = index + note.length + (start === index && text.length > index + note.length ? 2 : 0);
-            replaceEditorDraft(text.slice(0, start) + text.slice(end));
-          }
-        }
+        // The editor belongs to the user, including notes pasted by older versions.
+        setHiddenAnnotationIds((current) => current.filter((item) => item !== id));
         setSelectedAnnotationIds((current) => current.filter((item) => item !== id));
         setSelectedAnnotationImageIds((current) => current.filter((item) => item !== id));
         setAnnotationPreviewId((current) => current === id ? null : current);
@@ -3296,6 +3314,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       && placeholderScenarios.length > 0
       && draft.trim().length === 0
       && staged.length === 0
+      && selectedAnnotationIds.length === 0
       && liveCommentAttachments.length === 0
       && !mention
       && !slash;
@@ -3320,7 +3339,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
      * 而引用**是折进正文的**,所以同一时刻它非空。同一个问题、两处各算各的,
      * 早晚会分叉;分叉之后症状出现在离原因最远的地方(用户看到的是「按钮坏了」)。
      */
-    const canSend = !sendDisabled && hasComposerPayload;
+    const canSend = !sendDisabled && !awaitingAnnotationContext && hasComposerPayload;
     /**
      * 摆到台面上的那枚「已应用插件」芯片(OPEND-2412)。
      *
@@ -3589,68 +3608,60 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
           {/* 待发送附件自己占一个托盘,不和 plugin / skill / MCP 芯片挤在同一行:
               稿子的 `.composer > .tray` 只装附件(盘点 #60 第 5 条)。 */}
           {selectedAnnotationIds.length > 0 ? (
-            <div className="composer-browser-annotations" data-testid="staged-browser-annotation-notes">
-              {selectedAnnotationIds.map((id) => (
-                <span key={id} className="user-attachment staged-comment">
-                  {projectId && conversationId ? <a className="staged-name"
-                    href={workspaceResourceUrl(
-                      `/api/projects/${encodeURIComponent(projectId)}/edge-annotations/pending/${encodeURIComponent(id)}/context?conversationId=${encodeURIComponent(conversationId)}`,
+            <div className="composer-att-wrap" data-testid="staged-browser-annotation-notes">
+              <div className="composer-att" data-testid="staged-browser-annotations">
+                {selectedAnnotationIds.map((id) => (
+                  <BrowserAnnotationDraftCard key={id}
+                    imageUrl={selectedAnnotationImageIds.includes(id) && projectId && conversationId ? workspaceResourceUrl(
+                      `/api/projects/${encodeURIComponent(projectId)}/edge-annotations/pending/${encodeURIComponent(id)}/image?conversationId=${encodeURIComponent(conversationId)}`,
                       workspaceContext,
-                    )} target="_blank" rel="noreferrer" aria-label="annotation-context.json">annotation-context.json</a>
-                    : <span className="staged-name">annotation-context.json</span>}
-                  <button type="button" onClick={() => void discardBrowserAnnotation(id)}
-                    aria-label={t('chat.comments.removeAttachment')}><ChatCloseIcon size={10} /></button>
-                </span>
-              ))}
+                    ) : undefined}
+                    onPreview={(trigger) => { annotationPreviewTriggerRef.current = trigger; setAnnotationPreviewId(id); }}
+                    onRemove={() => void discardBrowserAnnotation(id)} t={t} />
+                ))}
+              </div>
             </div>
           ) : null}
           {annotationDiscardError ? <p role="alert">{annotationDiscardError}</p> : null}
+          {awaitingAnnotationContext ? <p role="status">{t('chat.annotationContextLoading')}</p> : null}
           {waitingAnnotationCount > 0 ? (
             <p role="status" className="composer-browser-annotation-overflow">
               {t('chat.edge.pendingOverflow', { count: waitingAnnotationCount, limit: DRAFT_MAX_ANNOTATIONS })}
             </p>
           ) : null}
-          {selectedAnnotationImageIds.length > 0 && projectId && conversationId ? (
-            <div className="composer-att-wrap" data-testid="staged-browser-annotations">
-              <div className="composer-att">
-                {selectedAnnotationImageIds.map((id) => {
-                  const previewUrl = workspaceResourceUrl(
-                    `/api/projects/${encodeURIComponent(projectId)}/edge-annotations/pending/${encodeURIComponent(id)}/image?conversationId=${encodeURIComponent(conversationId ?? '')}`,
-                    workspaceContext,
-                  );
-                  return (
-                    <span key={id} className="msg-att-img" data-testid="staged-browser-annotation-image">
-                      <span className="msg-att-ph">
-                        <button type="button" className="msg-att-mini-btn"
-                          onClick={() => setAnnotationPreviewId(id)}
-                          aria-label={t('chat.attachments.preview', { name: t('chat.annotationAttachedImages') })}>
-                          <img className="msg-att-mini" src={previewUrl} alt="" aria-hidden />
-                        </button>
-                      </span>
-                      <button type="button" className="msg-att-del" onClick={() => {
-                        setSelectedAnnotationImageIds((current) => current.filter((item) => item !== id));
-                        setAnnotationPreviewId((current) => current === id ? null : current);
-                      }} aria-label={t('chat.annotationAttachedRemove')}><ChatCloseIcon size={10} /></button>
-                    </span>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
           {annotationPreviewId && projectId && conversationId ? createPortal(
-            <div className="staged-preview-modal" role="dialog" aria-modal="true"
+            <div {...chatSeam('staged-preview-modal')} role="dialog" aria-modal="true"
               aria-label={t('chat.annotationAttachedImages')}
-              onMouseDown={(event) => { if (event.target === event.currentTarget) setAnnotationPreviewId(null); }}>
+              onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); closeAnnotationPreview(); } }}
+              onMouseDown={(event) => { if (event.target === event.currentTarget) closeAnnotationPreview(); }}>
               <div className="staged-preview-card">
                 <div className="staged-preview-head">
                   <span>{t('chat.annotationAttachedImages')}</span>
-                  <button type="button" className="icon-only" onClick={() => setAnnotationPreviewId(null)}
-                    aria-label={t('common.close')}><Icon name="close" size={14} /></button>
+                  <Button variant="ghost" autoFocus onClick={closeAnnotationPreview}
+                    aria-label={t('common.close')}><Icon name="close" size={14} /></Button>
                 </div>
-                <img src={workspaceResourceUrl(
-                  `/api/projects/${encodeURIComponent(projectId)}/edge-annotations/pending/${encodeURIComponent(annotationPreviewId)}/image?conversationId=${encodeURIComponent(conversationId ?? '')}`,
-                  workspaceContext,
-                )} alt={t('chat.annotationAttachedImages')} />
+                <div className={annotationDraftStyles.details}>
+                  {selectedAnnotationImageIds.includes(annotationPreviewId) ? <img src={workspaceResourceUrl(
+                    `/api/projects/${encodeURIComponent(projectId)}/edge-annotations/pending/${encodeURIComponent(annotationPreviewId)}/image?conversationId=${encodeURIComponent(conversationId)}`,
+                    workspaceContext,
+                  )} alt={t('chat.annotationAttachedImages')} /> : null}
+                  {annotationDrafts.filter((item) => item.id === annotationPreviewId && item.projectId === projectId && item.conversationId === conversationId).map((item) => (
+                    <div key={item.id}>
+                      <p>{item.note ?? item.text}</p>
+                      {item.evidence ? <pre>{JSON.stringify(item.evidence, null, 2)}</pre> : null}
+                    </div>
+                  ))}
+                  <a href={workspaceResourceUrl(
+                    `/api/projects/${encodeURIComponent(projectId)}/edge-annotations/pending/${encodeURIComponent(annotationPreviewId)}/context?conversationId=${encodeURIComponent(conversationId)}`,
+                    workspaceContext,
+                  )} target="_blank" rel="noreferrer">annotation-context.json</a>
+                  {selectedAnnotationImageIds.includes(annotationPreviewId) ? (
+                    <Button variant="ghost" aria-label={t('chat.annotationAttachedRemove')}
+                      onClick={() => setSelectedAnnotationImageIds((current) => current.filter((id) => id !== annotationPreviewId))}>
+                      {t('chat.annotationAttachedRemove')}
+                    </Button>
+                  ) : null}
+                </div>
               </div>
             </div>, document.body,
           ) : null}

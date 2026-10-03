@@ -790,4 +790,13 @@ const ANNOTATION_STYLE_KEYS = [
   'paddingBottom',
   'paddingLeft',
   'borderRadius',
+  'opacity',
+  'borderColor',
+  'borderWidth',
+  'width',
+  'height',
+  'marginTop',
+  'marginRight',
+  'marginBottom',
+  'marginLeft',
 ] as const;

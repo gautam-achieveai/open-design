@@ -7,6 +7,7 @@
  * adapter-result normalizers, and the renderer-facing action wrappers. This
  * file contains no logic.
  */
+export { getHostBrowserPopups } from './actions.js';
 
 // --- protocol: constant registries + wire types ---
 export {
@@ -18,6 +19,11 @@ export {
   OPEN_DESIGN_HOST_UPDATER_STATES,
 } from "./protocol.js";
 export type {
+  OpenDesignHostBrowserPopup,
+  OpenDesignHostBrowserPopupEvent,
+  OpenDesignHostBrowserPopupRequest,
+  OpenDesignHostBrowserPopupCommand,
+  OpenDesignHostBrowserPopupResult,
   OpenDesignHostClientType,
   OpenDesignHostClient,
   OpenDesignHostFailure,

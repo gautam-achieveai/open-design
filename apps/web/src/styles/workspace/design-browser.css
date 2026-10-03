@@ -59,6 +59,53 @@
   min-width: 0;
   max-width: 100%;
 }
+.db-viewport-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.od-select.db-viewport-select {
+  width: 44px;
+  flex: 0 0 auto;
+}
+.db-viewport-select .db-viewport-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 44px;
+  height: 32px;
+  min-height: 32px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--bg-panel);
+}
+.db-viewport-select .od-select-value,
+.db-viewport-menu .od-select-option-label,
+.db-viewport-select .od-select-icon,
+.db-viewport-menu .od-select-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.db-viewport-select .db-viewport-trigger .od-select-icon svg {
+  transform: none;
+  color: inherit;
+  pointer-events: none;
+}
+.db-viewport-select .db-viewport-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.db-viewport-control output {
+  color: var(--text-soft);
+  font-size: 10px;
+  white-space: nowrap;
+}
 .db-actions {
   position: relative;
   justify-content: flex-end;
@@ -161,7 +208,7 @@
 .db-browser-diagnostics-head span {
   color: var(--accent-strong);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .db-browser-diagnostics-refresh {
   width: 28px;
@@ -226,7 +273,7 @@
 .db-browser-diagnostics-method {
   color: var(--accent-strong);
   font-size: 9px;
-  font-weight: 750;
+  font-weight: 700;
   text-transform: uppercase;
 }
 .db-browser-diagnostics-value {
@@ -894,6 +941,29 @@
   z-index: 360;
   isolation: isolate;
 }
+.design-browser .db-inspect-panel.is-embedded {
+  position: static;
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+.design-browser .db-inspect-panel.is-embedded .inspect-row input[type='number'] {
+  width: 118px;
+  max-width: 100%;
+  min-width: 0;
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
 .db-inspect-text {
   min-height: 96px;
   resize: vertical;
@@ -941,8 +1011,14 @@
 
 @container design-browser (max-width: 760px) {
   .db-chrome {
+    flex-wrap: wrap;
     gap: 6px;
     padding-inline: 8px;
+  }
+  .db-viewport-control {
+    order: 4;
+    width: 100%;
+    justify-content: flex-end;
   }
   .db-address-form {
     min-width: 120px;

@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const ptBR: Dict = {
+  "homeHero.chip.activeUiDevelopment": "Desenvolvimento ativo de UI",
+  "homeHero.chip.activeUiDevelopmentDesc": "Melhore um site existente com feedback do navegador",
+  "homeHero.chip.activeUiDevelopmentHint": "Abra ou importe o projeto-fonte existente e compartilhe uma URL de prévia ou anotações.",
+  "homeHero.uiDevelopmentTitle": "Vamos melhorar sua UI",
+  "homeHero.uiDevelopmentSubtitle": "Abra ou importe o projeto-fonte existente e compartilhe uma URL de prévia ou anotações.",
   'billing.wallet': 'Saldo da carteira',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} horas',
@@ -2213,6 +2218,7 @@ export const ptBR: Dict = {
   'chat.annotationSentWithoutScreenshot': 'Não foi possível capturar a pré-visualização. A anotação foi enviada sem captura de tela.',
   'chat.annotationCaptureDisclosure': "O texto digitado foi ocultado na captura; bordas e fundos originais foram preservados. Controles não compatíveis permanecem mascarados.",
   'chat.annotationTimeout': 'O envio da anotação expirou. Tente novamente.',
+  'chat.annotationContextLoading': "Carregando detalhes da anotação…",
   'chat.annotationFailed': 'Falha ao enviar a anotação. Tente novamente.',
   'chat.annotationProjectCreateFailed': 'Não foi possível criar um projeto, então a anotação não foi enviada.',
   'chat.annotationUploadFailed': 'Falha ao enviar o anexo. Tente novamente.',

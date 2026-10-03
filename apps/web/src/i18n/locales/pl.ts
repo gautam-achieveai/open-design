@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const pl: Dict = {
+  "homeHero.chip.activeUiDevelopment": "Aktywny rozwój UI",
+  "homeHero.chip.activeUiDevelopmentDesc": "Ulepsz istniejącą witrynę dzięki uwagom z przeglądarki",
+  "homeHero.chip.activeUiDevelopmentHint": "Otwórz lub zaimportuj istniejący projekt źródłowy, a następnie podaj adres podglądu lub adnotacje.",
+  "homeHero.uiDevelopmentTitle": "Ulepszmy Twój interfejs",
+  "homeHero.uiDevelopmentSubtitle": "Otwórz lub zaimportuj istniejący projekt źródłowy, a następnie podaj adres podglądu lub adnotacje.",
   'billing.wallet': 'Saldo portfela',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} godz.',
@@ -2213,6 +2218,7 @@ export const pl: Dict = {
   'chat.annotationSentWithoutScreenshot': 'Nie udało się przechwycić podglądu. Adnotacja została wysłana bez zrzutu ekranu.',
   'chat.annotationCaptureDisclosure': "Wpisany tekst ukryto podczas przechwytywania; zachowano oryginalne obramowania i tła. Nieobsługiwane kontrolki pozostają zamaskowane.",
   'chat.annotationTimeout': 'Przekroczono limit czasu wysyłania adnotacji. Spróbuj ponownie.',
+  'chat.annotationContextLoading': "Wczytywanie szczegółów adnotacji…",
   'chat.annotationFailed': 'Nie udało się wysłać adnotacji. Spróbuj ponownie.',
   'chat.annotationProjectCreateFailed': 'Nie udało się utworzyć projektu, więc adnotacja nie została wysłana.',
   'chat.annotationUploadFailed': 'Nie udało się przesłać załącznika. Spróbuj ponownie.',

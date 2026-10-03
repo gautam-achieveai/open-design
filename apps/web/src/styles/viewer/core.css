@@ -2057,6 +2057,98 @@
   border-color: var(--red-border);
   color: var(--red);
 }
+
+/* Browser annotations keep the note/actions outside the expandable scroller. */
+.comment-popover-compact {
+  padding: 0;
+  border-radius: 24px;
+  background: var(--bg-panel);
+}
+.comment-popover-compact.comment-popover-expanded {
+  border-radius: 20px;
+}
+.comment-popover-compact-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  min-width: 0;
+}
+.comment-popover-compact-bar textarea {
+  flex: 1 1 auto;
+  width: 0;
+  min-width: 0;
+  min-height: 32px;
+  height: 32px;
+  max-height: 80px;
+  padding: 6px 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+  line-height: 20px;
+}
+.comment-popover-compact-bar textarea:focus-visible {
+  outline: 2px solid var(--border-strong);
+  outline-offset: -2px;
+}
+.comment-popover-compact-bar .comment-popover-actions,
+.comment-popover-compact-bar .comment-popover-actions-start,
+.comment-popover-compact-bar .comment-popover-actions-end {
+  flex-wrap: nowrap;
+  gap: 2px;
+  margin: 0;
+}
+.comment-popover-compact-bar button {
+  flex: 0 0 auto;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+}
+.comment-popover-compact-bar .comment-popover-close {
+  position: relative;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.comment-popover-attachment-count {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 2px;
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-size: 9px;
+  line-height: 12px;
+}
+.comment-popover-compact-bar button[aria-expanded="true"] {
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+.comment-popover-compact .comment-popover-body > :not(:empty) {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.comment-popover-compact .comment-popover-body > :empty {
+  display: none;
+}
+.comment-popover-compact-styles {
+  min-width: 0;
+}
+.comment-popover-style-controls {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
 /* Right-side comment thread panel. Shown while board (comment) mode
    is on; it docks beside the artifact preview so canvas clicks remain
    available for placing comments. */

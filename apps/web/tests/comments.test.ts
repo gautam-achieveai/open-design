@@ -39,6 +39,21 @@ function commentAttachment(
 }
 
 describe('preview comment attachment helpers', () => {
+  it('retains remaining measured style-menu fields in a chat draft and its context', () => {
+    const style = {
+      opacity: '0.8', borderColor: 'rgb(32, 33, 36)', borderWidth: '1px', width: '600px',
+      height: '20.1562px', marginTop: '0px', marginRight: '1px', marginBottom: '12px', marginLeft: '-2px',
+    };
+    const target = targetFromSnapshot({
+      filePath: 'browser:https://example.test', elementId: 'heading', selector: 'h1', label: 'h1',
+      text: 'Heading', htmlHint: 'h1', position: { x: 10, y: 20, width: 600, height: 20 }, style,
+    });
+    const attachments = buildBoardCommentAttachments({ target, notes: ['Refine the heading'] });
+    expect(attachments[0]?.style).toEqual(style);
+    const context = messageContentWithCommentAttachments('', attachments);
+    for (const [key, value] of Object.entries(style)) expect(context).toContain(`${key}: ${value}`);
+  });
+
   it('builds compact target context from an iframe snapshot', () => {
     const target = targetFromSnapshot({
       filePath: 'index.html',

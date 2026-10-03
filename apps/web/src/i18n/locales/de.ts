@@ -1,6 +1,11 @@
 import type { Dict } from '../types';
 
 export const de: Dict = {
+  "homeHero.chip.activeUiDevelopment": "Aktive UI-Entwicklung",
+  "homeHero.chip.activeUiDevelopmentDesc": "Bestehende Websites mit Browser-Feedback verbessern",
+  "homeHero.chip.activeUiDevelopmentHint": "Öffne oder importiere das bestehende Quellprojekt und teile dann eine Vorschau-URL oder Anmerkungen.",
+  "homeHero.uiDevelopmentTitle": "Verbessern wir deine UI",
+  "homeHero.uiDevelopmentSubtitle": "Öffne oder importiere das bestehende Quellprojekt und teile dann eine Vorschau-URL oder Anmerkungen.",
   'billing.wallet': 'Wallet-Guthaben',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} Stunden',
@@ -2213,6 +2218,7 @@ export const de: Dict = {
   'chat.annotationSentWithoutScreenshot': 'Vorschau konnte nicht erfasst werden. Die Anmerkung wurde ohne Screenshot gesendet.',
   'chat.annotationCaptureDisclosure': "Eingegebener Text wurde bei der Aufnahme ausgeblendet; originale Feldränder und Hintergründe bleiben erhalten. Nicht unterstützte Steuerelemente bleiben maskiert.",
   'chat.annotationTimeout': 'Zeitüberschreitung beim Senden der Annotation. Bitte versuche es erneut.',
+  'chat.annotationContextLoading': "Anmerkungsdetails werden geladen…",
   'chat.annotationFailed': 'Senden der Anmerkung fehlgeschlagen. Bitte versuche es erneut.',
   'chat.annotationProjectCreateFailed': 'Es konnte kein Projekt erstellt werden, daher wurde die Anmerkung nicht gesendet.',
   'chat.annotationUploadFailed': 'Hochladen des Anhangs fehlgeschlagen. Bitte versuche es erneut.',

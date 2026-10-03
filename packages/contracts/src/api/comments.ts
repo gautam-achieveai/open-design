@@ -28,6 +28,15 @@ export interface PreviewAnnotationStyle {
   paddingBottom?: string;
   paddingLeft?: string;
   borderRadius?: string;
+  opacity?: string;
+  borderColor?: string;
+  borderWidth?: string;
+  width?: string;
+  height?: string;
+  marginTop?: string;
+  marginRight?: string;
+  marginBottom?: string;
+  marginLeft?: string;
 }
 
 export type PreviewCommentSelectionKind = 'element' | 'pod';

@@ -1,6 +1,11 @@
 import type { Dict } from "../types";
 
 export const zhCN: Dict = {
+  "homeHero.chip.activeUiDevelopment": "持续 UI 开发",
+  "homeHero.chip.activeUiDevelopmentDesc": "通过浏览器反馈改进现有网站",
+  "homeHero.chip.activeUiDevelopmentHint": "打开或导入现有源码项目，然后提供预览网址或批注。",
+  "homeHero.uiDevelopmentTitle": "一起改进现有界面",
+  "homeHero.uiDevelopmentSubtitle": "打开或导入现有源码项目，然后提供预览网址或批注。",
   'billing.wallet': '钱包余额',
   'billing.codingPlanDesignPlan': 'Design Plan',
   'billing.codingPlanPeriodHours': '{count} 小时',
@@ -2280,6 +2285,7 @@ export const zhCN: Dict = {
   "chat.annotationSentWithoutScreenshot":
     "未能截取预览，已发送标注（不含截图）。",
   "chat.annotationTimeout": "标注发送超时，请重试",
+  'chat.annotationContextLoading': "正在加载标注详情…",
   "chat.annotationFailed": "标注发送失败，请重试",
   "chat.annotationProjectCreateFailed": "无法创建项目，标注未发送",
   "chat.annotationUploadFailed": "附件上传失败，请重试",
