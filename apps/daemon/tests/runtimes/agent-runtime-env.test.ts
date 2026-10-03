@@ -319,6 +319,15 @@ describe('agent runtime tool environment', () => {
     expect(prompt).toContain('`OD_HYPERFRAMES_BIN`');
     expect(prompt).toContain('`"$OD_NODE_BIN" "$OD_BIN" tools ...`');
     expect(prompt).toContain('& $env:OD_NODE_BIN $env:OD_BIN tools ...');
+    expect(prompt).toContain('"$OD_NODE_BIN" "$OD_BIN" browser --help');
+    expect(prompt).toContain('"$OD_NODE_BIN" "$OD_BIN" browser tabs --project "$OD_PROJECT_ID" --json');
+    expect(prompt).toContain('& $env:OD_NODE_BIN $env:OD_BIN browser tabs --project $env:OD_PROJECT_ID --json');
+    expect(prompt).toContain('"%OD_NODE_BIN%" "%OD_BIN%" browser tabs --project "%OD_PROJECT_ID%" --json');
+    expect(prompt).toContain('Do not claim browser access until discovery succeeds');
+    expect(prompt).toContain('## Browser: UI debugging and testing');
+    expect(prompt).toContain('preferred way to debug and test UI changes');
+    expect(prompt).toContain('Reproduce the issue in the intended live tab before editing');
+    expect(prompt).toContain('verify the same flow after the change');
     expect(prompt).toContain('`OD_TOOL_TOKEN` is available');
     expect(prompt).toContain('do not print, persist, or override it');
     expect(prompt).not.toContain('tools deliverable-syntax check --json');

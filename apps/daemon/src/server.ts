@@ -1910,6 +1910,12 @@ export function createAgentRuntimeToolPrompt(
     tokenLine,
     '- Prefer project wrapper commands through `OD_NODE_BIN` + `OD_BIN` over raw HTTP. The wrappers read these environment values automatically.',
     '- For dynamic Skill reads pass --workspace "$OD_WORKSPACE_ID" --workspace-member "$OD_WORKSPACE_MEMBER_ID" (use the corresponding environment-variable syntax on other shells). This pair is pinned to this run, not the UI\'s current Workspace. Both values are empty for unbound local runs; never substitute a different Workspace or member when either is missing.',
+    '',
+    '## Browser: UI debugging and testing',
+    '',
+    '- Use OpenDesign\'s Browser through the `browser` CLI commands as the preferred way to debug and test UI changes. Reproduce the issue in the intended live tab before editing; inspect DOM, screenshots, console and network evidence as relevant; then verify the same flow after the change. Check desktop/tablet/mobile viewports when the change affects responsive behavior. Supplement live browser checks with focused automated tests. If browser access is unavailable, report the missing UI verification and continue useful code checks without claiming a browser pass.',
+    '- Discover commands with `"$OD_NODE_BIN" "$OD_BIN" browser --help`, then list registered tabs with `"$OD_NODE_BIN" "$OD_BIN" browser tabs --project "$OD_PROJECT_ID" --json`. On PowerShell use `& $env:OD_NODE_BIN $env:OD_BIN browser tabs --project $env:OD_PROJECT_ID --json`; on cmd.exe use `"%OD_NODE_BIN%" "%OD_BIN%" browser tabs --project "%OD_PROJECT_ID%" --json`. Use the same shell syntax for the other browser commands.',
+    '- Do not claim browser access until discovery succeeds. If `OD_PROJECT_ID` is missing, no matching tab is registered, or discovery fails, report that limitation. Inspect the intended tab with `browser snapshot` or `browser inspect` and an explicit `--tab <tab-id>`; a URL/title alone is not page evidence. Consequential operations require user authorization and `--approve`.',
   ].join('\n');
 }
 

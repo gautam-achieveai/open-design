@@ -45,10 +45,9 @@ od:
 
 # Agent Browser
 
-Use `agent-browser` for local OpenDesign preview validation: inspect rendered
-state, click/type when requested, and capture one screenshot when visual evidence
-matters. Keep the browser local-first unless the user explicitly asks for
-external browsing.
+Use OpenDesign's daemon browser broker for an OpenDesign-owned browser tab.
+Use the external `agent-browser` CLI only for a separately requested external
+browser workflow. Capture one screenshot when visual evidence matters.
 
 When the run prompt contains selected workspace context, prefer the selected
 `browser` tab URL/title as the target. Treat user phrases like "this page",
@@ -56,9 +55,42 @@ When the run prompt contains selected workspace context, prefer the selected
 "take an element screenshot", or "check OG/a11y" as requests about that selected
 tab unless the user names another target.
 
+## OpenDesign-owned tabs
+
+Discover the existing broker before claiming browser access:
+
+```bash
+"$OD_NODE_BIN" "$OD_BIN" browser --help
+"$OD_NODE_BIN" "$OD_BIN" browser tabs --project "$OD_PROJECT_ID" --json
+"$OD_NODE_BIN" "$OD_BIN" browser snapshot --project "$OD_PROJECT_ID" --tab <selected-tab-id> --json
+```
+
+Replace `<selected-tab-id>` with the exact selected `tab` id from run context,
+quoted safely for your shell. Confirm it appears in the registered tabs first.
+If context has no tab id, confirm the intended tab from the list. Use `inspect`,
+`screenshot`, `console`, or `network` for additional evidence; `browser --help`
+documents their arguments. Read-only inspection does not require `--approve`.
+Consequential operations require user authorization and `--approve`.
+
+On PowerShell use `& $env:OD_NODE_BIN $env:OD_BIN browser tabs --project $env:OD_PROJECT_ID --json`.
+On cmd.exe use `"%OD_NODE_BIN%" "%OD_BIN%" browser tabs --project "%OD_PROJECT_ID%" --json`.
+Use the same launcher syntax for the other browser commands. Do not use bare
+`od`, which can resolve to the system octal-dump command on POSIX.
+
+If the project id is missing, the selected tab is absent, or inspection fails,
+report the limitation. Do not switch to another tab or invent page internals.
+Do not launch a separate browser or attach through remote CDP to replace an
+OpenDesign-owned tab. Do not install external browser tools as a fallback.
+
+## External browser workflow
+
+The remaining external CLI/CDP workflow applies only when the user separately
+requests a browser outside OpenDesign. It does not inspect an OpenDesign-owned
+tab or replace a failed broker connection.
+
 ## Requirements
 
-Verify the CLI before doing any browser work:
+Verify the external CLI before doing external browser work:
 
 ```bash
 command -v agent-browser
@@ -89,8 +121,8 @@ a temp file the same way.
 
 ## Browser Context Extraction
 
-For selected OpenDesign browser tabs and browser-use/browser-harness-style
-tasks, collect the smallest useful evidence first:
+For the separately requested external browser, collect the smallest useful
+evidence first:
 
 1. Confirm the target with `agent-browser get title` and `agent-browser get url`.
 2. Capture `agent-browser snapshot` before any extraction or click.
@@ -100,9 +132,8 @@ tasks, collect the smallest useful evidence first:
 4. For logos, fonts, colors, images, motion code, OG metadata, page structure,
    and accessibility checks, prefer DOM/CSS/accessibility evidence from the
    attached browser over guessing from the rendered screenshot alone.
-5. If the selected OpenDesign context only provided a URL/title and no browser
-   automation tool is attached, say that directly and do not invent page
-   internals.
+5. If no external browser automation tool is attached, say that directly and do
+   not invent page internals.
 
 Save extracted design evidence as compact notes or assets in the project when
 the user is building from the reference. Do not paste full page HTML or large
@@ -114,13 +145,6 @@ screenshots.
 `agent-browser` must attach to an existing CDP endpoint. Never run
 `agent-browser open` before `agent-browser connect`; doing so can make the CLI
 auto-launch Chrome and re-enter the crash path.
-
-Do not run OpenDesign's own daemon CLI as a browser automation tool. Commands
-such as `od browser snapshot`, `daemon-cli.mjs browser snapshot`, or
-`$OD_NODE_BIN $OD_BIN browser snapshot` are not valid browser tools; they can be
-misinterpreted as daemon startup and open an internal `127.0.0.1:<port>` service
-in the system browser. Use the external `agent-browser` CLI attached to CDP
-instead.
 
 Use this sequence:
 
@@ -162,7 +186,7 @@ If Chrome exits before CDP is ready or reports `DevToolsActivePort`, report:
 Lightpanda is optional. Do not try `--engine lightpanda` unless
 `command -v lightpanda` succeeds.
 
-## OpenDesign Smoke Path
+## External browser smoke path
 
 Use a temp home and stable session:
 
@@ -213,15 +237,14 @@ Expected success: title `OpenDesign`, current URL under `127.0.0.1:17573`,
 visible OpenDesign UI text in the snapshot, and a screenshot at
 `/tmp/od-agent-browser.png`.
 
-## Workflow
+## External browser workflow steps
 
 1. Verify `agent-browser` is installed.
 2. Redirect upstream docs to temp files; quote only relevant lines.
 3. Ensure CDP is reachable, starting Chrome with `open -na` if needed.
 4. Connect with `agent-browser connect http://127.0.0.1:9223`.
 5. Open the local preview URL.
-6. If the run prompt includes a selected browser workspace item, open or focus
-   that URL before inspecting.
+6. Confirm the separately requested external target before inspecting.
 7. Snapshot before selecting elements.
 8. Use selectors/refs from the latest snapshot; do not guess.
 9. Re-snapshot after navigation or UI state changes.

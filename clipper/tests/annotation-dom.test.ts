@@ -34,9 +34,15 @@ test('open-shadow internals retain root-local selectors and suppress sensitive h
     assert.deepEqual(Array.from(sent.target!.scope.shadowHosts), ['body > div']);
     assert.equal(app.messages.some(message => message.type === 'odAnnotation:capture'), false);
     assert.match(review.querySelector('.capture-status')!.textContent!, /not supported|annotationScopedScreenshot/);
+    const color = review.querySelector('[data-style="color"]') as HTMLInputElement;
+    color.value = '#112233'; color.dispatchEvent(new app.window.Event('change'));
     (review.querySelector('textarea') as HTMLTextAreaElement).value = 'Improve button';
     (review.querySelector('[data-act="send"]') as HTMLElement).click();
     await app.waitFor(() => app.messages.some(message => message.type === 'odAnnotation:submit'));
+    const reviews = app.messages.filter(message => message.type === 'odAnnotation:review');
+    assert.equal(reviews.length, 2);
+    assert.deepEqual(app.messages.find(message => message.type === 'odAnnotation:submit')!.target, reviews[1].target);
+    assert.equal(app.messages.find(message => message.type === 'odAnnotation:submit')!.omitScreenshot, true);
   } finally { app.window.close(); }
 });
 
@@ -53,7 +59,7 @@ test('editable controls remain annotatable while their entered contents are omit
   await fixture.waitFor(() => fixture.messages.some(message => message.type === 'odAnnotation:submit'));
 });
 
-function page(html: string, options: { captureError?: string; nearbyField?: boolean; submitError?: string } = {}) {
+function page(html: string, options: { captureError?: string; nearbyField?: boolean; submitError?: string; recaptureGate?: Promise<void> } = {}) {
   const dom = new JSDOM(`<!doctype html><html><head><title>Example</title></head><body>${html}</body></html>`, {
     url: 'https://app.example.test/page?view=designer&access_token=private#panel=hero&code=secret',
     runScripts: 'outside-only',
@@ -91,8 +97,10 @@ function page(html: string, options: { captureError?: string; nearbyField?: bool
       sendMessage: async (message: Sent) => {
         messages.push(message);
         if (message.type === 'odAnnotation:status') return { ok: true };
-        if (message.type === 'odAnnotation:capture') return options.captureError
-          ? { ok: false, error: options.captureError } : { ok: true, cropDataUrl: screenshot };
+        if (message.type === 'odAnnotation:capture') {
+          if (messages.filter(item => item.type === 'odAnnotation:capture').length > 1) await options.recaptureGate;
+          return options.captureError ? { ok: false, error: options.captureError } : { ok: true, cropDataUrl: screenshot };
+        }
         if (message.type === 'odAnnotation:submit') return options.submitError
           ? { ok: false, error: options.submitError } : { ok: true, messageId: 'message-1' };
         return { ok: true };
@@ -102,6 +110,11 @@ function page(html: string, options: { captureError?: string; nearbyField?: bool
   Object.assign(window, { chrome, ...(!options.submitError ? {
     OD_CLIPPER_I18N: { currentLocale: () => 'en', t: (key: string) => key },
   } : {}) });
+  Object.assign(window, { CSS: { supports: (property: string, value: string) => {
+    const style = document.createElement('div').style;
+    style.setProperty(property, value);
+    return style.getPropertyValue(property) !== '';
+  } } });
   window.crypto.randomUUID = () => 'event-1';
   window.eval(source);
   const waitFor = async (predicate: () => boolean) => {
@@ -265,7 +278,9 @@ test('extension review shows screenshot and note without technical text', async 
   try {
     app.window.eval(readFileSync(join(import.meta.dirname, '../i18n.js'), 'utf8'));
     const review = await app.start();
-    assert.deepEqual(Array.from(review.querySelectorAll('button'), (button) => button.getAttribute('data-act')), ['close', 'cancel', 'send']);
+    assert.deepEqual(Array.from(review.querySelectorAll('button'), (button) => button.getAttribute('data-act')), ['styles', 'send', 'close', 'cancel']);
+    assert.equal((review.querySelector('.details') as HTMLElement).hidden, true);
+    assert.equal(review.querySelector('[data-act="styles"]')!.getAttribute('aria-expanded'), 'false');
     assert.equal((review.querySelector('.preview') as HTMLImageElement).src, screenshot);
     assert.ok(review.querySelector('textarea'));
     assert.equal(review.querySelector('.review-url'), null);
@@ -274,6 +289,142 @@ test('extension review shows screenshot and note without technical text', async 
     const i18n = (app.window as unknown as { OD_CLIPPER_I18N: { t: (key: string) => string } }).OD_CLIPPER_I18N;
     assert.equal(i18n.t('annotationSend'), 'Send to chat');
   } finally { app.window.close(); }
+});
+
+test('compact switches preserve the comment and expose styles without exposing the shadow root', async () => {
+  const app = page('<button id="save">Save</button>');
+  try {
+    const review = await app.start();
+    const note = review.querySelector('textarea')!;
+    note.value = 'Keep this draft';
+    const switches = review.querySelector('[data-act="styles"]') as HTMLButtonElement;
+    switches.click();
+    assert.equal(switches.getAttribute('aria-expanded'), 'true');
+    assert.equal((review.querySelector('.details') as HTMLElement).hidden, false);
+    assert.ok(review.querySelector('[data-style="fontSize"]'));
+    switches.click();
+    assert.equal(note.value, 'Keep this draft');
+    assert.equal(app.document.getElementById('od-clipper-annotation')!.shadowRoot, null);
+    note.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.equal(app.document.getElementById('od-clipper-annotation'), null);
+  } finally { app.window.close(); }
+});
+
+test('style-only feedback recaptures the updated target and restores temporary preview after staging', async () => {
+  const app = page('<button id="save" style="font-size:16px!important">Save</button>');
+  try {
+    const review = await app.start();
+    const input = review.querySelector('[data-style="fontSize"]') as HTMLInputElement;
+    input.value = '24px'; input.dispatchEvent(new app.window.Event('change'));
+    assert.equal(app.window.getComputedStyle(app.document.getElementById('save')!).fontSize, '24px');
+    assert.equal((review.querySelector('.preview') as HTMLImageElement).hidden, true);
+    (review.querySelector('[data-act="send"]') as HTMLButtonElement).click();
+    await app.waitFor(() => app.messages.some(message => message.type === 'odAnnotation:submit'));
+    const captures = app.messages.filter(message => message.type === 'odAnnotation:capture');
+    assert.equal(captures.length, 2);
+    const sent = app.messages.find(message => message.type === 'odAnnotation:submit')!;
+    assert.deepEqual(sent.target, captures[1].target);
+    assert.match(sent.note!, /fontSize: 24px/);
+    assert.equal(sent.omitScreenshot, false);
+    await app.waitFor(() => !app.document.getElementById('od-clipper-annotation'));
+    const element = app.document.getElementById('save')!;
+    assert.equal(element.style.fontSize, '16px');
+    assert.equal(element.style.getPropertyPriority('font-size'), 'important');
+  } finally { app.window.close(); }
+});
+
+test('cancel restores preview styles and text while preserving concurrent page style changes', async () => {
+  const app = page('<button id="save" style="font-size:16px">Save</button>');
+  try {
+    const review = await app.start();
+    const edit = (key: string, value: string) => {
+      const input = review.querySelector(`[data-style="${key}"]`) as HTMLInputElement;
+      input.value = value; input.dispatchEvent(new app.window.Event('change'));
+    };
+    edit('fontSize', '24px'); edit('text', 'Save changes');
+    const element = app.document.getElementById('save')!;
+    element.style.fontSize = '30px';
+    (review.querySelector('[data-act="cancel"]') as HTMLButtonElement).click();
+    assert.equal(element.textContent, 'Save');
+    assert.equal(element.style.fontSize, '30px');
+    assert.equal(app.messages.some(message => message.type === 'odAnnotation:submit'), false);
+  } finally { app.window.close(); }
+});
+
+test('unsafe CSS is rejected and corrected styles allow feedback without submitting stale screenshots', async () => {
+  const app = page('<button id="save">Save</button>');
+  try {
+    const review = await app.start();
+    const input = review.querySelector('[data-style="backgroundColor"]') as HTMLInputElement;
+    input.value = 'url(https://evil.test/image)'; input.dispatchEvent(new app.window.Event('change'));
+    assert.equal(input.getAttribute('aria-invalid'), 'true');
+    assert.equal((review.querySelector('[data-act="send"]') as HTMLButtonElement).disabled, true);
+    assert.equal(app.document.getElementById('save')!.style.backgroundColor, '');
+    input.value = '#ff0000'; input.dispatchEvent(new app.window.Event('change'));
+    assert.equal(input.getAttribute('aria-invalid'), 'false');
+    assert.equal((review.querySelector('[data-act="send"]') as HTMLButtonElement).disabled, false);
+    app.document.getElementById('save')!.textContent = 'Changed by page';
+    (review.querySelector('[data-act="send"]') as HTMLButtonElement).click();
+    assert.equal(app.messages.some(message => message.type === 'odAnnotation:submit'), false);
+  } finally { app.window.close(); }
+});
+
+test('cancel preserves a concurrent page write that changes only the preview CSS priority', async () => {
+  const app = page('<button id="save" style="font-size:16px">Save</button>');
+  try {
+    const review = await app.start();
+    const input = review.querySelector('[data-style="fontSize"]') as HTMLInputElement;
+    input.value = '24px'; input.dispatchEvent(new app.window.Event('change'));
+    const element = app.document.getElementById('save')!;
+    assert.equal(element.style.getPropertyPriority('font-size'), 'important');
+    element.style.setProperty('font-size', '24px', '');
+    (review.querySelector('[data-act="cancel"]') as HTMLButtonElement).click();
+    assert.equal(element.style.fontSize, '24px');
+    assert.equal(element.style.getPropertyPriority('font-size'), '');
+  } finally { app.window.close(); }
+});
+
+test('style menu for a password field never contains entered text', async () => {
+  const app = page('<input id="save" type="password" value="private-entered-value">');
+  try {
+    const review = await app.start();
+    assert.equal(review.querySelector('[data-style="text"]'), null);
+    assert.doesNotMatch(review.textContent || '', /private-entered-value/);
+    assert.ok(review.querySelector('[data-style="borderRadius"]'));
+  } finally { app.window.close(); }
+});
+
+test('Escape during style-field IME composition preserves the annotation and note', async () => {
+  const app = page('<button id="save">Save</button>');
+  try {
+    const review = await app.start();
+    review.querySelector('textarea')!.value = 'Keep my feedback';
+    const input = review.querySelector('[data-style="fontFamily"]') as HTMLInputElement;
+    input.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }));
+    assert.ok(app.document.getElementById('od-clipper-annotation'));
+    assert.equal(review.querySelector('textarea')!.value, 'Keep my feedback');
+    input.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.equal(app.document.getElementById('od-clipper-annotation'), null);
+  } finally { app.window.close(); }
+});
+
+test('navigation during preview recapture prevents posting and leaves the stale review closable', async () => {
+  let release!: () => void;
+  const app = page('<button id="save">Save</button>', { recaptureGate: new Promise<void>(resolve => { release = resolve; }) });
+  try {
+    const review = await app.start();
+    const input = review.querySelector('[data-style="fontSize"]') as HTMLInputElement;
+    input.value = '24px'; input.dispatchEvent(new app.window.Event('change'));
+    (review.querySelector('[data-act="send"]') as HTMLButtonElement).click();
+    await app.waitFor(() => app.messages.filter(message => message.type === 'odAnnotation:capture').length === 2);
+    app.window.history.replaceState(null, '', '/different-page');
+    release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(app.messages.some(message => message.type === 'odAnnotation:submit'), false);
+    assert.equal((review.querySelector('[data-act="close"]') as HTMLButtonElement).disabled, false);
+    (review.querySelector('[data-act="close"]') as HTMLButtonElement).click();
+    assert.equal(app.document.getElementById('od-clipper-annotation'), null);
+  } finally { release(); app.window.close(); }
 });
 
 test('submission failure stays inline and retains the note and screenshot for retry', async () => {

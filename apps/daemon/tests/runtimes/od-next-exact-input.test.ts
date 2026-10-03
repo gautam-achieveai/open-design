@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { createAgentRuntimeToolPrompt } from '../../src/server.js';
+import { renderRunContextPrompt } from '../../src/runtimes/chat-run-context.js';
+import { buildBrowserUseRunState, renderBrowserUseUnavailablePrompt } from '../../src/browser/index.js';
 import {
   OD_NEXT_BUNDLE_ECHO_GUARD_V2,
   serializeOdNextPromptBundleV2,
@@ -260,12 +263,16 @@ describe('chat Agent exact-text production choke point', () => {
     })).toBe('CLI headless prompt');
   });
   it('preserves the ordinary Markdown prompt byte-for-byte while registering every leaf contributor', () => {
+    const runtimeToolPrompt = createAgentRuntimeToolPrompt('http://127.0.0.1:7456');
+    const runContextPrompt = renderRunContextPrompt({ workspaceItems: [
+      { kind: 'browser', id: 'browser-ref', tabId: 'selected-tab', label: 'Example' },
+    ] }, {});
     const result = composeChatAgentTextPayload({
       formOverride: '[form override]\n',
       daemonSystemPrompt: '  daemon system  ',
-      runtimeToolPrompt: 'runtime tools',
+      runtimeToolPrompt,
       researchCommandContract: 'research contract',
-      runContextPrompt: 'run context',
+      runContextPrompt,
       connectedExternalMcpReference: 'connected MCP: figma',
       browserUnavailableGuard: 'browser unavailable',
       titleGenerationDirective: 'emit title marker',
@@ -281,7 +288,7 @@ describe('chat Agent exact-text production choke point', () => {
 
     const clientInstruction = [
       'research contract',
-      'run context',
+      runContextPrompt,
       'connected MCP: figma',
       'browser unavailable',
       'emit title marker',
@@ -289,11 +296,15 @@ describe('chat Agent exact-text production choke point', () => {
     ].join('\n\n---\n\n');
     const instruction = [
       'daemon system',
-      'runtime tools',
+      runtimeToolPrompt,
       clientInstruction,
     ].join('\n\n---\n\n');
     expect(result.clientInstructionPrompt).toBe(clientInstruction);
     expect(result.instructionPrompt).toBe(instruction);
+    expect(result.composedPrompt).toContain('browser tabs --project');
+    expect(result.composedPrompt).toContain('## Browser: UI debugging and testing');
+    expect(result.composedPrompt).toContain('preferred way to debug and test UI changes');
+    expect(result.composedPrompt).toContain('--tab <selected-tab-id>');
     expect(result.composedPrompt).toBe(
       '# Instructions (read first)\n\n'
       + '[form override]\n'
@@ -309,14 +320,24 @@ describe('chat Agent exact-text production choke point', () => {
   });
 
   it('makes the request-stage exact text the single canonical OD Next XML root', () => {
+    const runtimeToolPrompt = createAgentRuntimeToolPrompt('http://127.0.0.1:7456');
+    const runContextPrompt = renderRunContextPrompt({ workspaceItems: [
+      { kind: 'browser', id: 'browser-ref', tabId: 'selected-tab', label: 'Example' },
+    ] }, {});
+    const browserUnavailableGuard = renderBrowserUseUnavailablePrompt(buildBrowserUseRunState({
+      requested: true, agentId: 'codex',
+      diagnostics: { registryPath: '/unused', registryExists: false, socketCount: 0,
+        candidateCount: 0, staleCount: 0, currentSessionIdPresent: null,
+        probeFailureCategory: 'registry-missing', staleThresholdMs: 600_000 },
+    }));
     const exactText = composeChatAgentTextPayload({
       formOverride: '',
       daemonSystemPrompt: '',
-      runtimeToolPrompt: '',
+      runtimeToolPrompt,
       researchCommandContract: '',
-      runContextPrompt: '',
+      runContextPrompt,
       connectedExternalMcpReference: '',
-      browserUnavailableGuard: '',
+      browserUnavailableGuard,
       titleGenerationDirective: '',
       clientSystemPrompt: '',
       cwdReference: '\n\nworkspace: `/Users/private/customer-a`',
@@ -372,6 +393,12 @@ describe('chat Agent exact-text production choke point', () => {
     expect(exactText).toContain('<active_stages>');
     expect(exactText).toContain('<task_metadata>');
     expect(exactText).toContain('<context>');
+    expect(exactText).toContain('browser tabs --project');
+    expect(exactText).toContain('## Browser: UI debugging and testing');
+    expect(exactText).toContain('preferred way to debug and test UI changes');
+    expect(exactText).toContain('selected-tab');
+    expect(exactText).toContain('external Codex browser-use backend');
+    expect(exactText).not.toContain('Treat browser-use / in-app-browser automation as unavailable');
     expect(exactText).toContain('<user_first_prompt>');
     expect(exactText).not.toContain('<system_prompt>');
     expect(exactText).not.toContain('<task_config>');

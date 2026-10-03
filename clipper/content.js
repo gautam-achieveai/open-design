@@ -995,8 +995,11 @@
   let annotationEventId = null;
   let annotationPickGeneration = 0;
   let annotationPendingPick = false;
+  let annotationCleanup = null;
   function closeAnnotation() {
     annotationPickGeneration += 1;
+    annotationCleanup?.();
+    annotationCleanup = null;
     if (annotationEventId) {
       void chrome.runtime.sendMessage({ type: 'odAnnotation:discard', eventId: annotationEventId });
       annotationEventId = null;
@@ -1124,35 +1127,57 @@
     annotationEventId = eventId;
     annotationHost = document.createElement('div');
     annotationHost.id = 'od-clipper-annotation';
-    annotationHost.style.cssText = 'position:fixed;z-index:2147483647;inset:0;background:rgba(0,0,0,0.22);display:grid;place-items:center;';
+    annotationHost.style.cssText = 'position:fixed;z-index:2147483647;inset:0;pointer-events:none;';
     // Keep the cropped image URL out of the host page's DOM APIs. The content
     // script retains the shadow root reference for review controls.
     const ui = annotationHost.attachShadow({ mode: 'closed' });
     setHTML(ui, `<style>
-      .card { width:min(430px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;box-sizing:border-box;background:#202020;color:#f5f5f5;padding:20px;border:1px solid #ffffff1c;border-radius:16px;font:14px/1.5 system-ui,sans-serif;box-shadow:0 20px 60px #0008; }
-      .header { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px; }
-      .header strong { font-size:16px;font-weight:650;letter-spacing:-0.02em; }
-      .preview { display:block;width:100%;max-height:min(38vh,260px);object-fit:contain;background:#111;margin:0 0 16px;border-radius:10px; }
-      .preview[hidden] { display:none; }
-      .capture-status,.submit-error { margin:0 0 12px;color:#bebebe;font-size:12px; }
+      :host { color-scheme:light; }
+      * { box-sizing:border-box; }
+      .card { position:absolute;width:min(360px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;pointer-events:auto;background:#fff;color:#303236;border:1px solid #e7e7e9;border-radius:24px;font:13px/1.5 -apple-system,system-ui,sans-serif;box-shadow:0 3px 12px #00000012; }
+      .comment-bar { display:flex;align-items:center;gap:6px;min-height:46px;padding:6px 8px; }
+      .selection { position:absolute;pointer-events:none;border:2px solid #258bff;border-radius:2px; }
+      .marker { position:absolute;left:-7px;top:-7px;width:14px;height:14px;border-radius:50%;background:#258bff; }
+      .details { border-top:1px solid #ededee; }
+      [hidden] { display:none!important; }
+      .element-label { padding:6px 16px;background:#f5f5f6;font:12px/1.5 ui-monospace,monospace; }
+      .style-fields { max-height:min(290px,45vh);overflow:auto;overscroll-behavior:contain;padding:0 16px; }
+      .style-row { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,146px);align-items:center;gap:12px;min-height:40px;border-bottom:1px solid #f2f2f3; }
+      .style-row input,.style-row select { width:100%;min-width:0;border:1px solid #e2e2e5;border-radius:9px;padding:5px 8px;color:#303236;background:#fff;font:12px/1.5 ui-monospace,monospace; }
+      .style-row input[aria-invalid="true"] { border-color:#c33333; }
+      .evidence { padding:8px 16px; }
+      .evidence summary { cursor:pointer;color:#666; }
+      .preview { display:block;width:100%;max-height:160px;object-fit:contain;background:#f8f8f8;margin:8px 0;border-radius:8px; }
+      .capture-status,.submit-error { margin:0;padding:0 16px 8px;color:#72757a;font-size:12px; }
       .capture-status:empty,.submit-error:empty { display:none; }
-      .submit-error { color:#ffc1b9; }
-      textarea { width:100%;min-height:112px;box-sizing:border-box;resize:vertical;padding:12px;color:#202020;background:#fff;border:1px solid #aaa;border-radius:9px;font:14px/1.5 system-ui,sans-serif; }
-      textarea:focus-visible,button:focus-visible { outline:2px solid #a9ceff;outline-offset:2px; }
-      .actions { display:flex;gap:8px;justify-content:flex-end;margin-top:16px; }
-      button { font:inherit;padding:9px 14px;cursor:pointer;border:0;border-radius:8px; }
-      [data-act="close"] { padding:4px 8px;background:transparent;color:#bebebe;font-size:21px;line-height:1; }
-      [data-act="cancel"] { background:#ffffff18;color:#f5f5f5; }
-      [data-act="send"] { background:#f5f5f5;color:#202020;font-weight:650; }
+      .submit-error { color:#b42318; }
+      textarea { flex:1;min-width:0;height:30px;max-height:96px;resize:none;padding:5px 2px;color:#303236;background:transparent;border:0;font:13px/20px -apple-system,system-ui,sans-serif; }
+      textarea::placeholder { color:#969aa0; }
+      textarea:focus { outline:none; }
+      button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible { outline:2px solid #258bff;outline-offset:2px; }
+      .actions { display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-top:1px solid #ededee; }
+      button { font:inherit;padding:6px 10px;cursor:pointer;border:1px solid #e7e7e9;border-radius:18px;background:#fff;color:#303236; }
+      .icon-button { display:grid;place-items:center;flex:none;width:30px;height:30px;padding:6px;border:0;background:transparent; }
+      .icon-button:hover,.icon-button[aria-expanded="true"] { background:#f1f2f3; }
+      .icon-button svg { width:18px;height:18px; }
+      [data-act="send"] { background:#303236;color:#fff; }
       [data-act="send"]:disabled { opacity:.5;cursor:default; }
-    </style><div class="card" role="dialog" aria-modal="true" aria-label="${esc(t('annotateElement'))}">
-      <div class="header"><strong>${esc(t('annotateElement'))}</strong><button data-act="close" type="button" aria-label="${esc(t('close'))}">×</button></div>
-      <img class="preview" alt="${esc(t('annotationScreenshotPreview'))}" hidden />
+    </style><div class="selection"><span class="marker"></span></div><div class="card" role="dialog" aria-label="${esc(t('annotateElement'))}">
+      <div class="comment-bar">
+        <button class="icon-button" data-act="styles" type="button" aria-label="${esc(t('annotationStyles'))}" aria-expanded="false" aria-controls="annotation-details"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 7h4m6 0h6M4 17h10m6 0h0"/><circle cx="11" cy="7" r="3"/><circle cx="17" cy="17" r="3"/></svg></button>
+        <textarea maxlength="2000" aria-label="${esc(t('annotationNote'))}" placeholder="${esc(t('annotationComment'))}" rows="1"></textarea>
+        <button class="icon-button" data-act="send" type="button" aria-label="${esc(t('annotationSend'))}" title="${esc(t('annotationSend'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 12 4 4 8-8"/></svg></button>
+        <button class="icon-button" data-act="close" type="button" aria-label="${esc(t('close'))}">×</button>
+      </div>
+      <div class="details" id="annotation-details" hidden>
+        <div class="element-label">&lt;${esc(target.label)}&gt;</div>
+        <div class="style-fields"></div>
+        <details class="evidence"><summary>${esc(t('annotationScreenshotPreview'))}</summary><img class="preview" alt="${esc(t('annotationScreenshotPreview'))}" hidden /></details>
+        <div class="actions"><button data-act="cancel" type="button">${esc(t('cancel'))}</button><span>${esc(t('annotationPreviewHint'))}</span></div>
+      </div>
       <p class="capture-status" role="status"></p>
       ${element.localName === 'iframe' ? `<button data-act="inside-frame" type="button">${esc(t('annotationInsideFrame'))}</button>` : ''}
-      <textarea maxlength="2000" aria-label="${esc(t('annotationNote'))}" placeholder="${esc(t('annotationNote'))}"></textarea>
       <p class="submit-error" role="alert" aria-live="polite"></p>
-      <div class="actions"><button data-act="cancel" type="button">${esc(t('cancel'))}</button><button data-act="send" type="button">${esc(t('annotationSend'))}</button></div>
     </div>`);
     document.documentElement.appendChild(annotationHost);
     const textarea = ui.querySelector('textarea');
@@ -1160,37 +1185,167 @@
     const preview = ui.querySelector('.preview');
     const status = ui.querySelector('.capture-status');
     const submitError = ui.querySelector('.submit-error');
+    const card = ui.querySelector('.card');
+    const details = ui.querySelector('.details');
+    const switches = ui.querySelector('[data-act="styles"]');
+    const selection = ui.querySelector('.selection');
+    const originalStyles = new Map();
+    const edits = new Map();
+    const textNode = element.childNodes.length === 1 && element.firstChild.nodeType === 3
+      && target.text && !element.matches('input,textarea,select,iframe,[contenteditable]') ? element.firstChild : null;
+    const originalText = textNode?.nodeValue ?? null;
+    let previewText = null;
+    let dirty = false;
+    const current = () => annotationHost && annotationEventId === eventId
+      && annotationConnected(element) && annotationReviewedUrl(location.href) === target.url;
+    const position = () => {
+      if (!current()) return;
+      const rect = element.getBoundingClientRect();
+      Object.assign(selection.style, { left: `${rect.left}px`, top: `${rect.top}px`,
+        width: `${rect.width}px`, height: `${rect.height}px` });
+      const box = card.getBoundingClientRect();
+      const width = box.width || Math.min(360, window.innerWidth - 24);
+      const height = box.height || (details.hidden ? 48 : 380);
+      const below = rect.bottom + 10;
+      const top = below + height <= window.innerHeight - 12 ? below : rect.top - height - 10;
+      card.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))}px`;
+      card.style.top = `${Math.max(12, Math.min(top, window.innerHeight - height - 12))}px`;
+    };
+    const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(position) : null;
+    resizeObserver?.observe(card);
+    window.addEventListener('resize', position);
+    window.addEventListener('scroll', position, true);
+    annotationCleanup = () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', position);
+      window.removeEventListener('scroll', position, true);
+      // Restore only our own temporary preview; preserve concurrent page changes.
+      for (const [property, original] of originalStyles) {
+        if (element.style.getPropertyValue(property) === original.preview
+          && element.style.getPropertyPriority(property) === 'important') {
+          if (original.value) element.style.setProperty(property, original.value, original.priority);
+          else element.style.removeProperty(property);
+        }
+      }
+      if (previewText !== null && textNode.parentNode === element && textNode.nodeValue === previewText) textNode.nodeValue = originalText;
+    };
     let crop = capture?.ok ? capture.cropDataUrl : null;
     let captureFailure = failure || annotationCaptureFailure(capture);
     let submitting = false;
+    let expired = false;
     const renderPreview = () => {
       preview.hidden = !crop;
       preview.src = crop || '';
-      send.disabled = submitting;
-      status.textContent = crop ? (capture?.textHidden ? t('annotationTextHidden') : '')
+      send.disabled = submitting || expired || Array.from(ui.querySelectorAll('[aria-invalid="true"]')).length > 0;
+      for (const button of ui.querySelectorAll('[data-act="close"],[data-act="cancel"],[data-act="inside-frame"]')) button.disabled = submitting;
+      card.setAttribute('aria-busy', String(submitting));
+      status.textContent = dirty ? t('annotationPreviewCapture') : crop ? (capture?.textHidden ? t('annotationTextHidden') : '')
         : t(captureFailure);
     };
+    const recoverStaleReview = () => {
+      if (annotationEventId !== eventId) return;
+      submitting = false; expired = true; dirty = false; crop = null;
+      captureFailure = 'annotationDocumentChanged';
+      submitError.textContent = t('annotationDocumentChanged');
+      renderPreview();
+    };
+    const styleFields = [
+      ['color', 'annotationTextColor'], ['backgroundColor', 'annotationBackground'],
+      ['opacity', 'annotationOpacity'], ['fontFamily', 'annotationFont'],
+      ['fontSize', 'annotationFontSize'], ['fontWeight', 'annotationFontWeight'],
+      ['lineHeight', 'annotationLineHeight'], ['textAlign', 'annotationTextAlign'],
+      ['borderRadius', 'annotationBorderRadius'], ['borderColor', 'annotationBorderColor'],
+      ['borderWidth', 'annotationBorderWidth'], ['width', 'annotationWidth'], ['height', 'annotationHeight'],
+      ...['Top', 'Right', 'Bottom', 'Left'].flatMap((side) => [
+        [`padding${side}`, `annotationPadding${side}`], [`margin${side}`, `annotationMargin${side}`],
+      ]),
+    ];
+    const computed = getComputedStyle(element);
+    const fieldRows = originalText === null ? styleFields : [['text', 'annotationText'], ...styleFields];
+    for (const [key, label] of fieldRows) {
+      const row = document.createElement('label');
+      row.className = 'style-row';
+      const caption = document.createElement('span');
+      caption.textContent = t(label);
+      const input = document.createElement('input');
+      input.type = 'text'; input.maxLength = key === 'text' ? 300 : 160;
+      input.dataset.style = key;
+      input.value = key === 'text' ? originalText : computed[key] || '';
+      const initial = input.value;
+      input.addEventListener('change', () => {
+        if (submitting || !current() || JSON.stringify(annotationTarget(element)) !== JSON.stringify(target)) return;
+        const value = input.value.trim();
+        const property = key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+        const valid = key === 'text' ? annotationSafeText(value, 300) === value
+          : value.length > 0 && !/[;{}<>\\\n\r]|url\s*\(|var\s*\(|expression\s*\(/i.test(value)
+            && /^[\w\s#.,%'"()+-]+$/.test(value)
+            && (typeof CSS !== 'undefined' && CSS.supports(property, value));
+        input.setAttribute('aria-invalid', String(!valid));
+        if (!valid) { submitError.textContent = t('annotationStyleInvalid'); renderPreview(); return; }
+        const beforeText = textNode?.nodeValue;
+        const beforeStyle = { value: element.style.getPropertyValue(property), priority: element.style.getPropertyPriority(property) };
+        if (key === 'text') textNode.nodeValue = value;
+        else {
+          element.style.setProperty(property, value, 'important');
+        }
+        const nextTarget = annotationTarget(element);
+        if (!nextTarget) {
+          if (key === 'text') textNode.nodeValue = beforeText;
+          else if (beforeStyle.value) element.style.setProperty(property, beforeStyle.value, beforeStyle.priority);
+          else element.style.removeProperty(property);
+          input.setAttribute('aria-invalid', 'true');
+          submitError.textContent = t('annotationStyleInvalid'); renderPreview(); return;
+        }
+        if (key === 'text') previewText = value;
+        else {
+          if (!originalStyles.has(property)) originalStyles.set(property, beforeStyle);
+          originalStyles.get(property).preview = element.style.getPropertyValue(property);
+        }
+        if (value === initial) edits.delete(key); else edits.set(key, value);
+        target = nextTarget;
+        // The previous crop describes the original element, not this preview.
+        crop = null; dirty = true;
+        submitError.textContent = '';
+        renderPreview(); position();
+      });
+      row.append(caption, input);
+      ui.querySelector('.style-fields').append(row);
+    }
+    switches.addEventListener('click', () => {
+      details.hidden = !details.hidden;
+      switches.setAttribute('aria-expanded', String(!details.hidden));
+      position();
+    });
     renderPreview();
-    const cancel = () => closeAnnotation();
+    position();
+    const cancel = () => { if (!submitting) closeAnnotation(); };
     ui.querySelector('[data-act="close"]').addEventListener('click', cancel);
     ui.querySelector('[data-act="cancel"]').addEventListener('click', cancel);
     // Closed-shadow clicks retarget to the host outside the shadow root.
     // Do not mistake a click on a dialog button for a backdrop click.
     ui.addEventListener('click', (event) => event.stopPropagation());
-    annotationHost.addEventListener('click', (event) => {
-      if (event.target === annotationHost) cancel();
-    });
-    textarea.addEventListener('keydown', (event) => {
+    ui.addEventListener('keydown', (event) => {
+      if (event.isComposing) return;
       if (event.key === 'Escape') cancel();
+      if (event.target === textarea && event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault(); send.click();
+      }
+    });
+    textarea.addEventListener('input', () => {
+      textarea.style.height = '30px';
+      textarea.style.height = `${Math.min(96, Math.max(30, textarea.scrollHeight))}px`;
+      position();
     });
     send.addEventListener('click', async () => {
-      const note = textarea.value.trim();
+      const styleNote = edits.size ? `${t('annotationRequestedChanges')}:\n${Array.from(edits, ([key, value]) => `${key}: ${value}`).join('\n')}` : '';
+      const note = [textarea.value.trim(), styleNote].filter(Boolean).join('\n\n');
       if (!note) {
         submitError.textContent = t('annotationEmpty');
         textarea.focus();
         return;
       }
-      if (submitting) return;
+      if (submitting || send.disabled) return;
+      if (note.length > 2000) { submitError.textContent = t('annotationNoteTooLong'); return; }
       if (!annotationConnected(element)
         || annotationReviewedUrl(location.href) !== target.url
         || JSON.stringify(annotationTarget(element)) !== JSON.stringify(target)) {
@@ -1204,8 +1359,38 @@
       submitError.textContent = '';
       submitting = true;
       send.disabled = true;
+      for (const input of ui.querySelectorAll('.style-row input')) input.disabled = true;
+      renderPreview();
+      if (dirty) {
+        if (target.scope) {
+          const reviewed = await chrome.runtime.sendMessage({ type: 'odAnnotation:review', eventId, target }).catch(() => null);
+          if (!reviewed?.ok) {
+            submitting = false;
+            submitError.textContent = t('annotationDocumentChanged');
+            for (const input of ui.querySelectorAll('.style-row input')) input.disabled = false;
+            renderPreview(); return;
+          }
+        } else {
+          const rect = annotationCaptureRect(element);
+          capture = rect ? await chrome.runtime.sendMessage({ type: 'odAnnotation:capture', eventId, target,
+            rect, maskRects: annotationMaskRects(rect), viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight, scrollX: window.scrollX, scrollY: window.scrollY,
+          }).catch(() => null) : null;
+          crop = capture?.ok ? capture.cropDataUrl : null;
+          captureFailure = annotationCaptureFailure(capture);
+        }
+        if (!current()) { recoverStaleReview(); return; }
+        dirty = false; renderPreview();
+        if (JSON.stringify(annotationTarget(element)) !== JSON.stringify(target)) {
+          submitting = false; crop = null;
+          submitError.textContent = t('annotationDocumentChanged');
+          for (const input of ui.querySelectorAll('.style-row input')) input.disabled = false;
+          renderPreview(); return;
+        }
+      }
       const result = await chrome.runtime.sendMessage({ type: 'odAnnotation:submit', eventId, target, note,
         omitUrlDetails: false, omitScreenshot: !crop }).catch(() => null);
+      if (!current()) { recoverStaleReview(); return; }
       if (result?.ok) {
         closeAnnotation();
         toast(t('annotationSent', { project: result.projectName || result.projectId,
@@ -1225,6 +1410,7 @@
         }
       } else {
         submitting = false;
+        for (const input of ui.querySelectorAll('.style-row input')) input.disabled = false;
         renderPreview();
         submitError.textContent = t('failed', { error: result?.error || t('annotationUnpaired') });
         textarea.focus();

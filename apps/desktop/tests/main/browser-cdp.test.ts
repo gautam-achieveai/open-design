@@ -9,6 +9,7 @@ import type { Session, WebContents } from "electron";
 import {
   DESIGN_BROWSER_PARTITION,
   createDesignBrowserCdpController,
+  executeDesignBrowserRequest,
   redactBrowserBody,
   redactBrowserHeaders,
   redactBrowserUrl,
@@ -85,6 +86,55 @@ class FakeGuest extends EventEmitter {
 }
 
 describe("Design Browser CDP controller", () => {
+  it("executes fresh approved commands on the registered guest without another approval step", async () => {
+    const guest = new FakeGuest();
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
+    await controller.attachGuest(guest as unknown as WebContents);
+    controller.registerTarget({ projectId: "p1", tabId: "tab-1", url: guest.getURL(), webContentsId: guest.id });
+    guest.debugger.commands.length = 0;
+
+    await expect(executeDesignBrowserRequest(controller, {
+      tabId: "tab-1", expiresAt: Date.now() + 10_000,
+      operation: { kind: "scroll", deltaY: 100, approved: true },
+    })).resolves.toMatchObject({ ok: true, operation: "scroll" });
+    expect(guest.debugger.commands).toEqual([{
+      method: "Input.dispatchMouseEvent",
+      params: { type: "mouseWheel", x: 0, y: 0, deltaX: 0, deltaY: 100 },
+    }]);
+
+    guest.debugger.commands.length = 0;
+    await expect(executeDesignBrowserRequest(controller, {
+      tabId: "tab-1", expiresAt: Date.now() + 10_000,
+      operation: { kind: "scroll", deltaY: 100 },
+    })).resolves.toMatchObject({ ok: false, reason: "invalid or unapproved browser operation" });
+    await expect(executeDesignBrowserRequest(controller, {
+      tabId: "unknown-tab", expiresAt: Date.now() + 10_000,
+      operation: { kind: "scroll", deltaY: 100, approved: true },
+    })).resolves.toMatchObject({ ok: false });
+    expect(guest.debugger.commands).toEqual([]);
+    controller.close();
+  });
+
+  it.each(["click", "type", "scroll", "navigate"])("rejects missing, invalid and expired %s deadlines before execution", async (kind) => {
+    const execute = vi.fn();
+    for (const expiresAt of [undefined, NaN, Infinity, "tomorrow", Date.now() - 1]) {
+      await expect(executeDesignBrowserRequest({ execute }, {
+        tabId: "tab-1", expiresAt, operation: { kind, approved: true },
+      })).resolves.toEqual({ ok: false, reason: "browser command expired before execution" });
+    }
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("keeps read-only inspection available without mutation approval or a deadline", async () => {
+    const guest = new FakeGuest();
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
+    await controller.attachGuest(guest as unknown as WebContents);
+    controller.registerTarget({ projectId: "p1", tabId: "tab-1", url: guest.getURL(), webContentsId: guest.id });
+    await expect(executeDesignBrowserRequest(controller, {
+      tabId: "tab-1", operation: { kind: "snapshot", depth: 2 },
+    })).resolves.toMatchObject({ ok: true, operation: "snapshot" });
+    controller.close();
+  });
   it("requires explicit main-process provenance for native popup targets sharing the browser session", async () => {
     const guest = new FakeGuest();
     vi.spyOn(guest, 'getType').mockReturnValue('window');
@@ -319,8 +369,9 @@ describe("Design Browser CDP controller", () => {
     expect(runtime).toContain('window.webContents.on("did-attach-webview"');
     expect(runtime).toContain("browserCdp.attachGuest(guestWebContents)");
     expect(runtime).toContain("requireMainWindowSender(event)");
-    expect(runtime).toContain("Allow the agent to control this browser tab?");
-    expect(runtime).toContain("browser command expired before execution");
+    expect(runtime).not.toContain("Allow the agent to control this browser tab?");
+    expect(runtime).toContain("executeDesignBrowserRequest(browserCdp, request)");
+    expect(cdp).toContain("browser command expired before execution");
     expect(cdp).toContain('guest.debugger.attach("1.3")');
     expect(cdp).toContain('guest.getType() === "webview"');
     expect(cdp).toContain("guest.session === designBrowserSession");

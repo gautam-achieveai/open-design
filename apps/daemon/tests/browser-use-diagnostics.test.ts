@@ -111,5 +111,8 @@ describe('browser use diagnostics', () => {
 
     expect(prompt).toContain('no-matching-browser-backend');
     expect(prompt).toContain('Do not use raw Google Chrome headless');
+    expect(prompt).toContain('external Codex browser-use backend');
+    expect(prompt).toContain('browser tabs --project "$OD_PROJECT_ID" --json');
+    expect(prompt).not.toContain('Treat browser-use / in-app-browser automation as unavailable');
   });
 });

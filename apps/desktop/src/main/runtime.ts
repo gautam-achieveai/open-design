@@ -41,6 +41,7 @@ import { renderDeckSlides } from "./deck-capture.js";
 import {
   DESIGN_BROWSER_PARTITION,
   createDesignBrowserCdpController,
+  executeDesignBrowserRequest,
   isAllowedDesignBrowserUrl,
 } from "./browser-cdp.js";
 import { renderDeterministicFrames } from "./frame-capture.js";
@@ -2630,34 +2631,7 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     "browser:execute",
     async (event, request: unknown): Promise<OpenDesignHostBrowserExecuteResult> => {
       requireMainWindowSender(event);
-      const operation = request && typeof request === "object"
-        ? (request as { operation?: { kind?: unknown } }).operation
-        : null;
-      const expiresAt = request && typeof request === "object"
-        ? (request as { expiresAt?: unknown }).expiresAt
-        : null;
-      const kind = operation && typeof operation.kind === "string" ? operation.kind : "";
-      if (kind === "click" || kind === "type" || kind === "scroll" || kind === "navigate") {
-        if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-          return { ok: false, reason: "browser command expired before user approval" };
-        }
-        const confirmation = await dialog.showMessageBox(window, {
-          type: "warning",
-          buttons: ["Cancel", "Allow once"],
-          cancelId: 0,
-          defaultId: 0,
-          message: "Allow the agent to control this browser tab?",
-          detail: `Requested browser action: ${kind}`,
-          noLink: true,
-        });
-        if (confirmation.response !== 1) {
-          return { ok: false, reason: "browser operation was not approved by the user" };
-        }
-        if (expiresAt <= Date.now()) {
-          return { ok: false, reason: "browser command expired before execution" };
-        }
-      }
-      return await browserCdp.execute(request);
+      return await executeDesignBrowserRequest(browserCdp, request);
     },
   );
   ipcMain.handle("od:update:status", async (event) => {

@@ -7,6 +7,23 @@ import {
 } from '../../src/runtimes/chat-run-context.js';
 
 describe('chat run context helpers', () => {
+  it('discovers the daemon browser broker before inspecting the selected tab', () => {
+    const prompt = renderRunContextPrompt({ workspaceItems: [
+      { kind: 'browser', id: 'browser-ref', tabId: 'tab-selected', label: 'Example', url: 'https://example.com' },
+    ] }, {});
+    expect(prompt).toContain('browser tabs --project "$OD_PROJECT_ID" --json');
+    expect(prompt).toContain('browser snapshot --project "$OD_PROJECT_ID" --tab <selected-tab-id> --json');
+    expect(prompt).toContain('tab: `tab-selected`');
+    expect(prompt).toContain('do not switch to another tab');
+    expect(prompt).toContain('Do not launch a separate browser or attach through remote CDP');
+    expect(prompt).not.toContain('If only URL/title context is available and no inspection tool is mounted');
+    const withoutTab = renderRunContextPrompt({ workspaceItems: [
+      { kind: 'browser', id: 'context-only', label: 'Example', url: 'https://example.com' },
+    ] }, {});
+    expect(withoutTab).toContain('confirm the intended tab');
+    expect(withoutTab).not.toContain('--tab "context-only"');
+  });
+
   it('normalizes workspace context items and dedupes by kind/id', () => {
     expect(normalizeWorkspaceContextItems([
       { kind: 'browser', id: ' tab-1 ', label: ' Docs ', url: ' https://example.com/docs ' },

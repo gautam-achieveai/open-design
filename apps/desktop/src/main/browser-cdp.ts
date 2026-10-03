@@ -467,6 +467,21 @@ export type DesignBrowserCdpController = {
   unregisterTarget(value: unknown): OpenDesignHostActionResult;
 };
 
+export async function executeDesignBrowserRequest(
+  controller: Pick<DesignBrowserCdpController, "execute">,
+  request: unknown,
+): Promise<OpenDesignHostBrowserExecuteResult> {
+  const kind = isRecord(request) && isRecord(request.operation) ? request.operation.kind : null;
+  if (kind === "click" || kind === "type" || kind === "scroll" || kind === "navigate") {
+    const expiresAt = isRecord(request) ? request.expiresAt : null;
+    if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      return { ok: false, reason: "browser command expired before execution" };
+    }
+  }
+  // The broker supplies approval; the controller still validates it and the registered guest.
+  return controller.execute(request);
+}
+
 export function createDesignBrowserCdpController(
   designBrowserSession: Session,
 ): DesignBrowserCdpController {

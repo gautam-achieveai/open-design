@@ -110,9 +110,9 @@ export function renderBrowserUseUnavailablePrompt(state: BrowserUseRunState | nu
   return [
     '## Browser automation availability',
     '',
-    `Browser automation was requested, but OpenDesign has not confirmed a matching in-app browser backend for this run. Reason: \`${state.reason}\`.`,
-    'Treat browser-use / in-app-browser automation as unavailable for this turn.',
+    `The external Codex browser-use backend is unavailable for this run. Reason: \`${state.reason}\`.`,
+    'This does not determine availability of OpenDesign\'s daemon browser broker. Discover its registered tabs with `"$OD_NODE_BIN" "$OD_BIN" browser tabs --project "$OD_PROJECT_ID" --json` using the runtime tool environment\'s shell syntax, then inspect the exact intended tab before claiming browser access.',
     'Do not use raw Google Chrome headless or ad-hoc Chrome fallback from the packaged desktop sandbox.',
-    'If the task requires browser evidence, report the unavailable reason and use only the provided browser tab URL, title, and saved project context until a backend is attached.',
+    'Do not launch a separate browser or attach through remote CDP to replace an OpenDesign-owned tab. If broker discovery or inspection fails, report that limitation and use only provided context; do not invent browser evidence.',
   ].join('\n');
 }

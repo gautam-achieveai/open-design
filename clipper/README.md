@@ -76,6 +76,15 @@ immediately; it does **not** stage the composer or start an agent.
 
 ## Annotate a managed Edge/Chrome site
 
+The on-page annotation control matches the in-app browser: a light comment bar
+next to the selected element, with a switches button for scrollable style fields
+and an optional screenshot preview. Press Enter to add feedback to the chat
+draft; Shift+Enter adds a line, and Escape closes the control. Style and simple
+text edits preview locally. Closing restores the preview; adding it to the draft
+captures fresh evidence and includes the requested changes for the agent.
+This does not save changes to the website's source files. Entered form values
+remain excluded from evidence and from the text editor.
+
 For sites that require your company's Entra/Intune browser session, sign in in your
 normal Edge or Chrome work profile using Windows Hello. The in-app Electron
 Browser tab does **not** share that profile or its credentials.
