@@ -10,6 +10,12 @@ extension. The daemon/web TypeScript boundaries are unaffected.
 
 ## Load it
 
+Windows installers and portable ZIPs also include this extension under
+`resources/open-design/clipper` inside the OpenDesign application folder.
+Start the installed app, then use **Load unpacked** in Chrome or Edge to select
+that bundled folder. The installer copies the extension files; it does not
+change browser policies or enable the extension automatically.
+
 1. Start OpenDesign locally (`pnpm tools-dev`). For project annotations, use
    **Connect managed Edge → Copy connection URL**; paste it into Clipper’s
    connection field. It configures the daemon address automatically.

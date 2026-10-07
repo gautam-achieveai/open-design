@@ -11,7 +11,7 @@ import {
 } from "../vela-cli.js";
 import type { WinPaths, ResourceTreeCacheMetadata } from "./types.js";
 
-const RESOURCE_TREE_CACHE_SCHEMA_VERSION = 7;
+const RESOURCE_TREE_CACHE_SCHEMA_VERSION = 8;
 
 async function createResourceTreeCacheKey(config: ToolPackConfig, workspaceBuildKey: string): Promise<string> {
   const velaCliBin = await resolveOptionalVelaCliBinary({
@@ -22,6 +22,7 @@ async function createResourceTreeCacheKey(config: ToolPackConfig, workspaceBuild
       ? null
       : await resolveOptionalVelaCliOpenCodeCompanionTree(velaCliBin);
   return hashJson({
+    clipper: await hashPath(join(config.workspaceRoot, "clipper")),
     assetsCommunityPets: await hashPath(join(config.workspaceRoot, "assets", "community-pets")),
     assetsFrames: await hashPath(join(config.workspaceRoot, "assets", "frames")),
     craft: await hashPath(join(config.workspaceRoot, "craft")),
@@ -69,6 +70,9 @@ export async function prepareResourceTree(
       await copyBundledResourceTrees({
         workspaceRoot: config.workspaceRoot,
         resourceRoot,
+      });
+      await cp(join(config.workspaceRoot, "clipper"), join(resourceRoot, "clipper"), {
+        recursive: true,
       });
       if (options.bundleAgentRuntimes === true) {
         await packBundledDshRuntime({

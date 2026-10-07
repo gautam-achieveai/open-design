@@ -576,6 +576,12 @@ export function BoardComposerPopover({
     : manualPosition
       ? clampPopoverPositionStyle(manualPosition.left, manualPosition.top, bounds, measuredPopover)
       : autoStyle;
+  const compactPopoverStyle: CSSProperties = {
+    ...popoverStyle,
+    // Reserve the footer and padding when the preview bounds limit the card.
+    '--comment-note-max-height': `${typeof popoverStyle?.maxHeight === 'number'
+      ? Math.max(32, Math.min(160, popoverStyle.maxHeight - 56)) : 160}px`,
+  } as CSSProperties;
   const startPopoverDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (docked) return;
     event.preventDefault();
@@ -824,7 +830,7 @@ export function BoardComposerPopover({
       role="dialog"
       aria-modal="false"
       aria-label="Annotation"
-      style={popoverStyle}
+      style={compact ? compactPopoverStyle : popoverStyle}
       onKeyDown={(event) => {
         if (composingRef.current) return;
         if (event.key === 'Escape') {

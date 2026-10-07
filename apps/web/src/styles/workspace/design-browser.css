@@ -42,6 +42,7 @@
      truncated left cluster.) */
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 10px;
   min-width: 0;
   padding: 9px 14px;
@@ -1011,18 +1012,18 @@
 
 @container design-browser (max-width: 760px) {
   .db-chrome {
-    flex-wrap: wrap;
     gap: 6px;
     padding-inline: 8px;
   }
   .db-viewport-control {
-    order: 4;
-    width: 100%;
-    justify-content: flex-end;
+    order: 1;
+  }
+  .db-viewport-control output {
+    display: none;
   }
   .db-address-form {
     min-width: 120px;
-    max-width: 420px;
+    max-width: none;
   }
   .db-action-mark,
   .db-action-edit {
@@ -1467,19 +1468,6 @@
 }
 
 @media (max-width: 720px) {
-  .db-chrome {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .db-address-form {
-    min-width: 0;
-    max-width: none;
-    margin-inline: 0;
-  }
-  .db-nav,
-  .db-actions {
-    justify-content: flex-start;
-  }
   .db-start-hero {
     grid-template-columns: minmax(0, 1fr);
     align-items: flex-start;

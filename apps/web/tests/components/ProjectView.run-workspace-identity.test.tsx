@@ -34,7 +34,7 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
   buildWorkspacePermissions,
   buildWorkspaceSeatSummary,
@@ -240,13 +240,18 @@ vi.mock('../../src/components/FileWorkspace', async () => {
     DESIGN_SYSTEM_TAB: '__design_system__',
     FileWorkspace: ({
       onTabsStateChange,
+      onAnnotationDraftCreated,
     }: {
+      onAnnotationDraftCreated?: (receipt: { projectId: string; conversationId: string; id: string; replayed: boolean }) => void;
       onTabsStateChange?: (state: { tabs: string[]; active: string | null }) => void;
     }) => {
       const { workspaceContext } = useProjectCollabContext();
       resourceContextObservations.push(workspaceContext);
       return (
         <div data-testid="file-workspace">
+          <button data-testid="native-annotation-receipt" onClick={() => onAnnotationDraftCreated?.({
+            projectId: PROJECT_ID, conversationId: 'conv-second', id: '11111111-1111-4111-8111-111111111111', replayed: false,
+          })}>Stage native annotation</button>
           <button
             type="button"
             data-testid="queue-tab-write"
@@ -1669,7 +1674,7 @@ describe('a Home auto-send observes a project billing scope that settles after m
     expect(window.sessionStorage.getItem(`od:auto-send-first:${PROJECT_ID}`)).toBeNull();
   });
 
-  it('refreshes browser annotations when a conversation becomes active after the project event callback mounts', async () => {
+  it.each(['event', 'focus', 'native receipt'] as const)('refreshes browser annotations through %s after a conversation becomes active', async (signal) => {
     const source = readFileSync(resolve('src/components/ProjectView.tsx'), 'utf8');
     const callback = source.slice(source.indexOf('const handleProjectEvent = useCallback('),
       source.indexOf('// A bound project must not open a headerless EventSource'));
@@ -1695,9 +1700,10 @@ describe('a Home auto-send observes a project billing scope that settles after m
       createdAt: 1,
     };
     let pending: PendingBrowserAnnotation[] = [];
+    let readFailed = false;
     const originalFetch = globalThis.fetch;
     const fetchSpy = vi.fn(async (input: RequestInfo | URL) => String(input) === pendingPath
-      ? new Response(JSON.stringify({ annotations: pending }), { status: 200 })
+      ? new Response(JSON.stringify({ annotations: pending }), { status: readFailed ? 503 : 200 })
       : originalFetch(input));
     vi.stubGlobal('fetch', fetchSpy);
     renderProjectView({ project: { ...project(), workspaceId: undefined, pendingPrompt: '' } });
@@ -1714,13 +1720,28 @@ describe('a Home auto-send observes a project billing scope that settles after m
     expect(mockedUseProjectFileEvents.mock.calls.at(-1)?.[2]).not.toBe(firstHandler);
     fetchSpy.mockClear();
     await act(async () => {
-      mockedUseProjectFileEvents.mock.calls.at(-1)?.[2]?.({
-        type: 'annotation-draft-available', projectId: PROJECT_ID,
-        conversationId: note.conversationId, at: Date.now(),
-      });
+      if (signal === 'event') {
+        mockedUseProjectFileEvents.mock.calls.at(-1)?.[2]?.({
+          type: 'annotation-draft-available', projectId: PROJECT_ID,
+          conversationId: note.conversationId, at: Date.now(),
+        });
+      } else if (signal === 'focus') {
+        window.dispatchEvent(new Event('focus'));
+      } else {
+        fireEvent.click(screen.getByTestId('native-annotation-receipt'));
+      }
     });
     await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0].annotationDrafts).toEqual([note]));
     expect(fetchSpy.mock.calls.filter(([input]) => String(input) === pendingPath)).toHaveLength(1);
+    readFailed = true;
+    fetchSpy.mockClear();
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await waitFor(() => expect(fetchSpy.mock.calls.filter(([input]) => String(input) === pendingPath)).toHaveLength(1));
+    expect(chatPaneSpy.mock.calls.at(-1)?.[0].annotationDrafts).toEqual([note]);
+    readFailed = false;
+    pending = [];
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0].annotationDrafts).toEqual([]));
   });
 
   it('reconciles files and comments with the exact Team scope when the project event stream becomes ready', async () => {

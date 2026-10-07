@@ -14,6 +14,12 @@ import '../src/components/HoverTouchpointOverlay.module.css';
 import '../src/components/ProductionCampaignBadge.module.css';
 import '../src/components/EdgeAnnotationsPanel.module.css';
 import '../src/components/OnboardingWelcome.module.css';
+// Chat theme tokens, execution records, staged annotation cards and next-step
+// suggestions also live under the lazy App entry. Anchor their CSS before HMR.
+import '../src/components/chat/ChatRoot.module.css';
+import '../src/components/chat/primitives/record.module.css';
+import '../src/components/chat/BrowserAnnotationDraftCard.module.css';
+import '../src/components/NextStepActions.module.css';
 
 export const metadata: Metadata = {
   title: 'OpenDesign',

@@ -17,7 +17,7 @@ import {
   isOpenDesignHostAvailable,
 } from '@open-design/host';
 import type { TrackingReferenceBoardCategory } from '@open-design/contracts/analytics';
-import type { BrowserAnnotationPostRequest, JsonValue } from '@open-design/contracts';
+import type { BrowserAnnotationPostRequest, EdgeAnnotationSubmitResponse, JsonValue } from '@open-design/contracts';
 import { isBrowserStylePatch } from '@open-design/contracts';
 import { useAnalytics } from '../analytics/provider';
 import {
@@ -339,6 +339,7 @@ interface DesignBrowserPanelProps {
   onSendBoardCommentAttachments?: (attachments: ChatCommentAttachment[], images?: File[]) => Promise<CommentSendResult> | CommentSendResult;
   onAddImageToChat?: (attachment: ChatAttachment) => void;
   onRequestBrowserUsePrompt?: (prompt: string) => void;
+  onAnnotationDraftCreated?: (receipt: EdgeAnnotationSubmitResponse) => void;
   onPageSnapshotToast?: (event: BrowserPageSnapshotToastEvent) => void;
   sendDisabled?: boolean;
   /** Workspace tab id. When set, this panel registers its live webview in the
@@ -986,6 +987,7 @@ export function DesignBrowserPanel({
   onRemovePreviewComment,
   onAddImageToChat,
   onRequestBrowserUsePrompt,
+  onAnnotationDraftCreated,
   onPageSnapshotToast,
   sendDisabled = false,
   browserTabId,
@@ -2898,6 +2900,15 @@ export function DesignBrowserPanel({
         body: JSON.stringify(request),
       });
       if (!response.ok) throw new Error(t('designBrowser.status.commentSendingUnavailable'));
+      const receipt = await response.json() as EdgeAnnotationSubmitResponse;
+      if (!receipt || receipt.projectId !== projectId || receipt.conversationId !== request.conversationId
+        || typeof receipt.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(receipt.id)
+        || typeof receipt.replayed !== 'boolean') {
+        throw new Error(t('designBrowser.status.commentSendingUnavailable'));
+      }
+      console.warn(JSON.stringify({ logger: 'browser.annotation.submit', phase: 'stored',
+        status: response.status, stale: selectionId !== pickerRequestIdRef.current }));
+      onAnnotationDraftCreated?.(receipt);
       if (selectionId !== pickerRequestIdRef.current) return;
       browserPostRef.current = null;
       clearBrowserTool();

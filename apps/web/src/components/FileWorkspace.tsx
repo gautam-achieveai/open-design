@@ -111,6 +111,7 @@ import {
 import {
   resolveLocalizedText,
   type ChatSessionMode,
+  type EdgeAnnotationSubmitResponse,
   type InstalledPluginRecord,
   type LocalizedText,
   type WorkspaceCollabContext,
@@ -281,6 +282,7 @@ interface Props {
   onSendBoardCommentAttachments?: (attachments: ChatCommentAttachment[], images?: File[]) => Promise<CommentSendResult> | CommentSendResult;
   onBrandExtractionStopRequest?: () => void;
   onRequestBrowserUsePrompt?: (prompt: string) => void;
+  onAnnotationDraftCreated?: (receipt: EdgeAnnotationSubmitResponse) => void;
   onPluginFolderAgentAction?: (
     relativePath: string,
     action: PluginFolderAgentAction,
@@ -1350,6 +1352,7 @@ export function FileWorkspace({
   onSendBoardCommentAttachments,
   onBrandExtractionStopRequest,
   onRequestBrowserUsePrompt,
+  onAnnotationDraftCreated,
   onPluginFolderAgentAction,
   activePluginActionPaths,
   hiddenPluginActionPaths,
@@ -4412,6 +4415,7 @@ export function FileWorkspace({
               onRemovePreviewComment={onRemovePreviewComment}
               onSendBoardCommentAttachments={onSendBoardCommentAttachments}
               onRequestBrowserUsePrompt={onRequestBrowserUsePrompt}
+              onAnnotationDraftCreated={onAnnotationDraftCreated}
               onPageSnapshotToast={handleBrowserPageSnapshotToast}
               onRefreshFiles={refreshFilesWithoutResult}
               onOpenDesignFiles={() => setPersistedActive(DESIGN_FILES_TAB)}

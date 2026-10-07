@@ -261,7 +261,8 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       ok: true as const, dataUrl: 'data:image/png;base64,AAAA', w: 200, h: 100, capturedCssRect: options?.clip }));
     restoreHost?.();
     restoreHost = installMockOpenDesignHost({ host: { capture: { page: capturePage } } });
-    const fetchMock = vi.fn(async (_url: string, _options: { body: string }) => ({ ok: true }));
+    const fetchMock = vi.fn(async (_url: string, _options: { body: string }) => ({ ok: true,
+      json: async () => ({ projectId: 'p1', conversationId: 'c1', id: '11111111-1111-4111-8111-111111111111', replayed: false }) }));
     vi.stubGlobal('fetch', fetchMock);
     try {
       const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1"
@@ -287,15 +288,22 @@ describe('DesignBrowserPanel <webview> navigation', () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
-  it('collects one native annotation without screenshot or agent, retaining the event on retry', async () => {
+  it.each(['HTTP failure', 'wrong destination', 'invalid receipt'] as const)(
+    'collects one native annotation without screenshot or agent, retaining the event after %s', async (failure) => {
     const agentSend = vi.fn();
     const save = vi.fn();
-    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: false }).mockResolvedValue({ ok: true });
+    const onAnnotationDraftCreated = vi.fn();
+    const receipt = { projectId: 'p1', conversationId: 'c1', id: '11111111-1111-4111-8111-111111111111', replayed: false };
+    const firstResponse = failure === 'HTTP failure' ? { ok: false }
+      : { ok: true, json: async () => failure === 'wrong destination'
+        ? { ...receipt, conversationId: 'another-conversation' } : {} };
+    const fetchMock = vi.fn().mockResolvedValueOnce(firstResponse).mockResolvedValue({ ok: true, json: async () => receipt });
     vi.stubGlobal('fetch', fetchMock);
     try {
       const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1"
         initialUrl="http://localhost:1234/demo?view=wide#hero" onOpenFile={() => {}} onRefreshFiles={() => {}}
-        onSendBoardCommentAttachments={agentSend} onSavePreviewComment={save} />);
+        onSendBoardCommentAttachments={agentSend} onSavePreviewComment={save}
+        onAnnotationDraftCreated={onAnnotationDraftCreated} />);
       const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
       webview.executeJavaScript = vi.fn(async (script: string) => script.includes('function snapshotFor(el, ev)') ? {
         elementId: 'hero', selector: '#hero', label: 'div', text: 'Save', htmlHint: '<div id="hero">',
@@ -308,6 +316,8 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
       await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add to chat draft' })); });
       expect((input as HTMLTextAreaElement).value).toBe('Make Save clearer');
+      expect(screen.getByPlaceholderText('Comment on this element…')).toBe(input);
+      expect(onAnnotationDraftCreated).not.toHaveBeenCalled();
       const first = JSON.parse(fetchMock.mock.calls[0]![1].body);
       expect(fetchMock.mock.calls[0]![0]).toBe('/api/projects/p1/edge-annotations/draft');
       expect(first).toMatchObject({ conversationId: 'c1', note: 'Make Save clearer', target: { domOutline: 'div\n  h1 Save' } });
@@ -315,6 +325,7 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }); });
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(JSON.parse(fetchMock.mock.calls[1]![1].body)).toEqual(first);
+      expect(onAnnotationDraftCreated).toHaveBeenCalledExactlyOnceWith(receipt);
       expect(screen.queryByPlaceholderText('Comment on this element…')).toBeNull();
       expect(agentSend).not.toHaveBeenCalled();
       expect(save).not.toHaveBeenCalled();
@@ -1244,7 +1255,8 @@ describe('DesignBrowserPanel compact style edits', () => {
     });
     restoreHost?.();
     restoreHost = installMockOpenDesignHost({ host: { capture: { page: async () => ({ ok: false as const, reason: 'fixture unavailable' }) } } });
-    const fetchMock = vi.fn(async (_url: string) => ({ ok: true }));
+    const fetchMock = vi.fn(async (_url: string) => ({ ok: true,
+      json: async () => ({ projectId: 'style-context', conversationId: 'c1', id: '11111111-1111-4111-8111-111111111111', replayed: false }) }));
     vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { queueMicrotask(() => callback(0)); return 1; });
     const { container } = render(<DesignBrowserPanel projectId="style-context" conversationId="c1" browserTabId="tab-style"

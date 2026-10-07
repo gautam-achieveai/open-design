@@ -12473,16 +12473,31 @@ export function ProjectView({
         cache: 'no-store',
         ...(projectRunWorkspaceContext ? { headers: workspaceProjectHeaders(projectRunWorkspaceContext) } : {}),
       });
-      if (!response.ok) throw new Error('annotation draft unavailable');
+      if (!response.ok) {
+        if ([401, 403, 404].includes(response.status) && nonce === annotationDraftRefreshNonceRef.current) {
+          setAnnotationDrafts([]);
+        }
+        throw new Error('annotation draft unavailable');
+      }
       const result = await response.json() as { annotations: PendingBrowserAnnotation[] };
       if (nonce === annotationDraftRefreshNonceRef.current) setAnnotationDrafts(result.annotations);
     } catch {
-      if (nonce === annotationDraftRefreshNonceRef.current) setAnnotationDrafts([]);
+      // A transient read failure must not erase evidence already in the draft.
     }
   }, [activeConversationId, project.id, projectResourceAuthority, projectRunWorkspaceContext]);
   refreshAnnotationDraftRef.current = () => { void refreshAnnotationDraft(); };
   useEffect(() => {
     void refreshAnnotationDraft();
+    const onReturn = () => {
+      if (document.visibilityState !== 'hidden') void refreshAnnotationDraft();
+    };
+    window.addEventListener('focus', onReturn);
+    document.addEventListener('visibilitychange', onReturn);
+    return () => {
+      annotationDraftRefreshNonceRef.current += 1;
+      window.removeEventListener('focus', onReturn);
+      document.removeEventListener('visibilitychange', onReturn);
+    };
   }, [refreshAnnotationDraft]);
   // One handler for both the review banner and the chat CTA. When GitHub is
   // not connected it opens Connectors; once connected it prefills the composer
@@ -14115,6 +14130,11 @@ export function ProjectView({
         ) : null}
         <FileWorkspace
           projectId={project.id}
+          onAnnotationDraftCreated={(receipt) => {
+            if (receipt.projectId === project.id && receipt.conversationId === activeConversationId) {
+              refreshAnnotationDraftRef.current?.();
+            }
+          }}
           projectName={currentProject.name}
           viewerOnly={projectMutationReadOnly}
           materializationPending={projectCollab.materializationPending}

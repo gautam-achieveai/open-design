@@ -78,6 +78,10 @@ Existing links: `win.workspace-tarballs` carries `workspaceBuildKey`;
 `basePayloadKey` and `overlayPayloadKey`; `win.launcher-payload` carries
 `sourceKey`.
 
+`win.resource-tree` also hashes the complete `clipper/` tree, which is copied
+into the Windows application resources for browser installation. Changes to
+extension files must invalidate this node and its downstream installers.
+
 **R3 — Build outputs are never direct key inputs.** `hashPackageSourcePath`
 excludes `dist`, `.next`, `out`, `node_modules`, and `.od`. A node that
 consumes another node's build output must obtain that output's identity

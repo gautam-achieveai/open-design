@@ -65,6 +65,9 @@ async function createWorkspaceFixture(workspaceRoot: string): Promise<void> {
   await mkdir(join(workspaceRoot, "plugins", "registry", "official"), {
     recursive: true,
   });
+  await mkdir(join(workspaceRoot, "clipper"), { recursive: true });
+  await writeFile(join(workspaceRoot, "clipper", "manifest.json"), '{"manifest_version":3}\n', "utf8");
+  await writeFile(join(workspaceRoot, "clipper", "content.js"), "clipper version one\n", "utf8");
 }
 
 async function createDshRuntimeFixture(workspaceRoot: string): Promise<void> {
@@ -88,6 +91,36 @@ async function createDshRuntimeFixture(workspaceRoot: string): Promise<void> {
 }
 
 describe("prepareResourceTree", () => {
+  it("ships the browser clipper and refreshes it without invalidating on unrelated build output", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-design-win-clipper-"));
+    const workspaceRoot = join(root, "workspace");
+    const resourceRoot = join(root, "materialized", "open-design");
+    const cache = new ToolPackCache(join(root, "cache"));
+    const config = { workspaceRoot } as ToolPackConfig;
+    const paths = { resourceRoot } as WinPaths;
+
+    try {
+      await createWorkspaceFixture(workspaceRoot);
+      await prepareResourceTree(config, paths, cache, { materialize: true });
+      await expect(readFile(join(resourceRoot, "clipper", "manifest.json"), "utf8"))
+        .resolves.toBe('{"manifest_version":3}\n');
+      await expect(readFile(join(resourceRoot, "clipper", "content.js"), "utf8"))
+        .resolves.toBe("clipper version one\n");
+
+      await writeFile(join(workspaceRoot, "clipper", "content.js"), "clipper version two\n", "utf8");
+      await prepareResourceTree(config, paths, cache, { materialize: true });
+      await expect(readFile(join(resourceRoot, "clipper", "content.js"), "utf8"))
+        .resolves.toBe("clipper version two\n");
+
+      await mkdir(join(workspaceRoot, "apps", "web", "dist"), { recursive: true });
+      await writeFile(join(workspaceRoot, "apps", "web", "dist", "output.js"), "unrelated output", "utf8");
+      await prepareResourceTree(config, paths, cache, { materialize: true });
+      expect(cache.report().entries.map((entry) => entry.status)).toEqual(["miss", "miss", "hit"]);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("bundles the DeepSeek Harness runtime into the Windows resource tree", async () => {
     const root = await mkdtemp(join(tmpdir(), "open-design-win-dsh-runtime-"));
     const workspaceRoot = join(root, "workspace");
