@@ -661,14 +661,16 @@ async function captureAnnotationCrop(message, sender) {
     if (!after.active || after.url !== originalUrl || !grantForTab(after)
       || lease.cancelled || annotationEpochs.get(tabId) !== documentId) throw new Error('Annotation tab changed');
     const [page] = await chrome.scripting.executeScript({ target: { tabId },
-      func: () => ({ width: innerWidth, height: innerHeight, x: scrollX, y: scrollY }) });
+      func: () => ({ width: innerWidth, height: innerHeight, x: scrollX, y: scrollY,
+        contentWidth: document.documentElement.clientWidth, contentHeight: document.documentElement.clientHeight }) });
     if (!page?.result || page.result.width !== message.viewportWidth
       || page.result.height !== message.viewportHeight
       || page.result.x !== message.scrollX || page.result.y !== message.scrollY) {
       throw new Error('Page moved during screenshot');
     }
     const cropDataUrl = await cropAnnotationScreenshot(pixels, message.rect,
-      message.viewportWidth, message.viewportHeight, message.maskRects);
+      message.viewportWidth, message.viewportHeight, message.maskRects,
+      { width: page.result.contentWidth, height: page.result.contentHeight });
     // Never accept a crop from another tab/document after async bitmap work.
     const finalTab = await chrome.tabs.get(tabId);
     if (!finalTab.active || finalTab.url !== originalUrl
@@ -1176,17 +1178,128 @@ async function maskScreenshot(dataUrl, masks, viewportWidth, viewportHeight) {
   }
 }
 
-async function cropAnnotationScreenshot(tabDataUrl, rect, viewportWidth, viewportHeight, maskRects) {
+// Pin picture framing, the same rules as the in-app browser. Mirrors
+// pinCaptureFrame / pinCaptureTrim in apps/web/src/components/design-browser-tools.ts;
+// keep both in step (clipper/tests/annotation.test.ts checks the same cases).
+const PIN_CAPTURE_MIN = { width: 160, height: 100 };
+const PIN_CAPTURE_MAX_RATIO = 3;
+const PIN_CAPTURE_TRIM_BELOW = 0.35;
+
+function growPinCaptureRect(rect, bounds) {
+  let width = Math.max(rect.width, PIN_CAPTURE_MIN.width);
+  let height = Math.max(rect.height, PIN_CAPTURE_MIN.height);
+  if (width / height > PIN_CAPTURE_MAX_RATIO) height = width / PIN_CAPTURE_MAX_RATIO;
+  if (height / width > PIN_CAPTURE_MAX_RATIO) width = height / PIN_CAPTURE_MAX_RATIO;
+  width = Math.min(bounds.width, Math.ceil(width));
+  height = Math.min(bounds.height, Math.ceil(height));
+  const x = Math.min(Math.max(0, Math.floor(rect.x + rect.width / 2 - width / 2)), bounds.width - width);
+  const y = Math.min(Math.max(0, Math.floor(rect.y + rect.height / 2 - height / 2)), bounds.height - height);
+  return { x, y, width, height };
+}
+
+// The page area a pin picture captures (viewport CSS px): the whole visible
+// element, plus context around a tiny, flat or narrow one, which `highlight`
+// then marks inside the frame. Null when the element is off-view.
+function pinCaptureFrame(element, viewport) {
+  if (![element.x, element.y, element.width, element.height, viewport.width, viewport.height].every(Number.isFinite)) return null;
+  const x0 = Math.max(0, Math.floor(element.x));
+  const y0 = Math.max(0, Math.floor(element.y));
+  const x1 = Math.min(Math.floor(viewport.width), Math.ceil(element.x + element.width));
+  const y1 = Math.min(Math.floor(viewport.height), Math.ceil(element.y + element.height));
+  if (x1 <= x0 || y1 <= y0) return null;
+  const visible = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  const frame = growPinCaptureRect(visible, { width: Math.floor(viewport.width), height: Math.floor(viewport.height) });
+  const grown = frame.width !== visible.width || frame.height !== visible.height;
+  return { frame, highlight: grown ? { x: visible.x - frame.x, y: visible.y - frame.y,
+    width: visible.width, height: visible.height } : null };
+}
+
+// For a mostly-empty pin picture (plain matching corners), the part to keep:
+// content plus a margin, grown back to the framing rules. Null keeps it whole.
+function pinCaptureTrim(image, minScale = 1, tolerance = 8) {
+  const { width, height, data } = image;
+  if (width < 2 || height < 2 || data.length < width * height * 4) return null;
+  const at = (x, y) => (y * width + x) * 4;
+  const corners = [at(0, 0), at(width - 1, 0), at(0, height - 1), at(width - 1, height - 1)];
+  const bg = [data[corners[0]], data[corners[0] + 1], data[corners[0] + 2]];
+  const differs = (i) => Math.abs(data[i] - bg[0]) > tolerance
+    || Math.abs(data[i + 1] - bg[1]) > tolerance || Math.abs(data[i + 2] - bg[2]) > tolerance;
+  if (corners.some(differs)) return null;
+  let minX = width; let minY = height; let maxX = -1; let maxY = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!differs(at(x, y))) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return null;
+  if ((maxX - minX + 1) * (maxY - minY + 1) >= PIN_CAPTURE_TRIM_BELOW * width * height) return null;
+  const margin = Math.round(12 * minScale);
+  const padded = { x: Math.max(0, minX - margin), y: Math.max(0, minY - margin),
+    width: Math.min(width, maxX + 1 + margin) - Math.max(0, minX - margin),
+    height: Math.min(height, maxY + 1 + margin) - Math.max(0, minY - margin) };
+  const scaled = growPinCaptureRect(
+    { x: padded.x / minScale, y: padded.y / minScale, width: padded.width / minScale, height: padded.height / minScale },
+    { width: width / minScale, height: height / minScale },
+  );
+  const trimmed = { x: Math.round(scaled.x * minScale), y: Math.round(scaled.y * minScale),
+    width: Math.min(width, Math.round(scaled.width * minScale)), height: Math.min(height, Math.round(scaled.height * minScale)) };
+  return trimmed.width >= width && trimmed.height >= height ? null : trimmed;
+}
+
+// Rings the element when context was added, else trims plain empty margins.
+// Either step keeps the plain picture if it cannot run.
+function framePinCapture(canvas, context, framing, pixelsPerCss) {
+  try {
+    if (framing.highlight) {
+      const line = Math.max(2, Math.round(2 * pixelsPerCss));
+      const outset = line * 1.5;
+      const box = [framing.highlight.x * pixelsPerCss - outset, framing.highlight.y * pixelsPerCss - outset,
+        framing.highlight.width * pixelsPerCss + 2 * outset, framing.highlight.height * pixelsPerCss + 2 * outset];
+      context.lineWidth = line * 2;
+      context.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+      context.strokeRect(...box);
+      context.lineWidth = line;
+      context.strokeStyle = '#ff5a3c';
+      context.strokeRect(...box);
+      return canvas;
+    }
+    const keep = pinCaptureTrim(context.getImageData(0, 0, canvas.width, canvas.height), pixelsPerCss);
+    if (!keep) return canvas;
+    const trimmed = new OffscreenCanvas(keep.width, keep.height);
+    const trimmedContext = trimmed.getContext('2d');
+    if (!trimmedContext) return canvas;
+    trimmedContext.drawImage(canvas, keep.x, keep.y, keep.width, keep.height, 0, 0, keep.width, keep.height);
+    return trimmed;
+  } catch {
+    return canvas;
+  }
+}
+
+async function cropAnnotationScreenshot(tabDataUrl, rect, viewportWidth, viewportHeight, maskRects, content) {
   if (!/^data:image\/png;base64,/.test(tabDataUrl) || !rect
     || ![rect.x, rect.y, rect.width, rect.height, viewportWidth, viewportHeight].every(Number.isFinite)
     || viewportWidth <= 0 || viewportHeight <= 0 || rect.width <= 0 || rect.height <= 0) {
     throw new Error('Screenshot crop is unavailable');
   }
-  const left = Math.max(0, rect.x);
-  const top = Math.max(0, rect.y);
-  const right = Math.min(viewportWidth, rect.x + rect.width);
-  const bottom = Math.min(viewportHeight, rect.y + rect.height);
-  if (right - left < 2 || bottom - top < 2) throw new Error('Element is outside the visible viewport');
+  if (Math.min(viewportWidth, rect.x + rect.width) - Math.max(0, rect.x) < 2
+    || Math.min(viewportHeight, rect.y + rect.height) - Math.max(0, rect.y) < 2) {
+    throw new Error('Element is outside the visible viewport');
+  }
+  // The picture frames the whole element, plus page context when it is tiny,
+  // flat or narrow, so the pin stays recognisable in a thumbnail.
+  // Frame inside the page's content box: a scrollbar is not page content.
+  const contentWidth = Number.isFinite(content?.width) && content.width > 0 ? Math.min(viewportWidth, content.width) : viewportWidth;
+  const contentHeight = Number.isFinite(content?.height) && content.height > 0 ? Math.min(viewportHeight, content.height) : viewportHeight;
+  const framing = pinCaptureFrame(rect, { width: contentWidth, height: contentHeight });
+  if (!framing) throw new Error('Element is outside the visible viewport');
+  const left = framing.frame.x;
+  const top = framing.frame.y;
+  const right = left + framing.frame.width;
+  const bottom = top + framing.frame.height;
   const source = await (await fetch(tabDataUrl)).blob();
   const bitmap = await createImageBitmap(source);
   try {
@@ -1216,7 +1329,8 @@ async function cropAnnotationScreenshot(tabDataUrl, rect, viewportWidth, viewpor
       const my1 = Math.min(canvas.height, Math.ceil(((mask.y + mask.height) * scaleY - y0) * canvas.height / pixelHeight));
       context.fillRect(mx0, my0, mx1 - mx0, my1 - my0);
     }
-    const cropped = await canvas.convertToBlob({ type: 'image/png' });
+    const framed = framePinCapture(canvas, context, framing, canvas.width / Math.max(1, right - left));
+    const cropped = await framed.convertToBlob({ type: 'image/png' });
     if (cropped.type !== 'image/png' || cropped.size === 0
       || cropped.size > ANNOTATION_MAX_CROP_BYTES) throw new Error('Element screenshot is too large');
     return blobToDataUrl(cropped);

@@ -2398,6 +2398,7 @@ export const ja: Dict = {
   'designBrowser.status.htmlSaveFailed': 'HTML save failed',
   'designBrowser.status.commentSavingUnavailable': 'Comment saving is unavailable',
   'designBrowser.status.commentSaved': 'Browser comment saved',
+  'designBrowser.status.commentSavedNoPicture': '画像なしでピンを保存しました。もう一度要素を選ぶとキャプチャを再試行します。',
   'designBrowser.status.commentSendingUnavailable': 'Comment sending is unavailable',
   'designBrowser.comments.aria': 'Browser comments',
   'designBrowser.comments.openPin': 'Open pin #{n}: {label}',

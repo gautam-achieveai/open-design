@@ -2398,6 +2398,7 @@ export const pl: Dict = {
   'designBrowser.status.htmlSaveFailed': 'HTML save failed',
   'designBrowser.status.commentSavingUnavailable': 'Comment saving is unavailable',
   'designBrowser.status.commentSaved': 'Browser comment saved',
+  'designBrowser.status.commentSavedNoPicture': 'Pinezkę zapisano bez obrazu. Wybierz element ponownie, aby powtórzyć przechwytywanie.',
   'designBrowser.status.commentSendingUnavailable': 'Comment sending is unavailable',
   'designBrowser.comments.aria': 'Browser comments',
   'designBrowser.comments.openPin': 'Open pin #{n}: {label}',

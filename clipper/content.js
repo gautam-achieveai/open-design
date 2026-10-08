@@ -1596,7 +1596,12 @@
       if (!current()) { recoverStaleReview(); return; }
       if (result?.ok) {
         closeAnnotation();
-        toast(t('annotationPinSaved', { n: result.comment?.pinSeq ?? pin?.pinSeq ?? '' }));
+        // A pin stored without a screenshot (failed capture, or a selection that
+        // cannot take one) is called out: the agent gets no picture of it.
+        const stored = result.comment?.attachments;
+        const hasPicture = Array.isArray(stored) ? stored.length > 0 : Boolean(crop);
+        toast(t(hasPicture ? 'annotationPinSaved' : 'annotationPinSavedNoPicture',
+          { n: result.comment?.pinSeq ?? pin?.pinSeq ?? '' }));
         void refreshPins();
       } else {
         submitting = false;

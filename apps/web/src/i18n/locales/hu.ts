@@ -2398,6 +2398,7 @@ export const hu: Dict = {
   'designBrowser.status.htmlSaveFailed': 'HTML save failed',
   'designBrowser.status.commentSavingUnavailable': 'Comment saving is unavailable',
   'designBrowser.status.commentSaved': 'Browser comment saved',
+  'designBrowser.status.commentSavedNoPicture': 'A tű kép nélkül mentve. Válaszd ki újra az elemet a rögzítés megismétléséhez.',
   'designBrowser.status.commentSendingUnavailable': 'Comment sending is unavailable',
   'designBrowser.comments.aria': 'Browser comments',
   'designBrowser.comments.openPin': 'Open pin #{n}: {label}',

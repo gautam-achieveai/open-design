@@ -2398,6 +2398,7 @@ export const ar: Dict = {
   'designBrowser.status.htmlSaveFailed': 'HTML save failed',
   'designBrowser.status.commentSavingUnavailable': 'Comment saving is unavailable',
   'designBrowser.status.commentSaved': 'Browser comment saved',
+  'designBrowser.status.commentSavedNoPicture': 'تم حفظ الدبوس بدون صورة. اختر العنصر مرة أخرى لإعادة الالتقاط.',
   'designBrowser.status.commentSendingUnavailable': 'Comment sending is unavailable',
   'designBrowser.comments.aria': 'Browser comments',
   'designBrowser.comments.openPin': 'Open pin #{n}: {label}',

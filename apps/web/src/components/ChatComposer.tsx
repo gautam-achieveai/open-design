@@ -15,6 +15,7 @@ import {
 import { createPortal } from 'react-dom';
 import { Button } from '@open-design/components';
 import { BrowserAnnotationDraftCard } from './chat/BrowserAnnotationDraftCard';
+import { StagedCommentCard } from './chat/StagedCommentCard';
 import { chatSeam } from './chat/ChatRoot';
 import annotationDraftStyles from './chat/BrowserAnnotationDraftCard.module.css';
 import { ThinkingOrb } from './composer/ThinkingOrb';
@@ -66,7 +67,7 @@ import type {
   WorkspaceCollabContext,
   WorkspaceContextItem,
 } from '@open-design/contracts';
-import { buildVisualAnnotationAttachment, commentTargetDisplayName } from '../comments';
+import { buildVisualAnnotationAttachment, pinPreviewImage } from '../comments';
 import { Icon, type IconName } from "./Icon";
 import { ChatCloseIcon, ChatFileIcon, ChatSendArrowIcon } from "./chat/primitives/icons";
 import { ComposerPlusMenu, PLUS_SUBMENU_RESOURCE_KIND, type PlusMenuSubmenu } from './ComposerPlusMenu';
@@ -3688,6 +3689,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
           {currentCommentAttachments().length > 0 ? (
             <StagedCommentAttachments
               attachments={currentCommentAttachments()}
+              imageUrl={(path) => projectId ? projectRawUrl(projectId, path, workspaceContext) : undefined}
               onRemove={removeCommentAttachment}
               t={t}
             />
@@ -4982,10 +4984,12 @@ function useStagedTrayNav(
 
 function StagedCommentAttachments({
   attachments,
+  imageUrl,
   onRemove,
   t,
 }: {
   attachments: ChatCommentAttachment[];
+  imageUrl: (path: string) => string | undefined;
   onRemove: (id: string) => void;
   t: TranslateFn;
 }) {
@@ -4993,30 +4997,18 @@ function StagedCommentAttachments({
   if (visibleAttachments.length === 0) return null;
   return (
     <div className="staged-row comment-staged-row" data-testid="staged-comment-attachments">
-      {visibleAttachments.map((a) => (
-        <div key={a.id} className="staged-chip staged-comment">
-          <span
-            className="staged-name"
-            title={`${a.screenshotPath ? `${a.screenshotPath}: ` : ''}${commentTargetDisplayName(a)}${a.comment ? `: ${a.comment}` : ''}`}
-          >
-            {a.source === 'saved-comment' ? (
-              <span className="staged-comment-seq" data-testid="staged-comment-seq">#{a.order}</span>
-            ) : null}
-            <strong>{commentTargetDisplayName(a)}</strong>
-            {a.comment ? <span>{a.comment}</span> : null}
-          </span>
-          <button
-            type="button"
-            className="staged-remove od-tooltip"
-            onClick={() => onRemove(a.id)}
-            title={t('chat.comments.removeAttachment')}
-            data-tooltip={t('chat.comments.removeAttachment')}
-            aria-label={t('chat.comments.removeAttachmentAria', { name: a.elementId })}
-          >
-            <Icon name="close" size={11} />
-          </button>
-        </div>
-      ))}
+      {visibleAttachments.map((a) => {
+        const image = pinPreviewImage(a.imageAttachments);
+        return (
+          <StagedCommentCard
+            key={a.id}
+            attachment={a}
+            imageUrl={image ? imageUrl(image.path) : undefined}
+            onRemove={() => onRemove(a.id)}
+            t={t}
+          />
+        );
+      })}
     </div>
   );
 }

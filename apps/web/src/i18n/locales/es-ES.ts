@@ -2398,6 +2398,7 @@ export const esES: Dict = {
   'designBrowser.status.htmlSaveFailed': 'HTML save failed',
   'designBrowser.status.commentSavingUnavailable': 'Comment saving is unavailable',
   'designBrowser.status.commentSaved': 'Browser comment saved',
+  'designBrowser.status.commentSavedNoPicture': 'Pin guardado sin imagen. Vuelve a seleccionar el elemento para repetir la captura.',
   'designBrowser.status.commentSendingUnavailable': 'Comment sending is unavailable',
   'designBrowser.comments.aria': 'Browser comments',
   'designBrowser.comments.openPin': 'Open pin #{n}: {label}',

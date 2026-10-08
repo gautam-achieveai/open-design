@@ -82,10 +82,108 @@ export interface BrowserElementSnapshot {
   selectionKind?: 'element';
   isFormField?: boolean;
   maskRects?: Array<{ x: number; y: number; width: number; height: number; textHidden?: boolean }> | null;
-  viewport?: { width: number; height: number };
+  /** Guest viewport; `content*` excludes the page's scrollbars. */
+  viewport?: { width: number; height: number; contentWidth?: number; contentHeight?: number };
 }
 
 type BrowserRect = { x: number; y: number; width: number; height: number; textHidden?: boolean };
+
+export type PinCaptureRect = { x: number; y: number; width: number; height: number };
+
+/** Smallest page area a pin picture shows, in CSS px: a tiny control gets its surroundings. */
+export const PIN_CAPTURE_MIN = { width: 160, height: 100 } as const;
+/** Flattest a pin picture may be: a bar or a column gets page around its short side. */
+export const PIN_CAPTURE_MAX_RATIO = 3;
+
+/**
+ * Grows `rect` to at least PIN_CAPTURE_MIN and at most PIN_CAPTURE_MAX_RATIO,
+ * centred on it and kept inside `bounds`. The result always contains the
+ * part of `rect` inside `bounds`; it never zooms into part of it.
+ */
+function growPinCaptureRect(rect: PinCaptureRect, bounds: { width: number; height: number }): PinCaptureRect {
+  let width = Math.max(rect.width, PIN_CAPTURE_MIN.width);
+  let height = Math.max(rect.height, PIN_CAPTURE_MIN.height);
+  if (width / height > PIN_CAPTURE_MAX_RATIO) height = width / PIN_CAPTURE_MAX_RATIO;
+  if (height / width > PIN_CAPTURE_MAX_RATIO) width = height / PIN_CAPTURE_MAX_RATIO;
+  width = Math.min(bounds.width, Math.ceil(width));
+  height = Math.min(bounds.height, Math.ceil(height));
+  const x = Math.min(Math.max(0, Math.floor(rect.x + rect.width / 2 - width / 2)), bounds.width - width);
+  const y = Math.min(Math.max(0, Math.floor(rect.y + rect.height / 2 - height / 2)), bounds.height - height);
+  return { x, y, width, height };
+}
+
+/**
+ * The page area a browser pin picture captures, in viewport CSS px. The whole
+ * (visible) element is always inside. A tiny, flat or narrow element gets page
+ * context around it, and `highlight` then marks the element inside the frame
+ * so the reader sees which part was clicked. Null when the element is off-view.
+ */
+export function pinCaptureFrame(
+  element: PinCaptureRect,
+  viewport: { width: number; height: number },
+): { frame: PinCaptureRect; highlight: PinCaptureRect | null } | null {
+  if (![element.x, element.y, element.width, element.height, viewport.width, viewport.height].every(Number.isFinite)) return null;
+  const x0 = Math.max(0, Math.floor(element.x));
+  const y0 = Math.max(0, Math.floor(element.y));
+  const x1 = Math.min(Math.floor(viewport.width), Math.ceil(element.x + element.width));
+  const y1 = Math.min(Math.floor(viewport.height), Math.ceil(element.y + element.height));
+  if (x1 <= x0 || y1 <= y0) return null;
+  const visible = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  const frame = growPinCaptureRect(visible, { width: Math.floor(viewport.width), height: Math.floor(viewport.height) });
+  const grown = frame.width !== visible.width || frame.height !== visible.height;
+  return { frame, highlight: grown ? { x: visible.x - frame.x, y: visible.y - frame.y,
+    width: visible.width, height: visible.height } : null };
+}
+
+/** Content below this share of a pin picture counts as "mostly empty" and is trimmed. */
+const PIN_CAPTURE_TRIM_BELOW = 0.35;
+
+/**
+ * For a pin picture that is mostly plain background (four matching corners),
+ * the part to keep: the content plus a small margin, grown back to the
+ * PIN_CAPTURE_MIN / PIN_CAPTURE_MAX_RATIO rules. Null keeps the whole picture.
+ * Works in image pixels; `minScale` is image px per CSS px.
+ */
+export function pinCaptureTrim(
+  image: { width: number; height: number; data: ArrayLike<number> },
+  minScale = 1,
+  // Tight on purpose: light content (pale cards, stripes) must not count as background.
+  tolerance = 8,
+): PinCaptureRect | null {
+  const { width, height, data } = image;
+  if (width < 2 || height < 2 || data.length < width * height * 4) return null;
+  const at = (x: number, y: number) => (y * width + x) * 4;
+  const corners = [at(0, 0), at(width - 1, 0), at(0, height - 1), at(width - 1, height - 1)];
+  const bg = [data[corners[0]!]!, data[corners[0]! + 1]!, data[corners[0]! + 2]!];
+  const differs = (i: number) => Math.abs(data[i]! - bg[0]!) > tolerance
+    || Math.abs(data[i + 1]! - bg[1]!) > tolerance || Math.abs(data[i + 2]! - bg[2]!) > tolerance;
+  if (corners.some(differs)) return null;
+  let minX = width, minY = height, maxX = -1, maxY = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!differs(at(x, y))) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return null;
+  const contentW = maxX - minX + 1;
+  const contentH = maxY - minY + 1;
+  if (contentW * contentH >= PIN_CAPTURE_TRIM_BELOW * width * height) return null;
+  const margin = Math.round(12 * minScale);
+  const padded = { x: Math.max(0, minX - margin), y: Math.max(0, minY - margin),
+    width: Math.min(width, maxX + 1 + margin) - Math.max(0, minX - margin),
+    height: Math.min(height, maxY + 1 + margin) - Math.max(0, minY - margin) };
+  const scaled = growPinCaptureRect(
+    { x: padded.x / minScale, y: padded.y / minScale, width: padded.width / minScale, height: padded.height / minScale },
+    { width: width / minScale, height: height / minScale },
+  );
+  const trimmed = { x: Math.round(scaled.x * minScale), y: Math.round(scaled.y * minScale),
+    width: Math.min(width, Math.round(scaled.width * minScale)), height: Math.min(height, Math.round(scaled.height * minScale)) };
+  return trimmed.width >= width && trimmed.height >= height ? null : trimmed;
+}
 
 export function browserAnnotationPixelMasks(
   element: BrowserRect,
@@ -590,7 +688,9 @@ export function browserElementPickerScript(filePath: string): string {
       selectionKind: 'element',
       isFormField: field,
       maskRects: maskRectsFor(rect),
-      viewport: { width: window.innerWidth, height: window.innerHeight }
+      viewport: { width: window.innerWidth, height: window.innerHeight,
+        contentWidth: Math.min(window.innerWidth, document.documentElement.clientWidth || window.innerWidth),
+        contentHeight: Math.min(window.innerHeight, document.documentElement.clientHeight || window.innerHeight) }
     };
   }
   function setHover(el) {
@@ -746,7 +846,9 @@ export function browserMeasureTargetsScript(
       htmlHint: htmlHint.slice(0, 220),
       selectionKind: 'element',
       isFormField: field,
-      viewport: { width: window.innerWidth, height: window.innerHeight }
+      viewport: { width: window.innerWidth, height: window.innerHeight,
+        contentWidth: Math.min(window.innerWidth, document.documentElement.clientWidth || window.innerWidth),
+        contentHeight: Math.min(window.innerHeight, document.documentElement.clientHeight || window.innerHeight) }
     };
     if (positionOnly) return base;
     return { ...base, style: styleSnapshot(el), maskRects: maskRectsFor(rect) };
@@ -843,7 +945,11 @@ export function browserSnapshotFromUnknown(
       && Number.isFinite((record.viewport as { width?: number }).width)
       && Number.isFinite((record.viewport as { height?: number }).height)
       ? { viewport: { width: (record.viewport as { width: number }).width,
-        height: (record.viewport as { height: number }).height } } : {}),
+        height: (record.viewport as { height: number }).height,
+        ...(Number.isFinite((record.viewport as { contentWidth?: number }).contentWidth)
+          ? { contentWidth: (record.viewport as { contentWidth: number }).contentWidth } : {}),
+        ...(Number.isFinite((record.viewport as { contentHeight?: number }).contentHeight)
+          ? { contentHeight: (record.viewport as { contentHeight: number }).contentHeight } : {}) } } : {}),
   };
 }
 

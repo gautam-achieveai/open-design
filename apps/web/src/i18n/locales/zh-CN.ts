@@ -2489,6 +2489,7 @@ export const zhCN: Dict = {
   "designBrowser.status.htmlSaveFailed": "HTML 保存失败",
   "designBrowser.status.commentSavingUnavailable": "当前无法保存评论",
   "designBrowser.status.commentSaved": "浏览器评论已保存",
+  "designBrowser.status.commentSavedNoPicture": "标记已保存，但没有截图。重新选择该元素即可再次截图。",
   "designBrowser.status.commentSendingUnavailable": "当前无法发送评论",
   "designBrowser.comments.aria": "浏览器评论",
   "designBrowser.comments.openPin": "打开标注 #{n}：{label}",

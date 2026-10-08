@@ -134,7 +134,9 @@ it('measures a position-only pin target without the mask walk while the active t
   expect(JSON.stringify(pinOnly)).not.toMatch(/private-123/);
   const snapshot = browserSnapshotFromUnknown(pinOnly[0], 'browser:https://example.test');
   expect(snapshot?.position).toEqual({ x: 10, y: 20, width: 160, height: 30 });
-  expect(snapshot?.viewport).toEqual({ width: window.innerWidth, height: window.innerHeight });
+  // jsdom has no layout (clientWidth 0), so the content box falls back to the viewport.
+  expect(snapshot?.viewport).toEqual({ width: window.innerWidth, height: window.innerHeight,
+    contentWidth: window.innerWidth, contentHeight: window.innerHeight });
 
   const both = window.eval(browserMeasureTargetsScript('browser:https://example.test', [
     { elementId: 'card', selector: '#card', key: 'active' },

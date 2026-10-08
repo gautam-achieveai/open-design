@@ -1,0 +1,111 @@
+/* A staged pin in the composer: the element's picture with the pin number,
+   so the user recognises what they clicked, not just the note text. */
+.card {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 132px;
+}
+.open {
+  display: grid;
+  grid-template-rows: 80px auto;
+  width: 100%;
+  height: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--chat-border-soft);
+  border-radius: 10px;
+  background: var(--chat-bg-panel);
+  color: var(--chat-text);
+  text-align: left;
+}
+.frame {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--chat-text) 4%, var(--chat-bg-panel));
+}
+/* Whole picture, never cropped: the capture is already framed around the element. */
+.frame img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.fallback {
+  padding: 8px;
+  align-self: start;
+  justify-self: stretch;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--chat-text-muted);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.seq {
+  /* Sits on the card's corner, not over the picture's content. */
+  position: absolute;
+  top: -7px;
+  left: -7px;
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  /* Same colour as the numbered pin on the canvas and in the dock. */
+  background: var(--comment-accent, #ff5a3c);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+}
+.note {
+  padding: 4px 8px 5px;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 15px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border-top: 1px solid var(--chat-border-soft);
+}
+.remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--chat-border-strong);
+  border-radius: 50%;
+  background: var(--chat-bg-panel);
+  color: var(--chat-text);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+}
+.details {
+  max-height: 70vh;
+  overflow: auto;
+  padding: 12px;
+  color: var(--chat-text);
+  background: var(--chat-bg-panel);
+}
+.details img {
+  display: block;
+  max-width: 100%;
+  max-height: 50vh;
+  margin: 0 auto 12px;
+  object-fit: contain;
+  background: color-mix(in srgb, var(--chat-text) 4%, var(--chat-bg-panel));
+}
+.details p {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.target {
+  color: var(--chat-text-muted);
+  font-size: 12px;
+}

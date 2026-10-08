@@ -2502,8 +2502,9 @@
 }
 .comment-side-attachment {
   display: block;
-  width: 56px;
-  height: 56px;
+  /* Wide enough that a framed bar or row stays readable. */
+  width: 112px;
+  height: 64px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
@@ -2512,7 +2513,8 @@
 .comment-side-attachment img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* Whole pin picture, never cropped: a flat or wide element stays readable. */
+  object-fit: contain;
   display: block;
 }
 .comment-side-selectbar {

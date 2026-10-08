@@ -2398,6 +2398,7 @@ export const ru: Dict = {
   'designBrowser.status.htmlSaveFailed': 'Не удалось сохранить HTML',
   'designBrowser.status.commentSavingUnavailable': 'Сохранение комментариев недоступно',
   'designBrowser.status.commentSaved': 'Комментарий к странице сохранен',
+  'designBrowser.status.commentSavedNoPicture': 'Пин сохранён без изображения. Выберите элемент снова, чтобы повторить захват.',
   'designBrowser.status.commentSendingUnavailable': 'Отправка комментариев недоступна',
   'designBrowser.comments.aria': 'Комментарии браузера',
   'designBrowser.comments.openPin': 'Открыть метку №{n}: {label}',

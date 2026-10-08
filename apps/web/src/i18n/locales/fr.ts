@@ -2398,6 +2398,7 @@ export const fr: Dict = {
   'designBrowser.status.htmlSaveFailed': 'Échec de l’enregistrement HTML',
   'designBrowser.status.commentSavingUnavailable': 'L’enregistrement des commentaires est indisponible',
   'designBrowser.status.commentSaved': 'Commentaire navigateur enregistré',
+  'designBrowser.status.commentSavedNoPicture': 'Épingle enregistrée sans image. Sélectionnez à nouveau l’élément pour relancer la capture.',
   'designBrowser.status.commentSendingUnavailable': 'L’envoi des commentaires est indisponible',
   'designBrowser.comments.aria': 'Commentaires navigateur',
   'designBrowser.comments.openPin': 'Ouvrir l’épingle n°{n} : {label}',

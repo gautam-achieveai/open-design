@@ -75,6 +75,8 @@ import {
   browserCommentFilePath,
   browserElementPickerScript,
   browserAnnotationPixelMasks,
+  pinCaptureFrame,
+  pinCaptureTrim,
   browserAnnotationTextPaintScript,
   browserMeasureTargetsScript,
   browserSnapshotFromUnknown,
@@ -2116,11 +2118,18 @@ export function DesignBrowserPanel({
     if (Math.abs(frame.width - target.viewport.width) > 1
       || Math.abs(frame.height - target.viewport.height) > 1) return reject('frame-viewport-mismatch',
         { frameWidth: frame.width, frameHeight: frame.height });
-    const left = Math.max(frame.left, frame.left + target.position.x);
-    const top = Math.max(frame.top, frame.top + target.position.y);
-    const right = Math.min(frame.right, frame.left + target.position.x + target.position.width);
-    const bottom = Math.min(frame.bottom, frame.top + target.position.y + target.position.height);
-    if (right <= left || bottom <= top) return reject('target-outside-frame');
+    // The picture frames the whole visible element, plus page context when it
+    // is tiny, flat or narrow, so the pin stays recognisable in a thumbnail.
+    // Frame inside the page's content box: a guest scrollbar is not page content.
+    const framing = pinCaptureFrame(target.position, {
+      width: Math.min(frame.width, target.viewport.contentWidth ?? frame.width),
+      height: Math.min(frame.height, target.viewport.contentHeight ?? frame.height),
+    });
+    if (!framing) return reject('target-outside-frame');
+    const left = frame.left + framing.frame.x;
+    const top = frame.top + framing.frame.y;
+    const right = left + framing.frame.width;
+    const bottom = top + framing.frame.height;
 
     const hideText = target.maskRects.some((mask) => mask.textHidden === true);
     try {
@@ -2158,14 +2167,14 @@ export function DesignBrowserPanel({
           (top - frame.top) * size.h / frame.height,
           (right - left) * size.w / frame.width,
           (bottom - top) * size.h / frame.height);
+        actualCrop = framing.frame;
       } else {
         snapshot = await captureHostRegionSnapshot({ left, top, width: right - left, height: bottom - top });
-        if (snapshot && target.maskRects.length > 0) {
-          if (!snapshot.capturedCssRect) return reject('capture-geometry-unavailable');
+        if (snapshot?.capturedCssRect) {
           const captured = snapshot.capturedCssRect;
           actualCrop = { x: captured.x - frame.left, y: captured.y - frame.top,
             width: captured.width, height: captured.height };
-        }
+        } else if (snapshot && target.maskRects.length > 0) return reject('capture-geometry-unavailable');
       }
       if (!snapshot && !popupSurface) {
         // A full-frame fallback would discard the exact cropped CSS origin.
@@ -2201,11 +2210,24 @@ export function DesignBrowserPanel({
         : JSON.stringify(after.viewport) !== JSON.stringify(before!.viewport) ? 'after-viewport-changed' : null;
       if (afterRejection) return reject(afterRejection, { measuredWidth: after?.viewport?.width, measuredHeight: after?.viewport?.height });
       phase = 'mask';
+      const captureRect = actualCrop ?? framing.frame;
       const pixelMasks = browserAnnotationPixelMasks(target.position,
-        { x: 0, y: 0, width: frame.width, height: frame.height }, snapshot, target.maskRects, actualCrop);
+        { x: 0, y: 0, width: frame.width, height: frame.height }, snapshot, target.maskRects, captureRect);
       if (!pixelMasks) return reject('pixel-masks-invalid');
       snapshot = await maskBrowserAnnotationSnapshot(snapshot, pixelMasks);
       if (!snapshot) return reject('pixel-masking-failed');
+      // Ring the element when context was added; otherwise trim plain empty
+      // margins. Either step keeps the plain picture if it cannot run.
+      phase = 'frame';
+      const pixelsPerCss = snapshot.w / Math.max(1, captureRect.width);
+      snapshot = framing.highlight
+        ? await outlinePinCapture(snapshot, {
+          x: (framing.frame.x + framing.highlight.x - captureRect.x) * pixelsPerCss,
+          y: (framing.frame.y + framing.highlight.y - captureRect.y) * pixelsPerCss,
+          width: framing.highlight.width * pixelsPerCss,
+          height: framing.highlight.height * pixelsPerCss,
+        }, pixelsPerCss)
+        : await trimPinCapture(snapshot, pixelsPerCss);
       // Keep chat crops bounded on high-DPI displays; large images must not turn
       // an otherwise valid note into a rejected post.
       for (let maxEdge = 1200; maxEdge >= 150; maxEdge = Math.floor(maxEdge / 2)) {
@@ -2721,11 +2743,16 @@ export function DesignBrowserPanel({
         setActiveTool(null);
         return;
       }
-      setActiveCommentTarget(snapshot);
-      setTextDraft(snapshot.text);
-      setActiveTool(tool);
+      // Commit the hidden chrome (popover, pin markers, status toast) together
+      // with the new target before capture starts: a hide that lands after the
+      // capture's paint wait lets the compositor grab the popover.
+      flushSync(() => {
+        setActiveCommentTarget(snapshot);
+        setTextDraft(snapshot.text);
+        setActiveTool(tool);
+        if (tool === 'comment') setCaptureChromeHidden(true);
+      });
       if (tool === 'comment') {
-        setCaptureChromeHidden(true);
         const captureStarted = performance.now();
         let captureTimeout: ReturnType<typeof setTimeout>;
         const deadline = new Promise<null>((resolve) => { captureTimeout = setTimeout(() => {
@@ -2925,16 +2952,16 @@ export function DesignBrowserPanel({
       const images = browserImages.length > 0
         ? browserImages
         : settledCapture ? [settledCapture] : [];
-      // `attachAfterSave` stages the saved row into the composer draft right
-      // away (the Preview popover does the same); edits pass the existing id
-      // so the daemon updates the row instead of creating a new pin.
+      // Save only adds the pin to the Comments dock: the user picks pins there
+      // and "Send selected" stages them into the composer. Edits pass the
+      // existing id so the daemon updates the row instead of creating a pin.
       const saved = await onSavePreviewComment(
         withPreservedPinMetadata(
           browserTargetFromSnapshot(activeCommentTarget, browserControlIdentity),
           activeSavedComment,
         ),
         note,
-        true,
+        false,
         images,
         activeSavedComment?.id,
       );
@@ -2944,7 +2971,10 @@ export function DesignBrowserPanel({
         setQueuedCommentNotes([]);
         setBrowserImages([]);
         setBrowserPreviewIndex(null);
-        setStatusMessage(t('designBrowser.status.commentSaved'));
+        // A failed or late capture still saves the note; say so, because the
+        // agent will get the pin without a picture of the element.
+        const hasPicture = images.length > 0 || (activeSavedComment?.attachments?.length ?? 0) > 0;
+        setStatusMessage(t(hasPicture ? 'designBrowser.status.commentSaved' : 'designBrowser.status.commentSavedNoPicture'));
       }
     } finally {
       setSendingComment(false);
@@ -3000,8 +3030,8 @@ export function DesignBrowserPanel({
       onRemoveQueuedNote={(index) => setQueuedCommentNotes((current) => current.filter((_, itemIndex) => itemIndex !== index))}
       onClose={closeBrowserCommentPopover}
       onSaveComment={() => saveBrowserComment()}
-      // Save already stages the pin into the composer (attachAfterSave), so the
-      // popover has one primary action; batch send lives in the side dock.
+      // Save adds the pin to the dock; staging into the composer is the dock's
+      // "Send selected", so the popover has one primary action.
       onSendBatch={() => saveBrowserComment()}
       allowSendToChat={false}
       compact
@@ -3418,7 +3448,7 @@ export function DesignBrowserPanel({
         </div>
       ) : null}
       {showStatusMessage ? (
-        <div className="db-status" role="status">
+        <div className="db-status" role="status" style={captureChromeHidden ? { visibility: 'hidden' } : undefined}>
           <span>{statusText}</span>
           {archiveSaving ? (
             <button
@@ -4533,6 +4563,67 @@ function cropDataUrl(
     };
     img.onerror = () => resolve(null);
     img.src = dataUrl;
+  });
+}
+
+/** Rings the clicked element in a pin picture that shows page around it. */
+function outlinePinCapture(
+  snapshot: { dataUrl: string; w: number; h: number },
+  ring: { x: number; y: number; width: number; height: number },
+  pixelsPerCss: number,
+): Promise<{ dataUrl: string; w: number; h: number }> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = snapshot.w;
+        canvas.height = snapshot.h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { resolve(snapshot); return; }
+        ctx.drawImage(img, 0, 0, snapshot.w, snapshot.h);
+        // Drawn just outside the element so the ring never covers its pixels;
+        // a light halo keeps it visible on dark and on accent-coloured pages.
+        const line = Math.max(2, Math.round(2 * pixelsPerCss));
+        const outset = line * 1.5;
+        const box = [ring.x - outset, ring.y - outset, ring.width + 2 * outset, ring.height + 2 * outset] as const;
+        ctx.lineWidth = line * 2;
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.strokeRect(...box);
+        ctx.lineWidth = line;
+        ctx.strokeStyle = '#ff5a3c';
+        ctx.strokeRect(...box);
+        resolve({ dataUrl: canvas.toDataURL('image/png'), w: snapshot.w, h: snapshot.h });
+      } catch { resolve(snapshot); }
+    };
+    img.onerror = () => resolve(snapshot);
+    img.src = snapshot.dataUrl;
+  });
+}
+
+/** Trims plain empty margins from a mostly-empty pin picture (see pinCaptureTrim). */
+function trimPinCapture(
+  snapshot: { dataUrl: string; w: number; h: number },
+  pixelsPerCss: number,
+): Promise<{ dataUrl: string; w: number; h: number }> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = snapshot.w;
+        canvas.height = snapshot.h;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) { resolve(snapshot); return; }
+        ctx.drawImage(img, 0, 0, snapshot.w, snapshot.h);
+        const keep = pinCaptureTrim(ctx.getImageData(0, 0, snapshot.w, snapshot.h), pixelsPerCss);
+        if (!keep) { resolve(snapshot); return; }
+        void cropDataUrl(snapshot.dataUrl, keep.x, keep.y, keep.width, keep.height)
+          .then((trimmed) => resolve(trimmed ?? snapshot), () => resolve(snapshot));
+      } catch { resolve(snapshot); }
+    };
+    img.onerror = () => resolve(snapshot);
+    img.src = snapshot.dataUrl;
   });
 }
 

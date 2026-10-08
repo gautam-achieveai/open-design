@@ -189,6 +189,6 @@ describe('从队列取回引用', () => {
     clickEdit();
 
     const tray = screen.getByTestId('staged-comment-attachments');
-    expect(tray.querySelectorAll('.staged-chip')).toHaveLength(1);
+    expect(tray.querySelectorAll('[data-testid="staged-comment-card"]')).toHaveLength(1);
   });
 });

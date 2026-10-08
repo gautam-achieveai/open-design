@@ -228,6 +228,8 @@ test('reviewed DOM evidence contains safe nested text but not hidden, form, edit
     assert.deepEqual(posted.target, captured.target);
     assert.equal(posted.note, 'Make this clearer');
     assert.equal(app.messages.filter((message) => message.type === 'odAnnotation:savePin').length, 1);
+    const toast = app.shadowRoots.get('od-clipper-toast')!.getElementById('t')!;
+    await app.waitFor(() => toast.textContent === 'annotationPinSaved');
   } finally { app.window.close(); }
 });
 
@@ -306,7 +308,7 @@ test('extension review shows screenshot and note without technical text', async 
     assert.equal(review.querySelector('.review-outline'), null);
     assert.doesNotMatch(review.textContent || '', /computed styles|selector|nested element outline|browser page/i);
     const i18n = (app.window as unknown as { OD_CLIPPER_I18N: { t: (key: string) => string } }).OD_CLIPPER_I18N;
-    assert.equal(i18n.t('annotationSend'), 'Send to chat');
+    assert.equal(i18n.t('annotationSend'), 'Save pin');
   } finally { app.window.close(); }
 });
 
@@ -494,6 +496,23 @@ test('review allows posting note and context after a capture failure', async () 
     (review.querySelector('[data-act="send"]') as HTMLButtonElement).click();
     await app.waitFor(() => app.messages.some((message) => message.type === 'odAnnotation:savePin'));
     assert.equal(app.messages.find((message) => message.type === 'odAnnotation:savePin')?.omitScreenshot, true);
+    // The save says the pin has no picture instead of a plain "saved".
+    const toast = app.shadowRoots.get('od-clipper-toast')!.getElementById('t')!;
+    await app.waitFor(() => toast.textContent === 'annotationPinSavedNoPicture');
+  } finally { app.window.close(); }
+});
+
+test('the saved-pin toast follows what Open Design stored, not the local crop', async () => {
+  const app = page('<button id="save">Save</button>', {
+    savePinResponse: { ok: true, comment: { id: 'pin-1', pinSeq: 1, attachments: [] } },
+  });
+  try {
+    const review = await app.start();
+    assert.equal((review.querySelector('.preview') as HTMLImageElement).src, screenshot);
+    (review.querySelector('textarea') as HTMLTextAreaElement).value = 'Make it clearer';
+    (review.querySelector('[data-act="send"]') as HTMLButtonElement).click();
+    const toast = app.shadowRoots.get('od-clipper-toast')!.getElementById('t')!;
+    await app.waitFor(() => toast.textContent === 'annotationPinSavedNoPicture');
   } finally { app.window.close(); }
 });
 

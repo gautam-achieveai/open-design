@@ -4,7 +4,7 @@
  * carried as `order`), so the user can match chip ↔ pin ↔ the model's `N.`.
  * Board-batch notes are not pins and get no number.
  */
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatComposer } from '../../src/components/ChatComposer';
@@ -55,9 +55,56 @@ describe('ChatComposer staged comment numbering', () => {
     );
 
     const tray = screen.getByTestId('staged-comment-attachments');
-    expect(tray.querySelectorAll('.staged-chip')).toHaveLength(2);
+    expect(tray.querySelectorAll('[data-testid="staged-comment-card"]')).toHaveLength(2);
     expect(
       Array.from(screen.getAllByTestId('staged-comment-seq')).map((node) => node.textContent),
     ).toEqual(['#3']);
+  });
+
+  it('shows the element capture as the card picture and opens it whole on click', () => {
+    render(
+      <ChatComposer
+        projectId="project-1"
+        projectFiles={[]}
+        streaming={false}
+        onEnsureProject={async () => 'project-1'}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        commentAttachments={[{
+          ...base,
+          imageAttachments: [
+            { path: 'refs/user-sketch.png', name: 'user-sketch.png' },
+            { path: 'browser-annotations/browser-annotation-1.png', name: 'browser-annotation-1.png' },
+          ],
+        }]}
+      />,
+    );
+
+    const card = screen.getByTestId('staged-comment-card');
+    expect(card.querySelector('img')?.getAttribute('src')).toContain('browser-annotations/browser-annotation-1.png');
+    expect(within(card).getByRole('button', { name: 'Remove comment attachment for #3 h1.hero-title' })).toBeTruthy();
+    fireEvent.click(within(card).getByRole('button', { name: 'Preview #3 h1.hero-title' }));
+    const dialog = screen.getByRole('dialog', { name: '#3 h1.hero-title' });
+    expect(dialog.querySelector('img')?.getAttribute('src')).toContain('browser-annotations/browser-annotation-1.png');
+    expect(within(dialog).getByText('Shorten this title')).toBeTruthy();
+  });
+
+  it('falls back to the element text, then the target name, when the pin has no picture', () => {
+    render(
+      <ChatComposer
+        projectId="project-1"
+        projectFiles={[]}
+        streaming={false}
+        onEnsureProject={async () => 'project-1'}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        commentAttachments={[base, { ...base, id: 'c4', order: 4, currentText: '' }]}
+      />,
+    );
+
+    const [withText, withoutText] = screen.getAllByTestId('staged-comment-card');
+    expect(withText!.querySelector('img')).toBeNull();
+    expect(within(withText!).getByText('A long title')).toBeTruthy();
+    expect(within(withoutText!).getByText('h1.hero-title')).toBeTruthy();
   });
 });

@@ -1,4 +1,4 @@
-import { normalizeEdgeAnnotationAncestors } from '@open-design/contracts';
+import { BROWSER_ANNOTATION_SCREENSHOT_DIR, normalizeEdgeAnnotationAncestors } from '@open-design/contracts';
 import type {
   ChatCommentAttachment,
   ChatCommentSelectionKind,
@@ -579,6 +579,18 @@ export function removeAttachedComment(
   commentId: string,
 ): PreviewComment[] {
   return current.filter((comment) => comment.id !== commentId);
+}
+
+/**
+ * The picture that stands for a pin: the element capture the browser or the
+ * Clipper stored in the shared screenshot folder, else the first image the
+ * user attached. Undefined when the pin has no image.
+ */
+export function pinPreviewImage(
+  images: PreviewCommentAttachment[] | undefined,
+): PreviewCommentAttachment | undefined {
+  if (!images || images.length === 0) return undefined;
+  return images.find((image) => image.path.startsWith(`${BROWSER_ANNOTATION_SCREENSHOT_DIR}/`)) ?? images[0];
 }
 
 export function mergePreviewCommentAttachments(

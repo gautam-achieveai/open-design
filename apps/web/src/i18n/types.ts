@@ -3279,6 +3279,7 @@ export interface Dict {
   'designBrowser.status.htmlSaveFailed': string;
   'designBrowser.status.commentSavingUnavailable': string;
   'designBrowser.status.commentSaved': string;
+  'designBrowser.status.commentSavedNoPicture': string;
   'designBrowser.status.commentSendingUnavailable': string;
   'designBrowser.comments.aria': string;
   'designBrowser.comments.openPin': string;

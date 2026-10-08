@@ -11,7 +11,7 @@ type Request = { url: string; init: { method?: string; headers?: Record<string, 
 
 function worker(options: { paired?: boolean; tabUrl?: string; screenshot?: boolean; oversized?: boolean;
   captureGate?: Promise<void>; session?: Record<string, unknown>; sessionGate?: Promise<void>;
-  redeemGate?: Promise<void>; pinStatus?: number; pinRefusal?: unknown; inspectQueue?: Array<{ requestId: string; operation: string; selector?: string }> } = {}) {
+  redeemGate?: Promise<void>; content?: { contentWidth: number; contentHeight: number }; pinStatus?: number; pinRefusal?: unknown; inspectQueue?: Array<{ requestId: string; operation: string; selector?: string }> } = {}) {
   let handler: MessageHandler | undefined;
   let onTabUpdated: ((id: number, changes: { url?: string; status?: string }) => void) | undefined;
   let onTabActivated: (() => void) | undefined;
@@ -92,7 +92,7 @@ function worker(options: { paired?: boolean; tabUrl?: string; screenshot?: boole
       onRemoved: { addListener: () => {} },
       onReplaced: { addListener: () => {} },
     },
-    scripting: { executeScript: async () => [{ result: { width: 200, height: 150, x: 0, y: 0 } }] },
+    scripting: { executeScript: async () => [{ result: { width: 200, height: 150, x: 0, y: 0, ...options.content } }] },
   };
   const fetch = async (url: URL, init: Request['init']) => {
     requests.push({ url: String(url), init });
@@ -129,15 +129,17 @@ function worker(options: { paired?: boolean; tabUrl?: string; screenshot?: boole
   const bitmap = { width: 400, height: 300, close: () => {} };
   const drawCalls: unknown[][] = [];
   const maskCalls: unknown[][] = [];
+  const strokeCalls: unknown[][] = [];
   class Canvas {
     width: number;
     height: number;
     constructor(width: number, height: number) { this.width = width; this.height = height; }
     getContext() { return { drawImage: (...args: unknown[]) => { drawCalls.push(args); },
-      fillRect: (...args: unknown[]) => { maskCalls.push(args); } }; }
+      fillRect: (...args: unknown[]) => { maskCalls.push(args); },
+      strokeRect: (...args: unknown[]) => { strokeCalls.push(args); } }; }
     async convertToBlob() { return new Blob([new Uint8Array(options.oversized ? 256 * 1024 + 1 : 32)], { type: 'image/png' }); }
   }
-  runInNewContext(workerSource, {
+  const scope: Record<string, unknown> = {
     chrome, URL, URLSearchParams, Buffer, Blob, console, setTimeout, clearTimeout, TextEncoder,
     OffscreenCanvas: Canvas, createImageBitmap: async () => bitmap,
     btoa: (input: string) => Buffer.from(input, 'binary').toString('base64'),
@@ -146,12 +148,13 @@ function worker(options: { paired?: boolean; tabUrl?: string; screenshot?: boole
       if (String(url).startsWith('data:image/png;')) return { blob: async () => new Blob([0], { type: 'image/png' }) };
       return fetch(url as URL, init!);
     },
-  });
+  };
+  runInNewContext(workerSource, scope);
   assert.ok(handler);
   const send = (message: unknown, sender: unknown = { tab, frameId: 0 }) => new Promise<Record<string, unknown>>((resolve) => {
     handler!(message, sender, (response) => resolve(response as Record<string, unknown>));
   });
-  return { requests, send, tab, drawCalls, maskCalls, session, local, inspectMessages,
+  return { requests, send, tab, drawCalls, maskCalls, strokeCalls, scope, session, local, inspectMessages,
     screenshotCount: () => screenshotCount, screenshotReadyCount: () => screenshotReadyCount,
     hidden: () => barHidden,
     replaceChild(url = childUrl) { childDocument = 'child-document-2'; childUrl = url; },
@@ -163,6 +166,45 @@ function worker(options: { paired?: boolean; tabUrl?: string; screenshot?: boole
     activate(active: boolean) { tab.active = active; onTabActivated?.(); },
     navigate(url: string) { tab.url = url; onTabUpdated?.(tab.id, { url }); } };
 }
+
+// Same cases as apps/web/tests/components/pin-capture-frame.test.ts: the
+// Clipper mirrors the in-app browser's pin picture framing.
+test('frames pin pictures with the same rules as the in-app browser', () => {
+  const { scope } = worker();
+  const frame = scope.pinCaptureFrame as (element: object, viewport: object) => unknown;
+  const trim = scope.pinCaptureTrim as (image: object, minScale?: number) => unknown;
+  const viewport = { width: 1200, height: 800 };
+  const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+  assert.deepEqual(plain(frame({ x: 100, y: 100, width: 300, height: 200 }, viewport)),
+    { frame: { x: 100, y: 100, width: 300, height: 200 }, highlight: null });
+  assert.deepEqual(plain(frame({ x: 500, y: 300, width: 24, height: 24 }, viewport)),
+    { frame: { x: 432, y: 262, width: 160, height: 100 }, highlight: { x: 68, y: 38, width: 24, height: 24 } });
+  assert.deepEqual(plain(frame({ x: 0, y: 0, width: 1200, height: 48 }, viewport)),
+    { frame: { x: 0, y: 0, width: 1200, height: 400 }, highlight: { x: 0, y: 0, width: 1200, height: 48 } });
+  assert.deepEqual(plain(frame({ x: 1190, y: 0, width: 10, height: 600 }, viewport)).frame,
+    { x: 1000, y: 0, width: 200, height: 600 });
+  assert.deepEqual(plain(frame({ x: 100, y: -500, width: 400, height: 900 }, viewport)).frame,
+    { x: 100, y: 0, width: 400, height: 400 });
+  assert.equal(frame({ x: 0, y: 900, width: 50, height: 50 }, viewport), null);
+  const image = (width: number, height: number, content?: { x: number; y: number; width: number; height: number }) => {
+    const data = new Uint8ClampedArray(width * height * 4).fill(255);
+    if (content) {
+      for (let y = content.y; y < content.y + content.height; y += 1) {
+        for (let x = content.x; x < content.x + content.width; x += 1) data.fill(20, (y * width + x) * 4, (y * width + x) * 4 + 3);
+      }
+    }
+    return { width, height, data };
+  };
+  assert.deepEqual(plain(trim(image(800, 600, { x: 50, y: 40, width: 120, height: 30 }))),
+    { x: 30, y: 5, width: 160, height: 100 });
+  assert.equal(trim(image(300, 200, { x: 10, y: 10, width: 280, height: 180 })), null);
+  assert.equal(trim(image(300, 200)), null);
+  const pale = image(800, 600, { x: 50, y: 40, width: 120, height: 30 });
+  for (let i = 0; i < pale.data.length; i += 4) if (pale.data[i] === 20) pale.data.fill(243, i, i + 3);
+  assert.deepEqual(plain(trim(pale)), { x: 30, y: 5, width: 160, height: 100 });
+  assert.deepEqual(plain(trim(image(1600, 1200, { x: 100, y: 80, width: 240, height: 60 }), 2)),
+    { x: 60, y: 10, width: 320, height: 200 });
+});
 
 const popupSender = { id: 'a'.repeat(32), url: `chrome-extension://${'a'.repeat(32)}/popup.html` };
 
@@ -337,7 +379,10 @@ test('savePin includes reviewed cropped PNG and bounded structural/style evidenc
   assert.equal(captured.ok, true, String(captured.error));
   assert.equal(app.screenshotCount(), 1);
   assert.equal(app.hidden(), false);
-  assert.deepEqual(app.drawCalls[0]?.slice(1, 5), [10, 14, 100, 120]);
+  // The 50x60 element is under the 160x100 minimum: the crop is that frame
+  // from the viewport corner (2x pixels) and a ring marks the element in it.
+  assert.deepEqual(app.drawCalls[0]?.slice(1, 5), [0, 0, 320, 200]);
+  assert.deepEqual(app.strokeCalls.at(-1), [4, 8, 112, 132]);
   const response = await app.send({ type: 'odAnnotation:savePin', eventId: 'event-1', target: reviewedTarget, note: 'Change color' });
   assert.equal(response.ok, true);
   assert.deepEqual(app.requests.map((request) => new URL(request.url).pathname), [
@@ -424,13 +469,23 @@ test('optional ancestor metadata cannot block a reviewed annotation', async () =
   assert.equal(body.note, 'Improve spacing');
 });
 
+test('crop frames inside the page content box, leaving the scrollbar out', async () => {
+  const app = worker({ paired: true, screenshot: true, content: { contentWidth: 185, contentHeight: 150 } });
+  assert.equal((await app.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
+  const result = await app.send({ ...capture, rect: { x: 150, y: 7, width: 40, height: 60 } });
+  assert.equal(result.ok, true, String(result.error));
+  // The 160x100 frame ends at the 185px content edge, not the 200px viewport.
+  assert.deepEqual(app.drawCalls[0]?.slice(1, 5), [50, 0, 320, 200]);
+});
+
 test('crop masks a selected field and a neighboring field before sending', async () => {
   const app = worker({ paired: true, screenshot: true });
   assert.equal((await app.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
   const maskRects = [{ x: 15, y: 17, width: 10, height: 12 }, { x: 30, y: 40, width: 15, height: 15 }];
   const result = await app.send({ ...capture, maskRects });
   assert.equal(result.ok, true, String(result.error));
-  assert.deepEqual(app.maskCalls, [[20, 20, 20, 24], [50, 66, 30, 30]]);
+  // Masks map into the framed crop, which starts at the viewport corner (2x pixels).
+  assert.deepEqual(app.maskCalls, [[30, 34, 20, 24], [60, 80, 30, 30]]);
   const submitted = await app.send({ type: 'odAnnotation:savePin', eventId: capture.eventId,
     target, note: 'Improve the field design' });
   assert.equal(submitted.ok, true, String(submitted.error));

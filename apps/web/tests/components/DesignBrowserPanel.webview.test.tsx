@@ -194,21 +194,32 @@ describe('DesignBrowserPanel <webview> navigation', () => {
           } else queueMicrotask(() => this.onerror?.());
         }
       });
-      const drawImage = vi.fn(), fillRect = vi.fn(); let images = 0;
-      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage, fillRect } as unknown as CanvasRenderingContext2D);
+      const drawImage = vi.fn(), fillRect = vi.fn(), strokeRect = vi.fn(); let images = 0;
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage, fillRect, strokeRect } as unknown as CanvasRenderingContext2D);
       vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockImplementation(function (this: HTMLCanvasElement) {
         const url = `data:image/png;base64,${btoa(`crop-${++images}`)}`;
         imageSizes.set(url, { w: this.width, h: this.height }); return url;
       });
       const target = { elementId: 'dom:#field', selector: '#field', label: 'input', text: '', htmlHint: 'input',
-        position: { x: -10, y: 20, width: 110, height: 50 }, viewport: { width: 300, height: 200 },
+        position: { x: -10, y: 20, width: 110, height: 50 }, viewport: { width: 300, height: 200, contentWidth: 150, contentHeight: 200 },
         maskRects: [{ x: 10, y: 0, width: 20, height: 10, textHidden: true }, { x: 35, y: 15, width: 10, height: 10 }] };
       const popup: OpenDesignHostBrowserPopup = { surfaceId: 'popup:annotation', projectId: 'p1', openerTabId: '__browser__:1',
         ancestorTabIds: ['__browser__:1'], tabId: '__browser__:2', webContentsId: 77, url: 'about:blank', title: 'Written child',
         loading: false, canGoBack: false, canGoForward: false, disposition: 'new-window' };
       let measured = 0, restored = false, currentPageUrl = popup.url;
+      const hiddenAtCapture: Array<{ popover: boolean; status: boolean }> = [];
+      const hiddenByAncestor = (node: Element | null) => {
+        for (let el = node as HTMLElement | null; el; el = el.parentElement) if (el.style?.visibility === 'hidden') return true;
+        return false;
+      };
       const popupCommand = vi.fn(async (request: OpenDesignHostBrowserPopupCommand) => {
         if (request.kind === 'capture') {
+          // The compositor must never see host chrome: popover and status toast
+          // are committed hidden before the pixels are taken.
+          hiddenAtCapture.push({
+            popover: hiddenByAncestor(document.querySelector('[data-testid="comment-popover-save"]')),
+            status: hiddenByAncestor(document.querySelector('.db-status')),
+          });
           if (change === 'capture-failure') return { ok: false as const, reason: 'capture unavailable' };
           return { ok: true as const, value: nativeDataUrl };
         }
@@ -237,7 +248,12 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       const fetchMock = vi.fn(async (url: string) => url.startsWith('data:')
         ? { blob: async () => new Blob(['crop'], { type: 'image/png' }) } : { ok: true });
       vi.stubGlobal('fetch', fetchMock);
-      const save = savePreviewCommentMock();
+      const save = vi.fn<SavePreviewComment>(async (pinTarget, note) => ({
+        id: 'cmt-1', projectId: 'p1', conversationId: 'c1', filePath: pinTarget.filePath,
+        elementId: pinTarget.elementId, selector: pinTarget.selector, label: pinTarget.label, text: pinTarget.text,
+        htmlHint: pinTarget.htmlHint, position: pinTarget.position, note, status: 'open', pinSeq: 1,
+        createdAt: 1, updatedAt: 1,
+      }));
       const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" browserTabId="__browser__:2"
         popup={popup} onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={save} />);
       const surface = container.querySelector('[data-popup-surface]')! as HTMLElement & { getURL(): string };
@@ -257,10 +273,21 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
       const savedImages = save.mock.calls[0]![3] ?? [];
       if (change === 'stable') {
-        expect(drawImage.mock.calls[0]!.slice(1)).toEqual([0, 60, 200, 150, 0, 0, 200, 150]);
-        expect(fillRect).toHaveBeenCalledWith(50, 45, 20, 30);
+        // The 100x50 visible field is smaller than the 160x100 minimum, so the
+        // crop grows from the viewport's corner, capped at the 150px content
+        // box (the guest scrollbar is left out); 2x/3x native pixels. The mask
+        // maps into it and a ring marks the field inside.
+        expect(drawImage.mock.calls[0]!.slice(1)).toEqual([0, 0, 300, 300, 0, 0, 300, 300]);
+        expect(fillRect).toHaveBeenCalledWith(50, 105, 20, 30);
+        expect(strokeRect).toHaveBeenCalledWith(-6, 34, 212, 112);
+        expect(hiddenAtCapture.length).toBeGreaterThan(0);
+        expect(hiddenAtCapture.every((state) => state.popover && state.status)).toBe(true);
         expect(savedImages.map((file) => file.name)).toEqual([expect.stringMatching(/^browser-annotation-/)]);
       } else expect(savedImages).toEqual([]);
+      // Only a pin without a picture is called out after Save.
+      await waitFor(() => expect(container.querySelector('.db-status')?.textContent).toBe(change === 'stable'
+        ? 'Browser comment saved'
+        : 'Pin saved without a picture. Pick the element again to retry the capture.'));
     });
 
   it('omits a native screenshot if a field moves between the two geometry checks', async () => {
@@ -297,7 +324,7 @@ describe('DesignBrowserPanel <webview> navigation', () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
-  it('saves a picked element as a staged preview comment, draws its pinSeq marker and edits it in place', async () => {
+  it('saves a picked element as a dock pin without staging it, draws its pinSeq marker and edits it in place', async () => {
     const agentSend = vi.fn();
     const fetchMock = vi.fn(async (_url: string) => ({ ok: true, json: async () => ({}) }));
     vi.stubGlobal('fetch', fetchMock);
@@ -343,9 +370,12 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       const [target, note, attachAfterSave, images, commentId] = save.mock.calls[0]!;
       expect(target).toMatchObject({ filePath: 'browser:http://localhost:1234/demo?view=wide#hero', selector: '#hero' });
       expect(note).toBe('Make Save clearer');
-      expect(attachAfterSave).toBe(true);
+      expect(attachAfterSave).toBe(false);
       expect(images).toEqual([]);
       expect(commentId).toBeUndefined();
+      // No capture was available, so the save says the pin has no picture.
+      await waitFor(() => expect(container.querySelector('.db-status')?.textContent)
+        .toBe('Pin saved without a picture. Pick the element again to retry the capture.'));
       expect(agentSend).not.toHaveBeenCalled();
       expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/edge-annotations/'))).toBe(false);
       expect(writeProjectTextFile).not.toHaveBeenCalled();
@@ -1714,7 +1744,7 @@ describe('DesignBrowserPanel compact style edits', () => {
     const [savedTarget, note, attachAfterSave] = save.mock.calls[0]!;
     expect(savedTarget.style?.color).toBe(applied ? '#ff0000' : '#0D0C22');
     expect(note).toBe('Update the heading');
-    expect(attachAfterSave).toBe(true);
+    expect(attachAfterSave).toBe(false);
   });
 
   it('awaits capture cleanup and rejects same-node navigation before applying a style', async () => {

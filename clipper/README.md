@@ -50,15 +50,17 @@ one browser tab and document. Library trust grants no project-write access.
 ## Annotate inside Open Design first
 
 In the desktop app, open a project's **Browser** tab, visit a page, click
-**Annotate**, select an element, write a note, and click **Add to chat draft**
-(or press Enter). Only your note enters the composer body; the page and element
-context appear as a chat-owned `annotation-context.json` attachment beside an
-optional cropped screenshot. Form fields can be selected; their values and
+**Annotate**, select an element, write a note, and click the ✓ **Comment**
+button (or press Enter). This saves a numbered pin with a cropped screenshot of the element; it
+does not touch the chat draft. In the Comments dock, select the pins you want
+and click **Send to chat**: each becomes a composer card showing `#N`, the
+element picture and the note. Form fields can be selected; their values and
 attributes are omitted from context. Supported native text fields hide text paint
 during capture while retaining original design pixels; unsupported controls are
-masked before the screenshot is staged. Collect more annotations, then press the normal
-chat **Send** once. No extension or pairing is needed. Screenshot failure does
-not block a note-only draft. Evidence is not an editable project file.
+masked before the screenshot is stored. No extension or pairing is needed. A
+failed screenshot does not block the note: the pin is saved and the status line
+says it has no picture, so you can select the element again to retry. Evidence
+is not an editable project file.
 
 This browser is Open Design's hosted Chromium session, not your installed
 Edge/Chrome profile. Use the extension below when a website needs that profile.
@@ -84,9 +86,9 @@ immediately; it does **not** stage the composer or start an agent.
 
 The on-page annotation control matches the in-app browser: a light comment bar
 next to the selected element, with a switches button for scrollable style fields
-and an optional screenshot preview. Press Enter to add feedback to the chat
-draft; Shift+Enter adds a line, and Escape closes the control. Style and simple
-text edits preview locally. Closing restores the preview; adding it to the draft
+and an optional screenshot preview. Press Enter to save the feedback as a pin;
+Shift+Enter adds a line, and Escape closes the control. Style and simple
+text edits preview locally. Closing restores the preview; saving the pin
 captures fresh evidence and includes the requested changes for the agent.
 This does not save changes to the website's source files. Entered form values
 remain excluded from evidence and from the text editor.
@@ -102,9 +104,12 @@ Browser tab does **not** share that profile or its credentials.
    code; there is no separate Advanced setup. The popup names the destination
    project and conversation.
 3. Choose **Annotate an element**, select an element, review the screenshot
-   when available, add your note, then click **Send to chat**. This stages your
-   note and a structured JSON attachment in the destination composer; it does
-   not post yet. A failed screenshot does not block the note. **View chat** opens
+   when available, add your note, then click **Save pin** (✓). This saves a
+   numbered pin with a structured JSON context in the destination conversation;
+   it does not touch the chat draft or post. A failed screenshot does not block
+   the note: the confirmation says the pin was saved without a screenshot. The screenshot
+   always shows the whole element; a tiny, flat or narrow one also gets the page
+   around it, with an orange ring marking it. **View chat** opens
    the exact destination conversation. Text, email, and password fields can be
    selected for design feedback; values and attributes are excluded from JSON.
    Reviewed annotation screenshots temporarily hide text paint in supported
