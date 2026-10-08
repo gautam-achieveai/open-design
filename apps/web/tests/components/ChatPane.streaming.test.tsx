@@ -1159,6 +1159,55 @@ describe('ChatPane streaming state', () => {
     expect(screen.getByText('Annotation')).toBeTruthy();
     expect(screen.getByText('222')).toBeTruthy();
     expect(screen.queryByText('path-0-0-0-0-1')).toBeNull();
+    expect(screen.queryByTestId('history-comment-seq')).toBeNull();
+  });
+
+  it('keeps the pin number on a history chip that came from a saved pin', () => {
+    const messages: ChatMessage[] = [
+      {
+        id: 'user-2',
+        role: 'user',
+        content: '',
+        createdAt: 1,
+        commentAttachments: [
+          {
+            id: 'comment-3',
+            order: 3,
+            source: 'saved-comment',
+            filePath: 'browser:http://127.0.0.1:5180/',
+            elementId: 'cta',
+            selector: '#cta',
+            label: 'CTA',
+            comment: 'Make it red',
+            currentText: 'Buy',
+            pagePosition: { x: 1, y: 2, width: 3, height: 4 },
+            htmlHint: '<button>',
+          },
+        ],
+      },
+    ];
+
+    render(
+      <ChatPane
+        projectKindForTracking="prototype"
+        messages={messages}
+        streaming={false}
+        error={null}
+        projectId="project-1"
+        projectFiles={[]}
+        onEnsureProject={async () => 'project-1'}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        conversations={conversations}
+        activeConversationId="conv-1"
+        onSelectConversation={vi.fn()}
+        onDeleteConversation={vi.fn()}
+        projectMetadata={projectMetadata}
+      />,
+    );
+
+    // Same number as the pin on the page, so "fix #3" next turn has a referent.
+    expect(screen.getAllByTestId('history-comment-seq').map((node) => node.textContent)).toEqual(['#3']);
   });
 
   it('summarizes auto-sent design-system workspace prompts', () => {

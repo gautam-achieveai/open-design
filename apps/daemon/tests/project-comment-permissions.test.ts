@@ -441,6 +441,47 @@ describe('preview comment permission gating', () => {
 
   // —— reorder (sidebar sort_key) — recvq5BVsolIxi Phase 2 ————————————————————
 
+  // —— browser pins relay like project pins ———————————————————————————————————
+
+  it('relays a browser-keyed pin to the Team like a project-file pin (create, status, delete)', async () => {
+    const api = await startServer();
+    const res = await api.json(`/api/projects/${PROJECT}/conversations/${CONVERSATION}/comments`, {
+      method: 'POST',
+      member: 'm-author',
+      body: {
+        target: {
+          filePath: 'browser:https://mail.example.com/inbox?folder=2',
+          elementId: 'compose',
+          selector: 'button.compose',
+          label: 'button.compose',
+          text: 'Compose',
+          htmlHint: '<button>',
+          position: { x: 0, y: 0, width: 10, height: 10 },
+        },
+        note: 'third-party page',
+      },
+    });
+    expect(res.status).toBe(200);
+    const comment = res.body.comment as { id: string; pinSeq?: number; filePath: string };
+    expect(comment.filePath).toBe('browser:https://mail.example.com/inbox?folder=2');
+    expect(comment.pinSeq).toBe(1);
+    expect(api.created).toEqual([comment.id]);
+
+    const status = await api.json(
+      `/api/projects/${PROJECT}/conversations/${CONVERSATION}/comments/${comment.id}`,
+      { method: 'PATCH', member: 'm-author', body: { status: 'applying' } },
+    );
+    expect(status.status).toBe(200);
+    expect(api.updated).toEqual([comment.id]);
+
+    const del = await api.json(
+      `/api/projects/${PROJECT}/conversations/${CONVERSATION}/comments/${comment.id}`,
+      { method: 'DELETE', member: 'm-author' },
+    );
+    expect(del.status).toBe(200);
+    expect(api.deleted).toEqual([comment.id]);
+  });
+
   it('reorder is a personal display preference: any member may reorder, not just the author', async () => {
     const api = await startServer();
     const comment = await api.createComment('m-author');

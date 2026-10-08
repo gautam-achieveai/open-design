@@ -33,6 +33,7 @@ import {
   designBrowserHistoryStorageKey,
   designBrowserViewportStorageKey,
 } from '../../src/components/design-browser-storage';
+import { browserCommentFileKey } from '@open-design/contracts';
 import {
   browserCommentFilePath,
   isProjectHtmlBrowserUrl,
@@ -211,6 +212,13 @@ describe('browser tool file targeting', () => {
     expect(browserCommentFilePath(url, '/Users/me/project')).toBe(`browser:${url}`);
     expect(projectRelativePathFromBrowserUrl(url, '/Users/me/project')).toBeNull();
     expect(isProjectHtmlBrowserUrl(url, '/Users/me/project')).toBe(false);
+  });
+
+  it('keys http pages with the shared browser page key the Clipper uses (hash route kept)', () => {
+    const route = 'http://127.0.0.1:5180/#/workbench';
+    expect(browserCommentFilePath(route, '/Users/me/project')).toBe(browserCommentFileKey(route));
+    expect(browserCommentFilePath(route, '/Users/me/project')).toBe(`browser:${route}`);
+    expect(browserCommentFilePath('about:blank')).toBe('browser:about:blank');
   });
 
   it('maps project-local file HTML pages back to editable project files', () => {

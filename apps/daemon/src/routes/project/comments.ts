@@ -1,12 +1,59 @@
 import type { Express, Request } from 'express';
-import type {
-  PreviewComment,
-  WorkspaceCollabContext,
+import {
+  type PreviewComment,
+  type WorkspaceCollabContext,
 } from '@open-design/contracts';
 import { projectKindFromMetadataToTrackingOrLegacyDefault } from '@open-design/contracts/analytics';
 import type { RouteDeps } from '../../server-context.js';
 import type { BoundWorkspaceResourceMutationGate } from '../../collab/workspace-resource-mutation.js';
 import { getProject, isProjectCommentAnchorConversationId } from '../../db.js';
+
+/**
+ * A comment relays to the Team only when its writer is an active member of a
+ * live team workspace that owns the project as a team-visible resource. Every
+ * surface (Preview, in-app browser, Clipper) shares this rule, so a pin on a
+ * `browser:` page relays exactly like a pin on a project file.
+ */
+export function teamCommentRelayAllowed(
+  context: WorkspaceCollabContext | null | undefined,
+  binding: { workspaceId?: string | null; visibility?: string | null; resourceState?: string | null } | null | undefined,
+): boolean {
+  return Boolean(
+    context
+    && context.workspaceType === 'team'
+    && context.memberStatus === 'active'
+    && context.lifecycleState !== 'deleted'
+    && binding
+    && binding.workspaceId === context.workspaceId
+    && binding.visibility === 'team'
+    && binding.resourceState !== 'deleted',
+  );
+}
+
+type RelayBinding = Parameters<typeof teamCommentRelayAllowed>[1];
+
+/**
+ * The Team context a pin written by a paired browser extension relays under,
+ * or null to keep it local. The extension sends no workspace headers, so the
+ * member the grant was paired as is re-verified through `verify` (the signed
+ * directory under Vela). A failed or throwing lookup keeps the pin local.
+ */
+export async function pairedMemberRelayContext(
+  workspace: { workspaceId: string; workspaceMemberId: string } | undefined,
+  binding: RelayBinding,
+  verify: (headers: Record<string, string>) => Promise<
+    { ok: boolean; context?: WorkspaceCollabContext | null } | null | undefined
+  >,
+): Promise<WorkspaceCollabContext | null> {
+  if (!workspace || !binding || binding.workspaceId !== workspace.workspaceId) return null;
+  const verified = await verify({
+    'x-od-workspace-id': workspace.workspaceId,
+    'x-od-workspace-member-id': workspace.workspaceMemberId,
+  }).catch(() => null);
+  if (!verified?.ok || !verified.context) return null;
+  if (verified.context.workspaceMemberId !== workspace.workspaceMemberId) return null;
+  return teamCommentRelayAllowed(verified.context, binding) ? verified.context : null;
+}
 
 export type ProjectCommentWorkspaceContextResolution =
   | { ok: true; context: WorkspaceCollabContext | null }
@@ -306,20 +353,8 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
     callbackConfigured: boolean,
   ): boolean {
     if (!ctx.resolveWorkspaceContext) return callbackConfigured;
-    if (
-      !callbackConfigured
-      || !context
-      || context.workspaceType !== 'team'
-      || context.memberStatus !== 'active'
-      || context.lifecycleState === 'deleted'
-    ) return false;
-    const binding = getWorkspaceProjectByProjectId(db, projectId);
-    return Boolean(
-      binding
-      && binding.workspaceId === context.workspaceId
-      && binding.visibility === 'team'
-      && binding.resourceState !== 'deleted',
-    );
+    if (!callbackConfigured) return false;
+    return teamCommentRelayAllowed(context, getWorkspaceProjectByProjectId(db, projectId));
   }
 
   function requireRelayEnqueued(result: boolean | void): void {

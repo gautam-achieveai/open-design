@@ -8,6 +8,7 @@ import {
   configuredAllowedInternalHosts,
   configuredAllowedOrigins,
   isAllowedBrowserOrigin,
+  isEdgeAnnotationExtensionRequest,
   isLocalSameOrigin,
   isZeroConfigClipperLibraryRequest,
 } from '../src/origin-validation.js';
@@ -61,6 +62,11 @@ function createOriginMiddleware(resolvedPort: number, host = '127.0.0.1') {
     if (isZeroConfigClipperLibraryRequest(req.method, req.path, req.headers.origin)) {
       return next();
     }
+    // Mirror the real /api middleware: paired-extension operations reach the
+    // routes' own Origin + grant checks instead of the browser-origin guard.
+    if (isEdgeAnnotationExtensionRequest(req.method, req.path)) {
+      return next();
+    }
     const origin = req.headers.origin;
     if (origin == null || origin === '') return next();
     if (origin === 'null') {
@@ -105,6 +111,7 @@ function makeTestApp(port: number, host = '127.0.0.1') {
   app.post('/api/projects', (req, res) => res.json({ project: req.body }));
   app.post('/api/library/ingest', (req, res) => res.json({ ingested: true }));
   app.get('/api/library/clipper-probe', (_req, res) => res.json({ ok: true }));
+  app.post('/api/edge-annotations/:operation', (req, res) => res.json({ operation: req.params.operation }));
   app.get('/api/library/assets', (_req, res) => res.json({ assets: [] }));
   app.get('/api/library/assets/:id/raw', (req, res) => res.type('text/plain').send(req.params.id));
   app.delete('/api/projects/:id', (req, res) => res.json({ ok: true }));
@@ -507,6 +514,47 @@ describe('daemon origin validation middleware', () => {
 
   // Note: fail-closed coverage when port=0 is tested in the dedicated
   // describe block below ("fail-closed before port resolution").
+});
+
+describe('paired-extension edge annotation pass-through', () => {
+  let server: http.Server;
+  let port: number;
+
+  beforeAll(async () => {
+    const app = makeTestApp(0);
+    server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    port = getListeningPort(server);
+    // Re-create with the resolved port so the middleware is initialised.
+    server.removeAllListeners('request');
+    server.on('request', makeTestApp(port));
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  // Regression: the Clipper's pin routes answered "Cross-origin requests are
+  // not allowed" because the guard's allowlist was a second copy of the
+  // operation list that never learned the new names.
+  it('lets every grant-scoped operation through to its own route checks', async () => {
+    for (const operation of ['redeem', 'status', 'submit', 'revoke', 'comment-list', 'comment-upsert', 'comment-delete']) {
+      const res = await request(port, 'POST', `/api/edge-annotations/${operation}`, {
+        origin: `chrome-extension://${'k'.repeat(32)}`,
+      });
+      expect([operation, res.status]).toEqual([operation, 200]);
+      expect(JSON.parse(res.body)).toEqual({ operation });
+    }
+  });
+
+  it('keeps unknown operations and non-POST methods behind the origin guard', async () => {
+    const extension = `chrome-extension://${'k'.repeat(32)}`;
+    const unknown = await request(port, 'POST', '/api/edge-annotations/comment-stage', { origin: extension });
+    expect(unknown.status).toBe(403);
+    expect(isEdgeAnnotationExtensionRequest('GET', '/edge-annotations/comment-list')).toBe(false);
+    expect(isEdgeAnnotationExtensionRequest('POST', '/edge-annotations/comment-list/extra')).toBe(false);
+    expect(isEdgeAnnotationExtensionRequest('OPTIONS', '/edge-annotations/inspect/poll')).toBe(true);
+  });
 });
 
 describe('isZeroConfigClipperLibraryRequest predicate', () => {

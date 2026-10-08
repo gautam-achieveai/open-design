@@ -251,6 +251,8 @@ const PROJECT_STRING_FLAGS = new Set([
   'agent', 'model', 'service-tier', 'snapshot-id', 'inputs', 'grant-caps', 'editor',
   'title', 'label', 'against', 'seed-from', 'fork-after', 'mode',
   'source', 'out',
+  // od comment / od run start --comment
+  'comment', 'selector', 'element-id', 'status',
 ]);
 const PROJECT_RESOURCE_STRING_FLAGS = new Set([
   ...PROJECT_STRING_FLAGS,
@@ -450,6 +452,8 @@ const SUBCOMMAND_MAP = {
   automations: runAutomation,
   memory: runMemory,
   run: runRun,
+  comment: runComment,
+  comments: runComment,
   files: runFiles,
   templates: runTemplates,
   conversation: runConversation,
@@ -1468,6 +1472,11 @@ function printRootHelp() {
   od message-center <list|read|read-all> [args]
       Read and acknowledge message-center inbox items through the same
       daemon endpoints the bell UI uses.
+
+  od comment <list|add|status|delete> [args]
+      Numbered pins on a preview file or a reviewed browser page, same rows
+      the canvas, in-app browser, and Clipper show. Stage them into a run
+      with: od run start --comment <id,...>
 
   od amr <login|status> [args]
       Start Vela browser sign-in or inspect the current Vela account through
@@ -8256,6 +8265,7 @@ async function runRun(args) {
     console.log(`Usage:
   od run start --project <projectId> [--conversation <id>] [--message "<text>"]
                [--prompt-file <path|->] [--task-execution <id>]
+               [--comment <commentId>[,<commentId>]]   Attach saved pins by id (see od comment).
                [--client-request-id <id>]
                [--skill <id>[,<id>]] [--plugin <id>] [--inputs <json>] [--grant-caps a,b]
                [--agent claude|codex|opencode] [--model <id>] [--service-tier <id>]
@@ -8561,6 +8571,15 @@ Common options:
       if (flags['snapshot-id']) body.appliedPluginSnapshotId = flags['snapshot-id'];
       if (flags['task-execution']) body.taskExecutionId = flags['task-execution'];
       if (flags['client-request-id']) body.clientRequestId = flags['client-request-id'];
+      if (flags.comment) {
+        if (!flags.conversation) {
+          console.error('--comment requires --conversation <id> (pins are conversation rows)');
+          process.exit(2);
+        }
+        body.commentAttachments = await commentAttachmentsForRun(
+          base, flags.project, flags.conversation, splitCommaSeparatedIds(flags.comment), workspaceHeaders,
+        );
+      }
       const resp = await fetch(`${base}/api/runs`, {
         method:  'POST',
         headers: { 'content-type': 'application/json', ...workspaceHeaders },
@@ -11176,6 +11195,197 @@ function formatMemoryConfigSwitch(value) {
   if (value === true) return 'on';
   if (value === false) return 'off';
   return '-';
+}
+
+// Subcommand: od comment …
+//
+// Pins are `PreviewComment` rows scoped to one conversation. `--path` is the
+// file key: a project-relative file for preview pins, or `browser:<url>` for
+// pins on a reviewed page (the in-app browser and the Clipper write the same
+// key, see `browserCommentFileKey` in @open-design/contracts).
+function printCommentHelp() {
+  console.log(`Usage:
+  od comment list   --project <id> --conversation <id> [--path <fileKey>] [--json]
+  od comment add    --project <id> --conversation <id> --path <fileKey> --selector <css>
+                    [--element-id <id>] [--label <text>]
+                    [--message "<note>" | --prompt-file <path|->] [--json]
+  od comment status <commentId> --project <id> --conversation <id>
+                    --status open|attached|applying|needs_review|resolved|failed [--json]
+  od comment delete <commentId> --project <id> --conversation <id> [--json]
+
+Each pin carries a permanent number (pinSeq) per file key. Stage pins into a
+run with: od run start --project <id> --conversation <id> --comment <id,...>
+
+Common options:
+  --daemon-url <url>         OpenDesign daemon HTTP base.
+  --workspace <id>           Explicit Workspace id for a bound project.
+  --workspace-member <id>    Explicit Workspace member id for a bound project.
+  --json                     Emit raw JSON.`);
+}
+
+/** Mirror of the web `commentToAttachment` for a saved pin: order = pinSeq. */
+function savedCommentToAttachment(comment, index) {
+  return {
+    id: comment.id,
+    order: typeof comment.pinSeq === 'number' ? comment.pinSeq : index + 1,
+    filePath: comment.filePath,
+    elementId: comment.elementId,
+    selector: comment.selector,
+    label: comment.label,
+    comment: typeof comment.note === 'string' ? comment.note.trim() : '',
+    currentText: comment.text ?? '',
+    pagePosition: comment.position,
+    htmlHint: comment.htmlHint ?? '',
+    ...(comment.style ? { style: comment.style } : {}),
+    selectionKind: comment.selectionKind === 'pod' ? 'pod' : 'element',
+    ...(comment.selectionKind === 'pod' ? { memberCount: comment.memberCount ?? 0, podMembers: comment.podMembers ?? [] } : {}),
+    ...(typeof comment.slideIndex === 'number' ? { slideIndex: comment.slideIndex } : {}),
+    ...(comment.metadata ? { metadata: comment.metadata } : {}),
+    ...(comment.metadata?.scope ? { scope: comment.metadata.scope } : {}),
+    ...(Array.isArray(comment.attachments) && comment.attachments.length > 0 ? { imageAttachments: comment.attachments } : {}),
+    source: 'saved-comment',
+  };
+}
+
+async function fetchConversationComments(base, projectId, conversationId, headers) {
+  const route = `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/comments`;
+  let resp;
+  try {
+    resp = await fetch(`${base}${route}`, { headers });
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  return Array.isArray(data?.comments) ? data.comments : [];
+}
+
+/** Resolve `--comment` ids to run attachments; unknown ids are a usage error, not a silent drop. */
+async function commentAttachmentsForRun(base, projectId, conversationId, ids, headers) {
+  const comments = await fetchConversationComments(base, projectId, conversationId, headers);
+  const byId = new Map(comments.map((comment) => [comment.id, comment]));
+  const missing = ids.filter((id) => !byId.has(id));
+  if (missing.length > 0) {
+    console.error(`--comment: no such pin in conversation ${conversationId}: ${missing.join(', ')}`);
+    process.exit(2);
+  }
+  return ids.map((id, index) => savedCommentToAttachment(byId.get(id), index));
+}
+
+async function runComment(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    printCommentHelp();
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  const rest = args.slice(1);
+  const flags = parseFlags(rest, {
+    string: PROJECT_RESOURCE_STRING_FLAGS,
+    boolean: PROJECT_BOOLEAN_FLAGS,
+  });
+  const base = (await projectDaemonUrl(flags)).replace(/\/$/, '');
+  const workspaceHeaders = workspaceHeadersFromExplicitFlags(flags) ?? {};
+  const writeJson = (data) => process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  const requireScope = () => {
+    if (!flags.project || !flags.conversation) {
+      console.error(`od comment ${sub}: --project <id> and --conversation <id> are required`);
+      process.exit(2);
+    }
+  };
+  const commentRoute = (id) =>
+    `/api/projects/${encodeURIComponent(flags.project)}/conversations/${encodeURIComponent(flags.conversation)}/comments${id ? `/${encodeURIComponent(id)}` : ''}`;
+  const printComment = (comment) => {
+    const images = Array.isArray(comment.attachments) ? comment.attachments.length : 0;
+    console.log(`#${comment.pinSeq ?? '-'}\t${comment.id}\t${comment.status}\t${comment.filePath}\t${comment.selector}\t${images} img\t${String(comment.note ?? '').replace(/\s+/g, ' ').trim()}`);
+  };
+  switch (sub) {
+    case 'list': {
+      requireScope();
+      const comments = (await fetchConversationComments(base, flags.project, flags.conversation, workspaceHeaders))
+        .filter((comment) => !flags.path || comment.filePath === flags.path);
+      if (flags.json) return writeJson({ comments });
+      if (comments.length === 0) {
+        console.log('No pins.');
+        return;
+      }
+      console.log('# pin\tid\tstatus\tfile\tselector\timages\tnote');
+      for (const comment of comments) printComment(comment);
+      return;
+    }
+    case 'add': {
+      requireScope();
+      if (!flags.path || !flags.selector) {
+        console.error('od comment add: --path <fileKey> and --selector <css> are required');
+        process.exit(2);
+      }
+      const note = (await readRunMessageFromFlags(flags)) ?? '';
+      const body = {
+        target: {
+          filePath: flags.path,
+          selector: flags.selector,
+          elementId: flags['element-id'] || flags.selector,
+          label: flags.label || flags.selector,
+          text: '',
+          position: { x: 0, y: 0, width: 0, height: 0 },
+          htmlHint: '',
+        },
+        note,
+      };
+      const data = await postJsonToDaemon(base, commentRoute(), body, workspaceHeaders);
+      if (flags.json) return writeJson(data);
+      printComment(data.comment);
+      return;
+    }
+    case 'status': {
+      requireScope();
+      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      if (!id || !flags.status) {
+        console.error('Usage: od comment status <commentId> --status <status> --project <id> --conversation <id>');
+        process.exit(2);
+      }
+      let resp;
+      try {
+        resp = await fetch(`${base}${commentRoute(id)}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json', ...workspaceHeaders },
+          body: JSON.stringify({ status: flags.status }),
+        });
+      } catch (err) {
+        surfaceFetchError(err, base);
+        process.exit(3);
+      }
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return writeJson(data);
+      printComment(data.comment);
+      return;
+    }
+    case 'delete':
+    case 'rm': {
+      requireScope();
+      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      if (!id) {
+        console.error('Usage: od comment delete <commentId> --project <id> --conversation <id>');
+        process.exit(2);
+      }
+      let resp;
+      try {
+        resp = await fetch(`${base}${commentRoute(id)}`, { method: 'DELETE', headers: workspaceHeaders });
+      } catch (err) {
+        surfaceFetchError(err, base);
+        process.exit(3);
+      }
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json().catch(() => ({}));
+      if (flags.json) return writeJson(data);
+      console.log(`[comment] deleted ${id}`);
+      return;
+    }
+    default:
+      console.error(`unknown subcommand: od comment ${sub}`);
+      process.exit(2);
+  }
 }
 
 async function runMemory(args) {

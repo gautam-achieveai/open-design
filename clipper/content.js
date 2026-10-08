@@ -71,7 +71,7 @@
       }
       @keyframes odToastSpin { to { transform: rotate(360deg); } }
     </style>
-    <div class="toast" id="t"></div>`);
+    <div class="toast" id="t" role="status" aria-live="polite"></div>`);
   if (topDocument) document.documentElement.appendChild(toastHost);
   const toastEl = toastShadow.getElementById('t');
   let toastTimer = null;
@@ -1006,6 +1006,205 @@
     }
     annotationHost?.remove();
     annotationHost = null;
+    if (pinFocusId) {
+      const id = pinFocusId;
+      pinFocusId = null;
+      focusPinBadge(id);
+    }
+  }
+
+  // --- numbered page pins ---------------------------------------------------
+  // Persistent pins live in Open Design as comment rows keyed by this page;
+  // the layer is only a view of that list. One numbered badge per pin sits at
+  // the live element found by the saved selector, re-measured on scroll,
+  // resize and DOM changes (rAF-throttled) and hidden while the element is
+  // gone, so a badge never marks stale coordinates. Listeners and the observer
+  // exist only while the page has pins; nothing polls while the tab is hidden.
+  let pinHost = null;
+  let pinShadow = null;
+  let pins = [];
+  let pinRefreshSerial = 0;
+  // Badge to re-focus once its editor closes, so keyboard users land back on
+  // the layer instead of <body>.
+  let pinFocusId = null;
+  let pinLayoutFrame = 0;
+  let pinObserver = null;
+  let pinListenersBound = false;
+  const pinElements = new Map();
+
+  // Saved selectors are structural (`body > main > p:nth-of-type(2)`), the
+  // same shape the in-app browser measures with a plain `querySelector`, so a
+  // live element is accepted as found; re-deriving its canonical selector
+  // would wrongly drop a pin as soon as a sibling is removed.
+  function pinElement(pin) {
+    // A scoped pin (child frame or open-shadow internals) carries a selector
+    // relative to that root; the top document must not badge whichever of its
+    // own elements happens to match it (DEFECT-3).
+    if (pin.metadata?.scope) return null;
+    const cached = pinElements.get(pin.id);
+    if (cached && annotationConnected(cached)) return cached;
+    pinElements.delete(pin.id);
+    for (const selector of [pin.selector, pin.elementId]) {
+      if (typeof selector !== 'string' || !selector || selector.length > 1024) continue;
+      let found = null;
+      try { found = document.querySelector(selector); } catch { /* An invalid selector has no live element. */ }
+      if (found && annotationConnected(found)) {
+        pinElements.set(pin.id, found);
+        return found;
+      }
+    }
+    return null;
+  }
+
+  function ensurePinHost() {
+    if (pinHost) return;
+    pinHost = document.createElement('div');
+    pinHost.id = 'od-clipper-pins';
+    // Below the picker surface so picking still swallows clicks; badges opt
+    // back into pointer events themselves.
+    pinHost.style.cssText = 'position:fixed;inset:0;z-index:2147483645;overflow:hidden;pointer-events:none;background:transparent;margin:0;padding:0;border:0;';
+    pinShadow = pinHost.attachShadow({ mode: 'open' });
+    setHTML(pinShadow, `<style>
+      .pin { all:unset; position:absolute; box-sizing:border-box; display:grid; place-items:center;
+        min-width:22px; height:22px; padding:0 6px; border-radius:999px; background:#258bff; color:#fff;
+        border:2px solid #fff; box-shadow:0 2px 8px rgba(0,0,0,0.28);
+        font:700 11px/1 -apple-system, system-ui, sans-serif; cursor:pointer; pointer-events:auto;
+        transition: transform 130ms cubic-bezier(0.23,1,0.32,1); }
+      .pin:hover { transform: scale(1.1); }
+      .pin:focus-visible { outline:2px solid #258bff; outline-offset:2px; box-shadow:0 0 0 2px #fff, 0 0 0 5px #258bff; }
+      .pin[hidden] { display:none; }
+    </style>`);
+    pinShadow.addEventListener('click', (event) => {
+      const button = event.target?.closest?.('.pin');
+      if (!button) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const pin = pins.find((item) => item.id === button.dataset.id);
+      if (pin) void openPinEditor(pin);
+    });
+    document.documentElement.appendChild(pinHost);
+  }
+
+  // Focus the badge for `id`, or the first visible badge when that pin is
+  // gone (after a delete). Ids are matched in script: no selector escaping.
+  function focusPinBadge(id) {
+    if (!pinShadow) return;
+    const buttons = Array.from(pinShadow.querySelectorAll('.pin'));
+    const target = buttons.find((button) => button.dataset.id === id && !button.hidden)
+      ?? buttons.find((button) => !button.hidden);
+    target?.focus();
+  }
+
+  function layoutPins() {
+    pinLayoutFrame = 0;
+    if (!pinShadow || document.hidden) return;
+    const byId = new Map(pins.map((pin) => [pin.id, pin]));
+    // Measure every badge before writing any style; interleaving reads and
+    // writes would force one reflow per pin.
+    const measured = Array.from(pinShadow.querySelectorAll('.pin'), (button) => {
+      const pin = byId.get(button.dataset.id);
+      return [button, pin ? pinElement(pin)?.getBoundingClientRect() : null];
+    });
+    for (const [button, rect] of measured) {
+      if (!rect || rect.width < 1 || rect.height < 1 || rect.bottom < 0 || rect.right < 0
+        || rect.top > window.innerHeight || rect.left > window.innerWidth) {
+        button.hidden = true;
+        continue;
+      }
+      button.hidden = false;
+      button.style.left = `${Math.max(0, Math.round(rect.left) - 10)}px`;
+      button.style.top = `${Math.max(0, Math.round(rect.top) - 10)}px`;
+    }
+  }
+  function schedulePinLayout() {
+    if (pinLayoutFrame || !pins.length || document.hidden) return;
+    pinLayoutFrame = requestAnimationFrame(layoutPins);
+  }
+  function bindPinLayout() {
+    if (pinListenersBound) return;
+    pinListenersBound = true;
+    window.addEventListener('resize', schedulePinLayout);
+    document.addEventListener('scroll', schedulePinLayout, true);
+    document.addEventListener('visibilitychange', schedulePinLayout);
+    pinObserver = typeof MutationObserver === 'function' ? new MutationObserver(schedulePinLayout) : null;
+    pinObserver?.observe(document.documentElement, { childList: true, subtree: true,
+      attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
+  }
+  function unbindPinLayout() {
+    if (!pinListenersBound) return;
+    pinListenersBound = false;
+    window.removeEventListener('resize', schedulePinLayout);
+    document.removeEventListener('scroll', schedulePinLayout, true);
+    document.removeEventListener('visibilitychange', schedulePinLayout);
+    pinObserver?.disconnect();
+    pinObserver = null;
+    if (pinLayoutFrame) cancelAnimationFrame(pinLayoutFrame);
+    pinLayoutFrame = 0;
+  }
+
+  function renderPins() {
+    if (!pins.length) {
+      unbindPinLayout();
+      pinElements.clear();
+      pinHost?.remove();
+      pinHost = null;
+      pinShadow = null;
+      return;
+    }
+    ensurePinHost();
+    const focused = pinShadow.activeElement?.dataset?.id ?? null;
+    const style = pinShadow.querySelector('style');
+    pinShadow.replaceChildren(style, ...pins.map((pin) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'pin';
+      button.dataset.id = pin.id;
+      button.hidden = true;
+      button.textContent = String(pin.pinSeq);
+      button.title = pin.note || '';
+      button.setAttribute('aria-label', t('annotationPinLabel', { n: pin.pinSeq }));
+      return button;
+    }));
+    bindPinLayout();
+    layoutPins();
+    if (focused) focusPinBadge(focused);
+  }
+
+  // Ask the worker for this page's pins. The worker answers locally (no
+  // network) for an unpaired tab, so this is cheap on every page load.
+  let pinsListedHref = null;
+  async function refreshPins() {
+    if (!topDocument) return;
+    const serial = ++pinRefreshSerial;
+    const href = location.href;
+    // A same-document navigation (hash router, pushState) changes the page
+    // key without re-running this script; the previous route's badges must
+    // not stay up while the new list is in flight (DEFECT-5).
+    if (pins.length && href !== pinsListedHref) { pins = []; renderPins(); }
+    const result = await chrome.runtime.sendMessage({ type: 'odAnnotation:pins' }).catch(() => null);
+    if (serial !== pinRefreshSerial) return;
+    pinsListedHref = href;
+    pins = result?.ok && Array.isArray(result.comments)
+      ? result.comments.filter((comment) => comment && typeof comment.id === 'string'
+        && Number.isInteger(comment.pinSeq) && typeof comment.selector === 'string')
+      : [];
+    renderPins();
+  }
+
+  async function openPinEditor(pin) {
+    if (pickActive || annotationPendingPick) return;
+    const element = pinElement(pin);
+    if (!element) {
+      toast(t('annotationPinMissing', { n: pin.pinSeq }));
+      schedulePinLayout();
+      return;
+    }
+    const target = annotationTarget(element);
+    if (!target) return toast(t('annotationSensitive'));
+    const status = await chrome.runtime.sendMessage({ type: 'odAnnotation:status' }).catch(() => null);
+    if (!status?.ok) return toast(t('annotationUnpaired'));
+    // No fresh crop: the daemon keeps the stored screenshot on an edit.
+    showAnnotation(target, element, crypto.randomUUID(), null, 'annotationPinScreenshotKept', pin);
   }
 
   function annotationCaptureRect(el, onBlocked) {
@@ -1122,9 +1321,12 @@
     return 'annotationScreenshotFailed';
   }
 
-  function showAnnotation(target, element, eventId, capture, failure) {
+  // `pin` (an existing `{ id, pinSeq, note }`) opens the card as an editor:
+  // the note is pre-filled, Save keeps the pin's number, and Delete removes it.
+  function showAnnotation(target, element, eventId, capture, failure, pin = null) {
     closeAnnotation();
     annotationEventId = eventId;
+    pinFocusId = pin?.id ?? null;
     annotationHost = document.createElement('div');
     annotationHost.id = 'od-clipper-annotation';
     annotationHost.style.cssText = 'position:fixed;z-index:2147483647;inset:0;pointer-events:none;';
@@ -1167,6 +1369,7 @@
         <button class="icon-button" data-act="styles" type="button" aria-label="${esc(t('annotationStyles'))}" aria-expanded="false" aria-controls="annotation-details"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 7h4m6 0h6M4 17h10m6 0h0"/><circle cx="11" cy="7" r="3"/><circle cx="17" cy="17" r="3"/></svg></button>
         <textarea maxlength="2000" aria-label="${esc(t('annotationNote'))}" placeholder="${esc(t('annotationComment'))}" rows="1"></textarea>
         <button class="icon-button" data-act="send" type="button" aria-label="${esc(t('annotationSend'))}" title="${esc(t('annotationSend'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 12 4 4 8-8"/></svg></button>
+        ${pin ? `<button class="icon-button" data-act="delete" type="button" aria-label="${esc(t('annotationPinDelete'))}" title="${esc(t('annotationPinDelete'))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>` : ''}
         <button class="icon-button" data-act="close" type="button" aria-label="${esc(t('close'))}">×</button>
       </div>
       <div class="details" id="annotation-details" hidden>
@@ -1237,7 +1440,7 @@
       preview.hidden = !crop;
       preview.src = crop || '';
       send.disabled = submitting || expired || Array.from(ui.querySelectorAll('[aria-invalid="true"]')).length > 0;
-      for (const button of ui.querySelectorAll('[data-act="close"],[data-act="cancel"],[data-act="inside-frame"]')) button.disabled = submitting;
+      for (const button of ui.querySelectorAll('[data-act="close"],[data-act="cancel"],[data-act="inside-frame"],[data-act="delete"]')) button.disabled = submitting;
       card.setAttribute('aria-busy', String(submitting));
       status.textContent = dirty ? t('annotationPreviewCapture') : crop ? (capture?.textHidden ? t('annotationTextHidden') : '')
         : t(captureFailure);
@@ -1388,34 +1591,46 @@
           renderPreview(); return;
         }
       }
-      const result = await chrome.runtime.sendMessage({ type: 'odAnnotation:submit', eventId, target, note,
-        omitUrlDetails: false, omitScreenshot: !crop }).catch(() => null);
+      const result = await chrome.runtime.sendMessage({ type: 'odAnnotation:savePin', eventId, target, note,
+        omitUrlDetails: false, omitScreenshot: !crop, ...(pin ? { id: pin.id } : {}) }).catch(() => null);
       if (!current()) { recoverStaleReview(); return; }
       if (result?.ok) {
         closeAnnotation();
-        toast(t('annotationSent', { project: result.projectName || result.projectId,
-          conversation: result.conversationName || result.conversationId }));
-        if (result.chatUrl) {
-          const receipt = document.createElement('div');
-          receipt.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:2147483647;background:#202020;color:white;padding:16px;border-radius:10px;font:14px system-ui;box-shadow:0 4px 24px #0006;';
-          const link = document.createElement('a');
-          link.href = result.chatUrl; link.target = '_blank'; link.rel = 'noopener noreferrer';
-          link.textContent = t('annotationViewChat'); link.style.cssText = 'color:#a9ceff;margin:0 12px;';
-          const label = document.createElement('span');
-          label.textContent = t('annotationSent', { project: result.projectName || result.projectId,
-            conversation: result.conversationName || result.conversationId });
-          const close = document.createElement('button'); close.textContent = '×';
-          close.addEventListener('click', () => receipt.remove());
-          receipt.append(label, link, close); document.documentElement.appendChild(receipt);
-        }
+        toast(t('annotationPinSaved', { n: result.comment?.pinSeq ?? pin?.pinSeq ?? '' }));
+        void refreshPins();
       } else {
         submitting = false;
         for (const input of ui.querySelectorAll('.style-row input')) input.disabled = false;
         renderPreview();
-        submitError.textContent = t('failed', { error: result?.error || t('annotationUnpaired') });
+        // A 404 on an edit means the pin was removed elsewhere: say so and
+        // let the layer drop its badge instead of retrying against a gone row.
+        if (pin && result?.status === 404) {
+          submitError.textContent = t('annotationPinGone');
+          void refreshPins();
+        } else submitError.textContent = t('failed', { error: result?.error || t('annotationUnpaired') });
         textarea.focus();
       }
     });
+    ui.querySelector('[data-act="delete"]')?.addEventListener('click', async () => {
+      if (submitting) return;
+      submitting = true;
+      renderPreview();
+      const result = await chrome.runtime.sendMessage({ type: 'odAnnotation:deletePin', id: pin.id }).catch(() => null);
+      if (annotationEventId !== eventId) return;
+      if (result?.ok || result?.status === 404) {
+        closeAnnotation();
+        toast(t(result?.ok ? 'annotationPinDeleted' : 'annotationPinGone', { n: pin.pinSeq }));
+        void refreshPins();
+      } else {
+        submitting = false;
+        renderPreview();
+        submitError.textContent = t('failed', { error: result?.error || t('annotationUnpaired') });
+      }
+    });
+    if (pin) {
+      textarea.value = pin.note || '';
+      textarea.dispatchEvent(new Event('input'));
+    }
     ui.querySelector('[data-act="inside-frame"]')?.addEventListener('click', async () => {
       if (!annotationConnected(element) || !element.contentWindow) return;
       const requested = await chrome.runtime.sendMessage({ type: 'odAnnotation:frameRequest' }).catch(() => null);
@@ -2472,6 +2687,7 @@
         hideImageBadge();
         toastHost.style.display = 'none';
         if (annotationHost) annotationHost.style.display = 'none';
+        if (pinHost) pinHost.style.display = 'none';
         suppressAnnotationText();
         requestAnimationFrame(() => requestAnimationFrame(() => {
           if (msg.annotation) {
@@ -2500,6 +2716,11 @@
         hiddenForCapture = false;
         applyVisibility();
         if (annotationHost) annotationHost.style.display = 'grid';
+        if (pinHost) pinHost.style.display = '';
+        sendResponse({ ok: true });
+        return false;
+      case 'odClipper:pinsChanged':
+        void refreshPins();
         sendResponse({ ok: true });
         return false;
       default:
@@ -2514,4 +2735,25 @@
   // page forever. The whole body above is synchronous, so a concurrent
   // re-injection still sees the guard set before it can run past the top check.
   window.__odClipperInjected = true;
+  // Pins return on every (re)load of the paired page; the worker answers
+  // locally when the tab is not paired. A page leaving (navigation, bfcache)
+  // stops observing; one restored from bfcache lists again.
+  if (topDocument) {
+    window.addEventListener('pagehide', unbindPinLayout);
+    window.addEventListener('pageshow', (event) => { if (event.persisted) void refreshPins(); });
+    // Same-document navigations change the page key: hash routers, history
+    // traversal, and (Chromium ≥ 102) pushState/replaceState routers. One
+    // navigation fires several of these in the same task, so coalesce them
+    // into a single list.
+    let navigationRefreshQueued = false;
+    const refreshAfterNavigation = () => {
+      if (navigationRefreshQueued) return;
+      navigationRefreshQueued = true;
+      queueMicrotask(() => { navigationRefreshQueued = false; void refreshPins(); });
+    };
+    window.addEventListener('hashchange', refreshAfterNavigation);
+    window.addEventListener('popstate', refreshAfterNavigation);
+    window.navigation?.addEventListener?.('currententrychange', refreshAfterNavigation);
+    void refreshPins();
+  }
 })();

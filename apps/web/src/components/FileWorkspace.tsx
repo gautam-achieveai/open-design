@@ -111,7 +111,6 @@ import {
 import {
   resolveLocalizedText,
   type ChatSessionMode,
-  type EdgeAnnotationSubmitResponse,
   type InstalledPluginRecord,
   type LocalizedText,
   type WorkspaceCollabContext,
@@ -280,9 +279,10 @@ interface Props {
   onRemovePreviewComment?: (commentId: string) => Promise<boolean>;
   onReorderPreviewComment?: (commentId: string, sortKey: number) => Promise<void>;
   onSendBoardCommentAttachments?: (attachments: ChatCommentAttachment[], images?: File[]) => Promise<CommentSendResult> | CommentSendResult;
+  /** Stage saved pins into the composer draft as numbered chips (no run, no delete). */
+  onStagePreviewComments?: (comments: PreviewComment[]) => void;
   onBrandExtractionStopRequest?: () => void;
   onRequestBrowserUsePrompt?: (prompt: string) => void;
-  onAnnotationDraftCreated?: (receipt: EdgeAnnotationSubmitResponse) => void;
   onPluginFolderAgentAction?: (
     relativePath: string,
     action: PluginFolderAgentAction,
@@ -1350,9 +1350,9 @@ export function FileWorkspace({
   onRemovePreviewComment,
   onReorderPreviewComment,
   onSendBoardCommentAttachments,
+  onStagePreviewComments,
   onBrandExtractionStopRequest,
   onRequestBrowserUsePrompt,
-  onAnnotationDraftCreated,
   onPluginFolderAgentAction,
   activePluginActionPaths,
   hiddenPluginActionPaths,
@@ -3549,6 +3549,7 @@ export function FileWorkspace({
       onRemovePreviewComment={onRemovePreviewComment}
       onReorderPreviewComment={onReorderPreviewComment}
       onSendBoardCommentAttachments={onSendBoardCommentAttachments}
+      onStagePreviewComments={onStagePreviewComments}
       onBrandExtractionStopRequest={
         file.name === 'brand.html' ? onBrandExtractionStopRequest : undefined
       }
@@ -4414,8 +4415,8 @@ export function FileWorkspace({
               onSavePreviewComment={onSavePreviewComment}
               onRemovePreviewComment={onRemovePreviewComment}
               onSendBoardCommentAttachments={onSendBoardCommentAttachments}
+              onStagePreviewComments={onStagePreviewComments}
               onRequestBrowserUsePrompt={onRequestBrowserUsePrompt}
-              onAnnotationDraftCreated={onAnnotationDraftCreated}
               onPageSnapshotToast={handleBrowserPageSnapshotToast}
               onRefreshFiles={refreshFilesWithoutResult}
               onOpenDesignFiles={() => setPersistedActive(DESIGN_FILES_TAB)}

@@ -1,6 +1,6 @@
 import type { PreviewAnnotationStyle } from '../types';
 
-import type { BrowserViewportId } from '@open-design/contracts';
+import { browserCommentFileKey, type BrowserViewportId } from '@open-design/contracts';
 export type { BrowserViewportId } from '@open-design/contracts';
 
 export interface BrowserViewportPreset {
@@ -157,6 +157,12 @@ export interface BrowserMeasureTargetRequest {
   elementId: string;
   key: string;
   selector: string;
+  /**
+   * Measure only geometry (`position` / `viewport`): skips the whole-document
+   * mask walk, text and style reads. Saved pins only ever draw a marker, so
+   * the 250 ms poll must not pay the full walk once per pin.
+   */
+  positionOnly?: boolean;
 }
 
 export function projectRelativePathFromBrowserUrl(
@@ -177,9 +183,18 @@ export function projectRelativePathFromBrowserUrl(
   }
 }
 
+/**
+ * Comment file key for a page shown in the in-app browser: a project file
+ * served from disk keys as that file (so its pins are the Preview's pins);
+ * any http(s) page keys through the contracts' shared `browserCommentFileKey`,
+ * the same function the daemon applies to Clipper pins, so one page has one
+ * numbering space whichever surface placed the pin.
+ */
 export function browserCommentFilePath(url: string, resolvedDir?: string | null): string {
   const projectPath = projectRelativePathFromBrowserUrl(url, resolvedDir);
   if (projectPath) return projectPath;
+  const sharedKey = browserCommentFileKey(url);
+  if (sharedKey) return sharedKey;
   const cleanUrl = url.trim();
   return cleanUrl && cleanUrl !== 'about:blank' ? `browser:${cleanUrl}` : 'browser:about:blank';
 }
@@ -714,13 +729,14 @@ export function browserMeasureTargetsScript(
     const tag = el.tagName ? el.tagName.toLowerCase() : 'element';
     const field = el.matches('input,textarea,select');
     const htmlHint = tag;
-    return {
+    const positionOnly = target.positionOnly === true;
+    const base = {
       key: String(target.key || ''),
       filePath,
       elementId: String(target.elementId || ''),
       selector: String(target.selector || ''),
       label: tag,
-      text: field ? '' : safeText(el),
+      text: positionOnly || field ? '' : safeText(el),
       position: {
         x: Math.round(rect.x),
         y: Math.round(rect.y),
@@ -728,12 +744,12 @@ export function browserMeasureTargetsScript(
         height: Math.round(rect.height)
       },
       htmlHint: htmlHint.slice(0, 220),
-      style: styleSnapshot(el),
       selectionKind: 'element',
       isFormField: field,
-      maskRects: maskRectsFor(rect),
       viewport: { width: window.innerWidth, height: window.innerHeight }
     };
+    if (positionOnly) return base;
+    return { ...base, style: styleSnapshot(el), maskRects: maskRectsFor(rect) };
   }
   return targets.map(snapshotFor).filter(Boolean);
 })()

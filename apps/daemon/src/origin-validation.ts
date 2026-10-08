@@ -277,6 +277,37 @@ function headerValue(value: unknown): string | undefined {
  * normal same-origin / allow-list validation so an unrelated installed
  * extension cannot enumerate or download the user's library.
  */
+/**
+ * Grant-scoped operations a PAIRED extension may call cross-origin at
+ * `POST /api/edge-annotations/<operation>`. This is the single list behind
+ * two gates: the `/api` origin guard's pass-through (`isEdgeAnnotationExtensionRequest`)
+ * and the routes' own OPTIONS preflight (`routes/edge-annotations.ts`). An
+ * operation missing here is unreachable from the extension: the guard answers
+ * "Cross-origin requests are not allowed" before the route's own Origin +
+ * capability check ever runs.
+ */
+export const EDGE_ANNOTATION_EXTENSION_OPERATIONS: readonly string[] = [
+  'redeem', 'status', 'submit', 'revoke', 'comment-list', 'comment-upsert', 'comment-delete',
+];
+
+const EDGE_ANNOTATION_EXTENSION_PATH = new RegExp(
+  `^/edge-annotations/(?:${EDGE_ANNOTATION_EXTENSION_OPERATIONS.join('|')})$`,
+);
+const EDGE_ANNOTATION_INSPECT_PATH = /^\/edge-annotations\/inspect\/(?:poll|result)$/;
+
+/**
+ * True when the `/api` origin guard must let a request through to the edge
+ * annotation routes' own Origin + capability checks. `apiRelativePath` is
+ * `req.path` inside `app.use('/api', …)` (mount prefix stripped). Unlike the
+ * Library bootstrap, this does not look at the Origin: the routes verify the
+ * extension origin against the pairing grant themselves.
+ */
+export function isEdgeAnnotationExtensionRequest(method: string, apiRelativePath: string): boolean {
+  const normalizedMethod = method.toUpperCase();
+  if (normalizedMethod !== 'POST' && normalizedMethod !== 'OPTIONS') return false;
+  return EDGE_ANNOTATION_EXTENSION_PATH.test(apiRelativePath) || EDGE_ANNOTATION_INSPECT_PATH.test(apiRelativePath);
+}
+
 export function isZeroConfigClipperLibraryRequest(
   method: string,
   apiRelativePath: string,

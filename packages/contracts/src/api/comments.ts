@@ -1,4 +1,5 @@
 import type { OkResponse } from '../common.js';
+import type { EdgeAnnotationScope } from './edge-annotations.js';
 
 export type PreviewCommentStatus =
   | 'open'
@@ -78,6 +79,58 @@ export interface PreviewCommentMetadata {
      */
     webContentsId: number;
   };
+  /** Which surface placed the pin. Absent on rows written before the field existed (= `preview`). */
+  source?: PreviewCommentSource;
+  /**
+   * Where `selector` resolves when the pin is not in the top document
+   * (child frame / open shadow root). Browser pins only; absent means the
+   * top document. Same shape the extension sends on `target.scope`.
+   */
+  scope?: EdgeAnnotationScope;
+}
+
+export type PreviewCommentSource = 'preview' | 'browser' | 'clipper';
+
+/**
+ * `filePath` prefix for a pin placed on a page that is not a project file
+ * (in-app browser or Clipper). Everything behind the prefix is the page key
+ * from {@link browserCommentFileKey}.
+ */
+export const BROWSER_COMMENT_FILE_KEY_PREFIX = 'browser:';
+
+/**
+ * Project-relative directory that holds screenshots of browser pins. It syncs
+ * with the project like any other file, and the pin rows relay to the Team
+ * like Preview pins: Open Design is a developer tool, so a browser pin gets
+ * no extra privacy carve-out.
+ */
+export const BROWSER_ANNOTATION_SCREENSHOT_DIR = 'browser-annotations';
+
+export function isBrowserCommentFileKey(filePath: string | null | undefined): boolean {
+  return typeof filePath === 'string' && filePath.startsWith(BROWSER_COMMENT_FILE_KEY_PREFIX);
+}
+
+/**
+ * Page key for browser pins: `browser:` + the URL as the browser normalises
+ * it (origin, pathname, search AND fragment). The fragment stays because
+ * hash routers (`/#/workbench`, `/#/settings`) are different screens of one
+ * document; dropping it would list every route's pins on every route and
+ * mark their elements missing. The cost is that an anchor-only variation
+ * (`page#section`) keys separately from `page`, which matches what the
+ * in-app browser did before the Clipper shared this key.
+ * One function on every side (in-app browser key, daemon Clipper routes) so
+ * pins placed from different surfaces on the same page land in one numbering
+ * space. Returns null for anything that is not an http(s) URL.
+ */
+export function browserCommentFileKey(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  return `${BROWSER_COMMENT_FILE_KEY_PREFIX}${parsed.origin}${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
 export interface PreviewCommentMember {

@@ -114,6 +114,39 @@ it('picks a password field without reading its value or sensitive attributes', a
   expect(JSON.stringify(refreshed)).not.toMatch(/private-123|name=|placeholder=|type="password"/);
 });
 
+it('measures a position-only pin target without the mask walk while the active target keeps masks', () => {
+  document.body.innerHTML = '<div id="card"><input id="field" value="private-123"></div>';
+  HTMLElement.prototype.getBoundingClientRect = () => ({ x: 10, y: 20, width: 160, height: 30,
+    left: 10, top: 20, right: 170, bottom: 50, toJSON() {} } as DOMRect);
+  vi.spyOn(window, 'getComputedStyle').mockReturnValue({ display: 'block', visibility: 'visible', color: 'rgb(1, 2, 3)' } as CSSStyleDeclaration);
+  const walk = vi.spyOn(document, 'querySelectorAll');
+
+  const pinOnly = window.eval(browserMeasureTargetsScript('browser:https://example.test', [
+    { elementId: 'card', selector: '#card', key: 'comment:c1', positionOnly: true },
+  ])) as Array<Record<string, unknown>>;
+  expect(walk).not.toHaveBeenCalled();
+  expect(pinOnly).toHaveLength(1);
+  expect(pinOnly[0]).toMatchObject({ key: 'comment:c1', elementId: 'card', selector: '#card',
+    position: { x: 10, y: 20, width: 160, height: 30 }, viewport: { width: window.innerWidth, height: window.innerHeight } });
+  expect(pinOnly[0]).not.toHaveProperty('maskRects');
+  expect(pinOnly[0]).not.toHaveProperty('style');
+  expect(pinOnly[0]!.text).toBe('');
+  expect(JSON.stringify(pinOnly)).not.toMatch(/private-123/);
+  const snapshot = browserSnapshotFromUnknown(pinOnly[0], 'browser:https://example.test');
+  expect(snapshot?.position).toEqual({ x: 10, y: 20, width: 160, height: 30 });
+  expect(snapshot?.viewport).toEqual({ width: window.innerWidth, height: window.innerHeight });
+
+  const both = window.eval(browserMeasureTargetsScript('browser:https://example.test', [
+    { elementId: 'card', selector: '#card', key: 'active' },
+    { elementId: 'card', selector: '#card', key: 'comment:c1', positionOnly: true },
+  ])) as Array<Record<string, unknown>>;
+  expect(walk).toHaveBeenCalledTimes(1);
+  expect(both[0]).toMatchObject({ key: 'active', maskRects: [{ x: 0, y: 0, width: 160, height: 30, textHidden: true }] });
+  expect(both[0]!.style).toMatchObject({ color: 'rgb(1, 2, 3)' });
+  expect(both[1]).toMatchObject({ key: 'comment:c1', position: { x: 10, y: 20, width: 160, height: 30 } });
+  expect(both[1]).not.toHaveProperty('maskRects');
+});
+
 it('scales and clips masks to a high-DPI capture of a partly offscreen field', () => {
   expect(browserAnnotationPixelMasks({ x: -10, y: 20, width: 100, height: 40 },
     { x: 0, y: 0, width: 300, height: 200 }, { w: 180, h: 80 },

@@ -2164,17 +2164,19 @@
 }
 /* Right-side comment thread panel. Shown while board (comment) mode
    is on; it docks beside the artifact preview so canvas clicks remain
-   available for placing comments. */
+   available for placing comments. The width fallbacks let a host other
+   than .comment-preview-layer (the in-app browser's .db-content) mount
+   the dock without redeclaring the tokens. */
 .comment-side-dock {
   position: relative;
   min-width: 0;
   min-height: 0;
-  width: var(--comment-side-dock-width);
+  width: var(--comment-side-dock-width, 320px);
   height: 100%;
   display: flex;
 }
 .comment-side-dock.collapsed {
-  width: var(--comment-side-dock-rail-width);
+  width: var(--comment-side-dock-rail-width, 42px);
 }
 .comment-preview-layer-side-dock-stacked .comment-side-dock {
   width: 100%;

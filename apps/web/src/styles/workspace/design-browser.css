@@ -895,6 +895,8 @@
   z-index: 20;
   pointer-events: none;
 }
+/* The box only outlines the element; it must not swallow clicks meant for
+   the page. The numbered badge is the one interactive part. */
 .db-comment-marker {
   position: absolute;
   min-width: 24px;
@@ -904,39 +906,54 @@
   border-radius: var(--radius);
   background: rgba(22, 119, 255, 0.12);
   color: #fff;
-  pointer-events: auto;
-  cursor: pointer;
+  pointer-events: none;
 }
-.db-comment-marker span {
+.db-comment-marker-badge {
   position: absolute;
   top: -13px;
   right: -13px;
   min-width: 22px;
   height: 22px;
+  padding: 0 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 2px solid #fff;
   border-radius: var(--radius-pill);
   background: #1677ff;
+  color: #fff;
   box-shadow: 0 4px 12px rgba(22, 119, 255, 0.32);
   font-size: 11px;
   font-weight: 700;
+  pointer-events: auto;
+  cursor: pointer;
+}
+/* A box clamped at a viewport edge keeps its badge inside the box, where the
+   frame cannot clip it. */
+.db-comment-marker[data-clamped-right] .db-comment-marker-badge {
+  right: 2px;
+}
+.db-comment-marker[data-clamped-top] .db-comment-marker-badge {
+  top: 2px;
 }
 .db-comment-marker.active {
   border-color: #da6138;
   background: rgba(218, 97, 56, 0.14);
 }
-.db-comment-marker.active span {
+.db-comment-marker.active .db-comment-marker-badge {
   background: #da6138;
   box-shadow: 0 4px 12px rgba(218, 97, 56, 0.34);
 }
-.design-browser .comment-popover,
-.db-comment-popover {
-  z-index: 240;
+/* Browser content + the comment side dock sit side by side in .db-content;
+   the dock carries its own width defaults (styles/viewer/core.css). */
+.db-content-main {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }
-.db-comment-popover textarea {
-  width: 100%;
+.design-browser .comment-popover {
+  z-index: 240;
 }
 .design-browser .db-inspect-panel {
   z-index: 360;

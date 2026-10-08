@@ -123,9 +123,13 @@ Browser tab does **not** share that profile or its credentials.
    whether a screenshot was captured or not provided. Identity-provider pages remain
    unavailable. **Pick element**
    remains Library capture, not chat.
-4. Collect more notes and crops in the same conversation draft. Remove unwanted
-   crops there, then press the normal chat **Send** once. Collection alone does
-   not post a transcript message or start an agent.
+4. Each saved note is a **numbered pin** (`#1`, `#2`, …) kept on that page in
+   the paired conversation — the same rows the in-app browser and the Preview
+   canvas use. Badges return on reload, follow the element on scroll and
+   resize, and hide while the element is gone. Click a badge to edit the note
+   (editing keeps the pin's number) or delete the pin. Pins are saved, not sent: open
+   the conversation in Open Design, select pins in the dock, and send them to
+   chat there.
 
 The connection lasts up to eight hours and survives extension-worker sleep and
 same-origin page reload/navigation. Screenshots are discarded on navigation.
@@ -134,14 +138,17 @@ reconnecting. Read-only live inspection of a newly loaded document requires a
 fresh pairing, even when its origin is unchanged. Use Disconnect in Open Design
 to revoke the connection. Tokens stay in extension-only session storage, never
 in website content or local storage. The full connection URL is not saved.
-The optional screenshot is chat evidence, not an editable project file.
+The optional screenshot is stored in the project under `browser-annotations/`
+next to the pin. On a Team-shared project, pins and their screenshots sync to
+the Team like Preview pins.
 
-Collected annotations are durable pending draft evidence and survive daemon
-restarts. Only the normal chat Send binds selected notes and crops to a message.
-Optional styles and ancestor metadata are filtered and bounded rather than
-rejecting the note. Ordinary long copy is truncated; credential-shaped text is
-omitted. A submission validation/server error preserves the connection and
-reviewed crop so the same annotation can be retried.
+Pins survive daemon restarts; the extension never names the page key — the
+daemon derives it from the paired page URL (origin, path, query and fragment,
+so a hash-routed screen keeps its own pins). Optional styles and ancestor metadata are filtered and
+bounded rather than rejecting the note. Ordinary long copy is truncated;
+credential-shaped text is omitted. A validation/server error preserves the
+connection and reviewed crop so the same pin can be retried; a pin deleted in
+Open Design is reported as gone and its badge removed.
 
 Under **Advanced**, enable **Record annotation diagnostics**, reproduce the
 problem, then **Copy sanitized report**. Recording is off by default, bounded

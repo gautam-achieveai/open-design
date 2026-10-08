@@ -11,7 +11,7 @@ type Request = { url: string; init: { method?: string; headers?: Record<string, 
 
 function worker(options: { paired?: boolean; tabUrl?: string; screenshot?: boolean; oversized?: boolean;
   captureGate?: Promise<void>; session?: Record<string, unknown>; sessionGate?: Promise<void>;
-  redeemGate?: Promise<void>; submitStatus?: number; inspectQueue?: Array<{ requestId: string; operation: string; selector?: string }> } = {}) {
+  redeemGate?: Promise<void>; pinStatus?: number; pinRefusal?: unknown; inspectQueue?: Array<{ requestId: string; operation: string; selector?: string }> } = {}) {
   let handler: MessageHandler | undefined;
   let onTabUpdated: ((id: number, changes: { url?: string; status?: string }) => void) | undefined;
   let onTabActivated: (() => void) | undefined;
@@ -99,9 +99,9 @@ function worker(options: { paired?: boolean; tabUrl?: string; screenshot?: boole
     const pathname = new URL(url).pathname;
     if (!options.paired) return { ok: false, status: 403, json: async () => ({ error: { message: 'not paired' } }) };
     const body = init.body && JSON.parse(init.body);
-    if (pathname.endsWith('/submit') && options.submitStatus) {
-      return { ok: false, status: options.submitStatus,
-        json: async () => ({ error: { message: 'annotation evidence is malformed' } }) };
+    if (/comment-(list|upsert|delete)$/.test(pathname) && options.pinStatus) {
+      return { ok: false, status: options.pinStatus,
+        json: async () => options.pinRefusal ?? { error: { code: 'FORBIDDEN', message: 'annotation evidence is malformed' } } };
     }
     if (pathname.endsWith('/redeem') && body.code === 'other-id.invalid-secret') {
       return { ok: false, status: 404, json: async () => ({ error: { message: 'pairing code expired' } }) };
@@ -117,7 +117,10 @@ function worker(options: { paired?: boolean; tabUrl?: string; screenshot?: boole
       grant: { grantId: body.grantId, projectId: body.projectId,
         tabId: body.tabId, documentId: body.documentId },
     };
-    else if (pathname.endsWith('/submit')) value = { id: 'draft-1', projectId: 'project-1', conversationId: 'c1' };
+    else if (pathname.endsWith('/comment-list')) value = { filePath: 'browser:x',
+      comments: [{ id: 'pin-1', pinSeq: 1, selector: target.selector, elementId: target.selector }] };
+    else if (pathname.endsWith('/comment-upsert')) value = { comment: { id: body.id || 'pin-9', pinSeq: body.id ? 1 : 2 } };
+    else if (pathname.endsWith('/comment-delete')) value = { deleted: true };
     else if (pathname.endsWith('/inspect/poll')) value = options.inspectQueue?.length
       ? { request: options.inspectQueue.shift()! } : { request: null };
     return { ok: true, status: 200, json: async () => value };
@@ -208,9 +211,9 @@ async function enterChild(app: ReturnType<typeof worker>) {
 test('authorized child notes preserve top grant and scoped JSON without taking screenshots', async () => {
   const app = worker({ paired: true });
   const { child, scoped } = await enterChild(app);
-  assert.equal((await app.send({ type: 'odAnnotation:submit', eventId: 'child-event', target: scoped,
+  assert.equal((await app.send({ type: 'odAnnotation:savePin', eventId: 'child-event', target: scoped,
     note: 'Improve this frame', omitScreenshot: true }, child)).ok, true);
-  const body = JSON.parse(app.requests.find(request => request.url.endsWith('/submit'))!.init.body!);
+  const body = JSON.parse(app.requests.find(request => request.url.endsWith('/comment-upsert'))!.init.body!);
   assert.equal(body.url, target.url);
   assert.equal(body.documentId, 'epoch-1');
   assert.equal(body.target.scope.url, child.url);
@@ -224,13 +227,13 @@ test('authorized child notes preserve top grant and scoped JSON without taking s
 test('child event ownership, sender identity and replacement are fenced before staging', async () => {
   const app = worker({ paired: true });
   const { child, scoped } = await enterChild(app);
-  const submit = { type: 'odAnnotation:submit', eventId: 'child-event', target: scoped, note: 'Change', omitScreenshot: true };
+  const submit = { type: 'odAnnotation:savePin', eventId: 'child-event', target: scoped, note: 'Change', omitScreenshot: true };
   assert.equal((await app.send({ ...submit, eventId: 'wrong-event' }, child)).ok, false);
   assert.equal((await app.send(submit, { ...child, documentId: 'guessed' })).ok, false);
   assert.equal((await app.send(submit, { ...child, frameId: 3 })).ok, false);
   app.replaceChild();
   assert.equal((await app.send(submit, child)).ok, false);
-  assert.equal(app.requests.filter(request => request.url.endsWith('/submit')).length, 0);
+  assert.equal(app.requests.filter(request => request.url.endsWith('/comment-upsert')).length, 0);
 });
 
 test('fresh frame challenge refuses guessed nonce, restricted child and stale parent epoch', async () => {
@@ -257,7 +260,7 @@ test('fresh frame challenge refuses guessed nonce, restricted child and stale pa
 test('project annotations fail closed without a redeemed grant', async () => {
   const app = worker();
   assert.equal((await app.send({ type: 'odAnnotation:status' })).ok, false);
-  assert.equal((await app.send({ type: 'odAnnotation:submit', target, note: 'Change color' })).ok, false);
+  assert.equal((await app.send({ type: 'odAnnotation:savePin', target, note: 'Change color' })).ok, false);
   assert.equal(app.requests.length, 0);
 });
 
@@ -326,7 +329,7 @@ test('pairing refuses website scripts even when a tab is active', async () => {
   assert.equal(app.requests.length, 0);
 });
 
-test('submit includes reviewed cropped PNG and bounded structural/style evidence', async () => {
+test('savePin includes reviewed cropped PNG and bounded structural/style evidence', async () => {
   const app = worker({ paired: true, screenshot: true, tabUrl: 'https://app.example.test/dashboard?view=designer&access_token=secret#panel=hero&code=private' });
   const reviewedTarget = { ...target, url: 'https://app.example.test/dashboard?view=designer#panel=hero' };
   assert.equal((await app.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
@@ -335,12 +338,12 @@ test('submit includes reviewed cropped PNG and bounded structural/style evidence
   assert.equal(app.screenshotCount(), 1);
   assert.equal(app.hidden(), false);
   assert.deepEqual(app.drawCalls[0]?.slice(1, 5), [10, 14, 100, 120]);
-  const response = await app.send({ type: 'odAnnotation:submit', eventId: 'event-1', target: reviewedTarget, note: 'Change color' });
+  const response = await app.send({ type: 'odAnnotation:savePin', eventId: 'event-1', target: reviewedTarget, note: 'Change color' });
   assert.equal(response.ok, true);
   assert.deepEqual(app.requests.map((request) => new URL(request.url).pathname), [
-    '/api/edge-annotations/redeem', '/api/edge-annotations/status', '/api/edge-annotations/status', '/api/edge-annotations/submit',
+    '/api/edge-annotations/redeem', '/api/edge-annotations/status', '/api/edge-annotations/status', '/api/edge-annotations/comment-upsert',
   ]);
-  const submit = app.requests.find((request) => request.url.endsWith('/submit'))!;
+  const submit = app.requests.find((request) => request.url.endsWith('/comment-upsert'))!;
   assert.equal(submit.init.headers?.authorization, 'Bearer worker-only-secret');
   const body = JSON.parse(submit.init.body!);
   assert.equal(body.url, 'https://app.example.test/dashboard?view=designer#panel=hero');
@@ -348,6 +351,8 @@ test('submit includes reviewed cropped PNG and bounded structural/style evidence
   assert.equal(body.tabId, 17);
   assert.equal(body.documentId, 'epoch-1');
   assert.equal(body.eventId, 'event-1');
+  assert.equal(body.projectId, undefined);
+  assert.equal(body.title, undefined);
   assert.match(body.screenshotDataUrl, /^data:image\/png;base64,/);
   assert.deepEqual(body.target.ancestors, target.ancestors);
   assert.equal(body.target.style.color, target.style.color);
@@ -361,12 +366,12 @@ test('submit includes reviewed cropped PNG and bounded structural/style evidence
 test('optional long or credential-shaped text is bounded or omitted without blocking notes', async () => {
   const app = worker({ paired: true });
   assert.equal((await app.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
-  const sent = await app.send({ type: 'odAnnotation:submit', eventId: 'optional-copy',
+  const sent = await app.send({ type: 'odAnnotation:savePin', eventId: 'optional-copy',
     target: { ...target, text: 'Use <Enter> to save\n' + 'A'.repeat(400),
       label: 'B'.repeat(200), domOutline: 'div\n token=private-value' },
     note: 'Improve spacing', omitScreenshot: true });
   assert.equal(sent.ok, true, String(sent.error));
-  const body = JSON.parse(app.requests.find((request) => request.url.endsWith('/submit'))!.init.body!);
+  const body = JSON.parse(app.requests.find((request) => request.url.endsWith('/comment-upsert'))!.init.body!);
   assert.equal(body.target.text.length, 300);
   assert.ok(body.target.text.startsWith('Use Enter to save'));
   assert.equal(body.target.label.length, 160);
@@ -375,14 +380,14 @@ test('optional long or credential-shaped text is bounded or omitted without bloc
 });
 
 test('a submission validation error preserves pairing and the reviewed retry', async () => {
-  const app = worker({ paired: true, screenshot: true, submitStatus: 400 });
+  const app = worker({ paired: true, screenshot: true, pinStatus: 400 });
   assert.equal((await app.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
   assert.equal((await app.send(capture)).ok, true);
-  const message = { type: 'odAnnotation:submit', eventId: capture.eventId, target, note: 'Improve spacing' };
+  const message = { type: 'odAnnotation:savePin', eventId: capture.eventId, target, note: 'Improve spacing' };
   assert.equal((await app.send(message)).ok, false);
   assert.equal((await app.send({ type: 'odAnnotation:status' }, popupSender)).ok, true);
   assert.equal((await app.send(message)).ok, false);
-  assert.equal(app.requests.filter((request) => request.url.endsWith('/submit')).length, 2);
+  assert.equal(app.requests.filter((request) => request.url.endsWith('/comment-upsert')).length, 2);
 });
 
 test('opt-in diagnostics export only bounded operational metadata to the popup', async () => {
@@ -390,7 +395,7 @@ test('opt-in diagnostics export only bounded operational metadata to the popup',
   assert.equal((await app.send({ type: 'odAnnotation:diagnostics', enabled: true })).ok, false);
   assert.equal((await app.send({ type: 'odAnnotation:diagnostics', enabled: true }, popupSender)).ok, true);
   assert.equal((await app.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
-  await app.send({ type: 'odAnnotation:submit', eventId: 'diag', target,
+  await app.send({ type: 'odAnnotation:savePin', eventId: 'diag', target,
     note: 'private developer note', omitScreenshot: true });
   const response = await app.send({ type: 'odAnnotation:diagnostics' }, popupSender);
   assert.equal(response.ok, true);
@@ -398,10 +403,10 @@ test('opt-in diagnostics export only bounded operational metadata to the popup',
   for (const secret of [code, 'worker-only-secret', 'private developer note', target.url, target.text]) {
     assert.ok(!serialized.includes(secret), secret);
   }
-  assert.ok(serialized.includes('odAnnotation:submit'));
-  assert.ok(serialized.includes('server:submit'));
-  assert.ok(serialized.includes('draft-1'));
-  const submit = app.requests.find((request) => request.url.endsWith('/submit'))!;
+  assert.ok(serialized.includes('odAnnotation:savePin'));
+  assert.ok(serialized.includes('server:comment-upsert'));
+  assert.ok(serialized.includes('pin-9'));
+  const submit = app.requests.find((request) => request.url.endsWith('/comment-upsert'))!;
   assert.ok(submit.init.headers?.['x-od-annotation-correlation']);
   assert.equal((await app.send({ type: 'odAnnotation:diagnostics', enabled: false }, popupSender)).report.events.length, 0);
 });
@@ -409,11 +414,11 @@ test('opt-in diagnostics export only bounded operational metadata to the popup',
 test('optional ancestor metadata cannot block a reviewed annotation', async () => {
   const app = worker({ paired: true });
   assert.equal((await app.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
-  const sent = await app.send({ type: 'odAnnotation:submit', eventId: 'optional-ancestors',
+  const sent = await app.send({ type: 'odAnnotation:savePin', eventId: 'optional-ancestors',
     target: { ...target, ancestors: [null, ...Array(10).fill({ tag: 'main', selector: 'main' })] },
     note: 'Improve spacing', omitScreenshot: true });
   assert.equal(sent.ok, true, String(sent.error));
-  const submit = app.requests.find((request) => request.url.endsWith('/submit'))!;
+  const submit = app.requests.find((request) => request.url.endsWith('/comment-upsert'))!;
   const body = JSON.parse(submit.init.body!);
   assert.equal(body.target.ancestors.length, 7);
   assert.equal(body.note, 'Improve spacing');
@@ -426,7 +431,7 @@ test('crop masks a selected field and a neighboring field before sending', async
   const result = await app.send({ ...capture, maskRects });
   assert.equal(result.ok, true, String(result.error));
   assert.deepEqual(app.maskCalls, [[20, 20, 20, 24], [50, 66, 30, 30]]);
-  const submitted = await app.send({ type: 'odAnnotation:submit', eventId: capture.eventId,
+  const submitted = await app.send({ type: 'odAnnotation:savePin', eventId: capture.eventId,
     target, note: 'Improve the field design' });
   assert.equal(submitted.ok, true, String(submitted.error));
 });
@@ -445,7 +450,7 @@ test('crop discards pixels if a field moves after capture paint', async () => {
   const result = await app.send(capture);
   assert.equal(result.ok, false);
   assert.equal(app.screenshotCount(), 1);
-  assert.equal((await app.send({ type: 'odAnnotation:submit', eventId: capture.eventId,
+  assert.equal((await app.send({ type: 'odAnnotation:savePin', eventId: capture.eventId,
     target, note: 'Change', omitScreenshot: true })).ok, true);
 });
 
@@ -469,7 +474,7 @@ test('worker accepts design labels containing password and token words without a
   assert.equal((await app.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
   const designTarget = { ...target, text: 'Password: increase contrast', domOutline: 'button Password: increase contrast' };
   assert.equal((await app.send({ ...capture, target: designTarget })).ok, true);
-  assert.equal((await app.send({ type: 'odAnnotation:submit', eventId: capture.eventId,
+  assert.equal((await app.send({ type: 'odAnnotation:savePin', eventId: capture.eventId,
     target: designTarget, note: 'Make the sign-in field clearer' })).ok, true);
 });
 
@@ -481,13 +486,13 @@ test('nested element outline reaches the crop and post without accepting unsafe 
   const captured = await app.send({ ...capture, target: nestedTarget });
   assert.equal(captured.ok, true, String(captured.error));
   assert.equal(app.screenshotCount(), 1);
-  const sent = await app.send({ type: 'odAnnotation:submit', eventId: 'event-1',
+  const sent = await app.send({ type: 'odAnnotation:savePin', eventId: 'event-1',
     target: nestedTarget, note: 'Make the heading clearer' });
   assert.equal(sent.ok, true, String(sent.error));
   assert.equal(JSON.parse(app.requests.at(-1)!.init.body!).target.domOutline, nestedTarget.domOutline);
   for (const domOutline of ['div\r  h1 Title', 'div\t h1 Title', 'div\u0000 h1 Title',
     'div\n  input token=private', 'div\n  <input>']) {
-    const result = await app.send({ type: 'odAnnotation:submit', eventId: `safe-${app.requests.length}`,
+    const result = await app.send({ type: 'odAnnotation:savePin', eventId: `safe-${app.requests.length}`,
       target: { ...nestedTarget, domOutline }, note: 'Improve layout', omitScreenshot: true });
     assert.equal(result.ok, true, String(result.error));
     const evidence = JSON.parse(app.requests.at(-1)!.init.body!).target.domOutline;
@@ -502,12 +507,12 @@ test('reviewed URL can omit query and fragment but cannot silently change the pa
   const reviewedTarget = { ...target, url: 'https://app.example.test/dashboard?view=designer#panel=hero' };
   assert.equal((await app.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
   assert.equal((await app.send({ ...capture, target: reviewedTarget })).ok, true);
-  const response = await app.send({ type: 'odAnnotation:submit', eventId: 'event-1', target: reviewedTarget,
+  const response = await app.send({ type: 'odAnnotation:savePin', eventId: 'event-1', target: reviewedTarget,
     note: 'Change color', omitUrlDetails: true });
   assert.equal(response.ok, true);
   const body = JSON.parse(app.requests.at(-1)!.init.body!);
   assert.equal(body.url, 'https://app.example.test/dashboard');
-  assert.equal((await app.send({ type: 'odAnnotation:submit', eventId: 'event-1',
+  assert.equal((await app.send({ type: 'odAnnotation:savePin', eventId: 'event-1',
     target: { ...reviewedTarget, text: 'Another selection' }, note: 'Changed' })).ok, false);
 });
 
@@ -515,10 +520,10 @@ test('failed screenshot can be explicitly omitted from a chat post', async () =>
   const blocked = worker({ paired: true });
   assert.equal((await blocked.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
   assert.equal((await blocked.send(capture)).ok, false);
-  assert.equal((await blocked.send({ type: 'odAnnotation:submit', eventId: 'event-1', target, note: 'Change' })).ok, false);
-  assert.equal(blocked.requests.filter((request) => request.url.endsWith('/submit')).length, 0);
+  assert.equal((await blocked.send({ type: 'odAnnotation:savePin', eventId: 'event-1', target, note: 'Change' })).ok, false);
+  assert.equal(blocked.requests.filter((request) => request.url.endsWith('/comment-upsert')).length, 0);
   assert.equal(blocked.hidden(), false);
-  assert.equal((await blocked.send({ type: 'odAnnotation:submit', eventId: 'event-1', target,
+  assert.equal((await blocked.send({ type: 'odAnnotation:savePin', eventId: 'event-1', target,
     note: 'Change', omitScreenshot: true })).ok, true);
   const posted = JSON.parse(blocked.requests.at(-1)!.init.body!);
   assert.equal(posted.note, 'Change');
@@ -543,9 +548,9 @@ test('discard during screenshot prevents late crop from being submitted', async 
   assert.equal((await app.send({ type: 'odAnnotation:discard', eventId: 'event-1' })).ok, true);
   releaseCapture();
   assert.equal((await pending).ok, false);
-  assert.equal((await app.send({ type: 'odAnnotation:submit', eventId: 'event-1', target,
+  assert.equal((await app.send({ type: 'odAnnotation:savePin', eventId: 'event-1', target,
     note: 'Change' })).ok, false);
-  assert.equal(app.requests.filter((request) => request.url.endsWith('/submit')).length, 0);
+  assert.equal(app.requests.filter((request) => request.url.endsWith('/comment-upsert')).length, 0);
   assert.equal(app.hidden(), false);
 });
 
@@ -570,9 +575,9 @@ test('pairs a sign-in form on an ordinary app origin without admitting identity-
   assert.equal((await app.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
   const signInField = { ...target, url: app.tab.url, selector: 'main > input',
     label: 'input', text: '', domOutline: 'input', htmlHint: 'input' };
-  assert.equal((await app.send({ type: 'odAnnotation:submit', eventId: 'event-1',
+  assert.equal((await app.send({ type: 'odAnnotation:savePin', eventId: 'event-1',
     target: signInField, note: 'Improve the sign-in field', omitScreenshot: true })).ok, true);
-  const submission = app.requests.find((request) => request.url.endsWith('/submit'))!;
+  const submission = app.requests.find((request) => request.url.endsWith('/comment-upsert'))!;
   assert.equal(JSON.parse(submission.init.body!).target.htmlHint, 'input');
 });
 
@@ -580,14 +585,14 @@ test('navigation revokes in-memory tab capability; blocks auth pages and untrust
   const app = worker({ paired: true });
   assert.equal((await app.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
   app.navigate('https://other.test/');
-  assert.equal((await app.send({ type: 'odAnnotation:submit', target, note: 'Change color' })).ok, false);
+  assert.equal((await app.send({ type: 'odAnnotation:savePin', target, note: 'Change color' })).ok, false);
   assert.deepEqual(app.requests.map((request) => new URL(request.url).pathname), [
     '/api/edge-annotations/redeem',
   ]);
   const auth = worker({ paired: true, tabUrl: 'https://login.microsoftonline.com/' });
   assert.equal((await auth.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, false);
   assert.equal(auth.requests.length, 0);
-  assert.equal((await app.send({ type: 'odAnnotation:submit', target: { ...target, url: 'https://other.test/' }, note: 'x' })).ok, false);
+  assert.equal((await app.send({ type: 'odAnnotation:savePin', target: { ...target, url: 'https://other.test/' }, note: 'x' })).ok, false);
 });
 
 test('paired tab inspection polls with bearer and returns bounded read from the exact document', async () => {
@@ -708,6 +713,98 @@ test('screenshot drops pixels when focus changes during capture', async () => {
   assert.equal((await restored.send({ type: 'odAnnotation:status' })).ok, true);
   restored.navigate('https://app.example.test/next');
   assert.equal((await restored.send({ type: 'odAnnotation:status' })).ok, true);
-  assert.equal((await restored.send({ type: 'odAnnotation:submit', eventId: 'after-navigation',
+  assert.equal((await restored.send({ type: 'odAnnotation:savePin', eventId: 'after-navigation',
     target: { ...target, url: restored.tab.url }, note: 'Next page', omitScreenshot: true })).ok, true);
  });
+
+const bodyOf = (app: ReturnType<typeof worker>, suffix: string) =>
+  JSON.parse(app.requests.filter((request) => request.url.endsWith(suffix)).at(-1)!.init.body!);
+
+test('pins, savePin and deletePin carry only the grant proof plus their own fields', async () => {
+  const app = worker({ paired: true, screenshot: true });
+  await prepare(app);
+  const listed = await app.send({ type: 'odAnnotation:pins' });
+  assert.equal(listed.ok, true, String(listed.error));
+  assert.deepEqual(listed.comments, [{ id: 'pin-1', pinSeq: 1, selector: target.selector, elementId: target.selector }]);
+  assert.deepEqual(bodyOf(app, '/comment-list'), { grantId: 'grant-1', tabId: 17, documentId: 'epoch-1', url: target.url });
+  assert.equal(app.requests.find((request) => request.url.endsWith('/comment-list'))!.init.headers?.authorization, 'Bearer worker-only-secret');
+  const saved = await app.send({ type: 'odAnnotation:savePin', eventId: 'event-1', target, note: 'First', omitScreenshot: false });
+  assert.equal(saved.ok, true, String(saved.error));
+  assert.equal(saved.comment.pinSeq, 2);
+  const created = bodyOf(app, '/comment-upsert');
+  assert.deepEqual(Object.keys(created).sort(), ['documentId', 'eventId', 'grantId', 'note', 'screenshotDataUrl', 'tabId', 'target', 'url']);
+  assert.equal(created.target.elementId, target.selector);
+  // Editing sends the id and, without a fresh crop, no screenshot; the daemon keeps the stored one.
+  const edited = await app.send({ type: 'odAnnotation:savePin', eventId: 'event-2', id: 'pin-1', target, note: 'Edited', omitScreenshot: true });
+  assert.equal(edited.ok, true, String(edited.error));
+  assert.equal(edited.comment.id, 'pin-1');
+  const edit = bodyOf(app, '/comment-upsert');
+  assert.equal(edit.id, 'pin-1');
+  assert.equal(edit.screenshotDataUrl, undefined);
+  const removed = await app.send({ type: 'odAnnotation:deletePin', id: 'pin-1' });
+  assert.deepEqual([removed.ok, removed.deleted], [true, true]);
+  assert.deepEqual(bodyOf(app, '/comment-delete'), { grantId: 'grant-1', tabId: 17, documentId: 'epoch-1', url: target.url, id: 'pin-1' });
+});
+
+// Review finding: the upsert body dropped `eventId`, so a Save retried after a
+// lost response created a second numbered row. The daemon replays
+// (grantId, eventId) → the existing row; the worker only has to forward it.
+test('the upsert body carries the popover eventId on create, on edit and on a retry of the same submit', async () => {
+  const app = worker({ paired: true, screenshot: true });
+  await prepare(app);
+  const upserts = () => app.requests.filter((request) => request.url.endsWith('/comment-upsert'))
+    .map((request) => JSON.parse(request.init.body!) as { eventId?: unknown; id?: unknown });
+  assert.equal((await app.send({ type: 'odAnnotation:savePin', eventId: 'event-1', target, note: 'First', omitScreenshot: false })).ok, true);
+  // The same popover submit again (the first answer was lost): same eventId.
+  assert.equal((await app.send({ type: 'odAnnotation:savePin', eventId: 'event-1', target, note: 'First', omitScreenshot: true })).ok, true);
+  assert.equal((await app.send({ type: 'odAnnotation:savePin', eventId: 'edit-7', id: 'pin-1', target, note: 'Edited', omitScreenshot: true })).ok, true);
+  assert.deepEqual(upserts().map(({ eventId, id }) => [eventId, id]), [['event-1', undefined], ['event-1', undefined], ['edit-7', 'pin-1']]);
+});
+
+test('a refused pin proof drops the grant so later lists stay local', async () => {
+  const app = worker({ paired: true, screenshot: true, pinStatus: 403 });
+  await prepare(app);
+  const listed = await app.send({ type: 'odAnnotation:pins' });
+  assert.deepEqual([listed.ok, listed.status], [false, 403]);
+  assert.equal((app.session.annotationConnections as unknown[]).length, 0);
+  const before = app.requests.length;
+  assert.equal((await app.send({ type: 'odAnnotation:pins' })).error, 'not paired');
+  assert.equal(app.requests.length, before, 'an unpaired tab lists without a request');
+});
+
+// Review finding: the daemon's origin guard answers 403 with a bare string
+// error; only the broker's structured refusal means the grant is dead.
+test('a bare 403 without the broker error code keeps the grant and reports the failure', async () => {
+  const app = worker({ paired: true, screenshot: true, pinStatus: 403, pinRefusal: { error: 'Cross-origin requests are not allowed' } });
+  await prepare(app);
+  const listed = await app.send({ type: 'odAnnotation:pins' });
+  assert.deepEqual([listed.ok, listed.status, listed.error], [false, 403, 'Cross-origin requests are not allowed']);
+  assert.equal((app.session.annotationConnections as unknown[]).length, 1, 'grant kept');
+  const lists = () => app.requests.filter((request) => /comment-list$/.test(request.url)).length;
+  const before = lists();
+  assert.equal((await app.send({ type: 'odAnnotation:pins' })).status, 403);
+  assert.equal(lists(), before + 1, 'a still-paired tab asks the daemon again');
+});
+
+test('pin messages from a child frame or an unpaired tab never reach the daemon', async () => {
+  const app = worker({ paired: true, screenshot: true });
+  await prepare(app);
+  const child = { id: 'a'.repeat(32), tab: app.tab, frameId: 2, documentId: 'child-document-1', url: 'https://child.example.test/frame' };
+  assert.equal((await app.send({ type: 'odAnnotation:pins' }, child)).ok, false);
+  assert.equal((await app.send({ type: 'odAnnotation:deletePin', id: 'pin-1' }, child)).ok, false);
+  const unpaired = worker({ paired: false });
+  assert.equal((await unpaired.send({ type: 'odAnnotation:pins' })).error, 'not paired');
+  assert.equal(app.requests.filter((request) => /comment-/.test(request.url)).length, 0);
+  assert.equal(unpaired.requests.length, 0);
+});
+
+test('a successful pairing tells the page to list its pins without waiting for a reload', async () => {
+  const app = worker({ paired: true });
+  assert.equal(app.inspectMessages.some((entry) => entry.message.type === 'odClipper:pinsChanged'), false);
+  assert.equal((await app.send({ type: 'odAnnotation:pair', code }, popupSender)).ok, true);
+  const pushed = app.inspectMessages.find((entry) => entry.message.type === 'odClipper:pinsChanged');
+  assert.ok(pushed, 'worker pushes odClipper:pinsChanged to the paired tab');
+  const refused = worker({ paired: true });
+  assert.equal((await refused.send({ type: 'odAnnotation:pair', code: 'other-id.invalid-secret' }, popupSender)).ok, false);
+  assert.equal(refused.inspectMessages.some((entry) => entry.message.type === 'odClipper:pinsChanged'), false);
+});

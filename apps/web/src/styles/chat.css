@@ -2932,6 +2932,13 @@ body:has(.manual-edit-workspace) .chat-composer-fixed-layer {
   font-weight: 600;
   flex: 0 0 auto;
 }
+/* Same number as the canvas pin (`pinSeq`), so the chip can be matched to it. */
+.staged-comment .staged-name .staged-comment-seq {
+  color: var(--accent-strong);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
 .staged-comment .staged-name span {
   white-space: normal;
   word-break: break-word;

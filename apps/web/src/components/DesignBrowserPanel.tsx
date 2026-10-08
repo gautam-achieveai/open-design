@@ -17,7 +17,7 @@ import {
   isOpenDesignHostAvailable,
 } from '@open-design/host';
 import type { TrackingReferenceBoardCategory } from '@open-design/contracts/analytics';
-import type { BrowserAnnotationPostRequest, EdgeAnnotationSubmitResponse, JsonValue } from '@open-design/contracts';
+import type { JsonValue } from '@open-design/contracts';
 import { isBrowserStylePatch } from '@open-design/contracts';
 import { useAnalytics } from '../analytics/provider';
 import {
@@ -68,6 +68,7 @@ import {
   type BrowserPageArchiveCapture,
   type BrowserPageArchiveManifest,
   type BrowserElementSnapshot,
+  type BrowserMeasureTargetRequest,
   type BrowserViewportId,
   browserApplyStylesScript,
   browserApplyTextScript,
@@ -90,6 +91,7 @@ import {
 } from './design-browser-storage';
 import { Icon } from './Icon';
 import { BoardComposerPopover } from './BoardComposerPopover';
+import { CommentSideDock } from './FileViewer';
 import { EdgeAnnotationsPanel } from './EdgeAnnotationsPanel';
 import { PreviewDrawOverlay } from './PreviewDrawOverlay';
 import { RemixIcon } from './RemixIcon';
@@ -337,9 +339,11 @@ interface DesignBrowserPanelProps {
   onSavePreviewComment?: (target: PreviewCommentTarget, note: string, attachAfterSave: boolean, images?: File[], commentId?: string) => Promise<PreviewComment | null>;
   onRemovePreviewComment?: (commentId: string) => Promise<boolean>;
   onSendBoardCommentAttachments?: (attachments: ChatCommentAttachment[], images?: File[]) => Promise<CommentSendResult> | CommentSendResult;
+  /** Side-dock "Send to chat": stages the selected saved pins into the
+   *  composer draft as numbered chips. Nothing is queued or deleted. */
+  onStagePreviewComments?: (comments: PreviewComment[]) => void;
   onAddImageToChat?: (attachment: ChatAttachment) => void;
   onRequestBrowserUsePrompt?: (prompt: string) => void;
-  onAnnotationDraftCreated?: (receipt: EdgeAnnotationSubmitResponse) => void;
   onPageSnapshotToast?: (event: BrowserPageSnapshotToastEvent) => void;
   sendDisabled?: boolean;
   /** Workspace tab id. When set, this panel registers its live webview in the
@@ -985,9 +989,9 @@ export function DesignBrowserPanel({
   previewComments = EMPTY_PREVIEW_COMMENTS,
   onSavePreviewComment,
   onRemovePreviewComment,
+  onStagePreviewComments,
   onAddImageToChat,
   onRequestBrowserUsePrompt,
-  onAnnotationDraftCreated,
   onPageSnapshotToast,
   sendDisabled = false,
   browserTabId,
@@ -1182,14 +1186,14 @@ export function DesignBrowserPanel({
   const activeCommentTargetRef = useRef(activeCommentTarget);
   activeCommentTargetRef.current = activeCommentTarget;
   const captureCleanupRef = useRef<Promise<File | null> | null>(null);
+  const rootRef = useRef<HTMLElement>(null);
+  /** Which control opened the current saved pin, so closing can hand focus back to it. */
+  const pinOpenOriginRef = useRef<'badge' | 'dock' | null>(null);
   const liveEditRevisionRef = useRef(0);
   const liveEditInFlightRef = useRef(false);
   const [applyingBrowserEdit, setApplyingBrowserEdit] = useState(false);
   const applyStyleRef = useRef<NonNullable<EmbeddedBrowserControlSessionOptions['applyStyle']>>(async () => { throw new Error('Browser style editing is not ready'); });
   const applyStyle = useCallback<NonNullable<EmbeddedBrowserControlSessionOptions['applyStyle']>>((request, expiresAt) => applyStyleRef.current(request, expiresAt), []);
-  const browserPostRef = useRef<{ key: string; request: BrowserAnnotationPostRequest } | null>(null);
-  const browserPostingRef = useRef(false);
-  const annotationUrlRef = useRef('');
   const [activePreviewCommentId, setActivePreviewCommentId] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState('');
   const [queuedCommentNotes, setQueuedCommentNotes] = useState<string[]>([]);
@@ -1200,6 +1204,8 @@ export function DesignBrowserPanel({
   const [sendingComment, setSendingComment] = useState(false);
   const [savingDomEdit, setSavingDomEdit] = useState(false);
   const [browserLiveCommentTargets, setBrowserLiveCommentTargets] = useState<Map<string, BrowserElementSnapshot>>(() => new Map());
+  const [selectedPinIds, setSelectedPinIds] = useState<Set<string>>(() => new Set());
+  const [pinDockCollapsed, setPinDockCollapsed] = useState(false);
   const [textDraft, setTextDraft] = useState('');
   const [captureChromeHidden, setCaptureChromeHidden] = useState(false);
   const [statusMessage, setStatusMessage] = useState<BrowserStatusMessage | null>(null);
@@ -1847,6 +1853,14 @@ export function DesignBrowserPanel({
   const activeSavedComment = activePreviewCommentId
     ? visibleComments.find((comment) => comment.id === activePreviewCommentId) ?? null
     : null;
+  // Saved pins are re-measured only while someone is looking at them: comment
+  // tool on AND this browser tab active. Hidden tabs keep their <webview>
+  // mounted, so without this gate every pinned page would run a whole-document
+  // walk 4x/s forever. The effect keys off this joined string, never the
+  // comments array, so a parent re-render cannot restart the poll.
+  const savedPinTargetSignature = activeTool === 'comment' && browserTabActive
+    ? browserPinTargetSignature(visibleComments)
+    : '';
 
   useEffect(() => {
     const node = webviewNode;
@@ -1855,14 +1869,15 @@ export function DesignBrowserPanel({
       return;
     }
 
-    const activeTarget = activeCommentTarget
+    const activeTarget = activeCommentTarget && browserTabActive
       ? [{
           elementId: activeCommentTarget.elementId,
           key: 'active',
           selector: activeCommentTarget.selector,
         }]
       : [];
-    const targets = activeTarget.filter((target) => target.elementId && target.selector);
+    const targets = [...activeTarget, ...browserPinTargetsFromSignature(savedPinTargetSignature)]
+      .filter((target) => target.elementId && target.selector);
     if (targets.length === 0) {
       setBrowserLiveCommentTargets((current) => (current.size > 0 ? new Map() : current));
       return;
@@ -1915,7 +1930,7 @@ export function DesignBrowserPanel({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeCommentTarget?.elementId, activeCommentTarget?.selector, activeTool, browserFilePath, isBlank, webviewNode]);
+  }, [activeCommentTarget?.elementId, activeCommentTarget?.selector, browserFilePath, browserTabActive, isBlank, savedPinTargetSignature, webviewNode]);
 
   useEffect(() => {
     const next = browserImages.map((file) => ({ file, url: URL.createObjectURL(file) }));
@@ -2626,6 +2641,51 @@ export function DesignBrowserPanel({
     setTextDraft('');
   }
 
+  /**
+   * Closes the pin popover (Close button / Escape). The comment tool stays on
+   * and the panel returns to pick mode, so the badges and dock stay mounted
+   * and keyboard focus can go back to the control the pin was opened from
+   * (badge or dock row), else to the toolbar toggle. Turning the tool off is
+   * the toolbar toggle's job, not the popover's.
+   */
+  function closeBrowserCommentPopover() {
+    const root = rootRef.current;
+    const id = activePreviewCommentId;
+    const badge = id ? root?.querySelector<HTMLElement>(`[data-testid="db-comment-marker-${CSS.escape(id)}"] button`) : null;
+    const row = id ? root?.querySelector<HTMLElement>(`.comment-side-item[data-comment-id="${CSS.escape(id)}"]`) : null;
+    const ordered = pinOpenOriginRef.current === 'badge' ? [badge, row] : [row, badge];
+    const focusTarget = ordered.find(Boolean) ?? root?.querySelector<HTMLElement>('.db-action-annotate button') ?? null;
+    pinOpenOriginRef.current = null;
+    void pickBrowserElement('comment');
+    focusTarget?.focus();
+  }
+
+  /** Opens a saved pin (marker badge or dock row) in the popover for editing.
+   *  Any in-flight element pick or capture belongs to the previous selection
+   *  and is dropped by bumping the picker request id. */
+  function openSavedBrowserComment(comment: PreviewComment, origin: 'badge' | 'dock' = 'dock') {
+    void cancelBrowserPicker();
+    pinOpenOriginRef.current = origin;
+    // A capture still settling for the previous pick must not become this
+    // pin's screenshot on Save.
+    captureCleanupRef.current = null;
+    // Saved pins are measured position-only, so take the live geometry and
+    // keep the row's text/style; the `active` poll refreshes both shortly.
+    const live = browserLiveCommentTargets.get(`comment:${comment.id}`);
+    const stored = browserSnapshotFromComment(comment, browserFilePath);
+    const snapshot = live
+      ? { ...stored, position: live.position, ...(live.viewport ? { viewport: live.viewport } : {}) }
+      : stored;
+    setActiveTool('comment');
+    setActiveCommentTarget(snapshot);
+    setActivePreviewCommentId(comment.id);
+    setCommentDraft(comment.note);
+    setQueuedCommentNotes([]);
+    setBrowserImages([]);
+    setBrowserPreviewIndex(null);
+    setTextDraft(snapshot.text);
+  }
+
   async function pickBrowserElement(tool: BrowserTool) {
     if (isBlank || !webviewNode) {
       setStatusMessage(t('designBrowser.status.openPageBeforeTools'));
@@ -2661,8 +2721,6 @@ export function DesignBrowserPanel({
         setActiveTool(null);
         return;
       }
-      annotationUrlRef.current = webviewNode.getURL?.() || currentUrl;
-      browserPostRef.current = null;
       setActiveCommentTarget(snapshot);
       setTextDraft(snapshot.text);
       setActiveTool(tool);
@@ -2672,19 +2730,18 @@ export function DesignBrowserPanel({
         let captureTimeout: ReturnType<typeof setTimeout>;
         const deadline = new Promise<null>((resolve) => { captureTimeout = setTimeout(() => {
           diagnoseAnnotationCapture('timeout', 'capture-deadline', captureStarted); resolve(null);
-        }, 1500); });
+        }, BROWSER_CAPTURE_DEADLINE_MS); });
         const capture = captureBrowserElementAnnotation(snapshot).finally(() => {
           if (captureCleanupRef.current === capture) captureCleanupRef.current = null;
         });
         captureCleanupRef.current = capture;
         void Promise.race([capture, deadline]).then((file) => {
           diagnoseAnnotationCapture('result', file ? 'file-available' : 'no-file', captureStarted);
-          if (file && pickerRequestIdRef.current === requestId && !browserPostingRef.current && !browserPostRef.current) {
+          if (file && pickerRequestIdRef.current === requestId) {
             setBrowserImages([file]);
             diagnoseAnnotationCapture('attached', 'image-staged', captureStarted, { bytes: file.size });
           } else if (file) {
-            diagnoseAnnotationCapture('discarded', pickerRequestIdRef.current !== requestId ? 'request-superseded'
-              : browserPostingRef.current ? 'posting-started' : 'post-already-staged', captureStarted);
+            diagnoseAnnotationCapture('discarded', 'request-superseded', captureStarted);
           }
         }).catch(() => { diagnoseAnnotationCapture('result', 'capture-exception', captureStarted); })
           .finally(() => { clearTimeout(captureTimeout); setCaptureChromeHidden(false); });
@@ -2834,20 +2891,52 @@ export function DesignBrowserPanel({
     });
   }
 
+  async function awaitBrowserCaptureWithDeadline(pending: Promise<File | null> | null): Promise<File | null> {
+    if (!pending) return null;
+    const started = performance.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<null>((resolve) => { timer = setTimeout(() => {
+      diagnoseAnnotationCapture('timeout', 'save-deadline', started); resolve(null);
+    }, BROWSER_CAPTURE_DEADLINE_MS); });
+    try {
+      return await Promise.race([pending, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function saveBrowserComment() {
     if (!activeCommentTarget || !onSavePreviewComment) {
       setStatusMessage(t('designBrowser.status.commentSavingUnavailable'));
       return;
     }
-    const note = commentDraft.trim();
+    const note = [...queuedCommentNotes, commentDraft.trim()].filter(Boolean).join('\n\n');
     if (!note && browserImages.length === 0 && (activeSavedComment?.attachments?.length ?? 0) === 0) return;
     setSendingComment(true);
     try {
+      // The element screenshot is captured asynchronously after the pick. A
+      // Save that lands first would persist the row without its image and
+      // leave the late file stranded in the popover, so wait for the capture
+      // to settle and take its file when nothing has been staged yet. The wait
+      // is bounded by the same deadline the pick uses: a capture that never
+      // settles must not lock the popover in `sending`, so past it the row is
+      // saved without the image.
+      const settledCapture = await awaitBrowserCaptureWithDeadline(captureCleanupRef.current);
+      const images = browserImages.length > 0
+        ? browserImages
+        : settledCapture ? [settledCapture] : [];
+      // `attachAfterSave` stages the saved row into the composer draft right
+      // away (the Preview popover does the same); edits pass the existing id
+      // so the daemon updates the row instead of creating a new pin.
       const saved = await onSavePreviewComment(
-        browserTargetFromSnapshot(activeCommentTarget, browserControlIdentity),
+        withPreservedPinMetadata(
+          browserTargetFromSnapshot(activeCommentTarget, browserControlIdentity),
+          activeSavedComment,
+        ),
         note,
-        false,
-        browserImages,
+        true,
+        images,
+        activeSavedComment?.id,
       );
       if (saved) {
         setActivePreviewCommentId(saved.id);
@@ -2858,65 +2947,6 @@ export function DesignBrowserPanel({
         setStatusMessage(t('designBrowser.status.commentSaved'));
       }
     } finally {
-      setSendingComment(false);
-    }
-  }
-
-  async function postBrowserAnnotation() {
-    if (!activeCommentTarget || !conversationId || browserPostingRef.current) return;
-    const note = [...queuedCommentNotes, commentDraft.trim()].filter(Boolean).join('\n\n');
-    if (!note) return;
-    const key = JSON.stringify({ projectId, conversationId, url: annotationUrlRef.current, note, selector: activeCommentTarget.selector,
-      images: browserImages.map((file) => [file.name, file.size, file.lastModified]) });
-    const selectionId = pickerRequestIdRef.current;
-    browserPostingRef.current = true;
-    setSendingComment(true);
-    try {
-      let request = browserPostRef.current?.key === key ? browserPostRef.current.request : null;
-      if (!request) {
-        const image = browserImages[0];
-        let screenshotDataUrl: string | undefined;
-        if (image && image.type === 'image/png' && image.size <= 256 * 1024) {
-          screenshotDataUrl = await new Promise<string | undefined>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : undefined);
-            reader.onerror = () => resolve(undefined);
-            reader.readAsDataURL(image);
-          });
-        }
-        request = { conversationId, eventId: crypto.randomUUID(),
-          url: annotationUrlRef.current || currentUrl, title: pageTitle, note,
-          target: { selector: activeCommentTarget.selector, label: activeCommentTarget.label,
-            text: activeCommentTarget.text, htmlHint: activeCommentTarget.htmlHint,
-            position: activeCommentTarget.position, style: activeCommentTarget.style,
-            domOutline: activeCommentTarget.domOutline, ancestors: activeCommentTarget.ancestors },
-          ...(screenshotDataUrl ? { screenshotDataUrl } : {}) };
-        if (selectionId !== pickerRequestIdRef.current) return;
-        browserPostRef.current = { key, request };
-      }
-      const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/edge-annotations/draft`, {
-        method: 'POST', headers: { 'content-type': 'application/json',
-          ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}) },
-        body: JSON.stringify(request),
-      });
-      if (!response.ok) throw new Error(t('designBrowser.status.commentSendingUnavailable'));
-      const receipt = await response.json() as EdgeAnnotationSubmitResponse;
-      if (!receipt || receipt.projectId !== projectId || receipt.conversationId !== request.conversationId
-        || typeof receipt.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(receipt.id)
-        || typeof receipt.replayed !== 'boolean') {
-        throw new Error(t('designBrowser.status.commentSendingUnavailable'));
-      }
-      console.warn(JSON.stringify({ logger: 'browser.annotation.submit', phase: 'stored',
-        status: response.status, stale: selectionId !== pickerRequestIdRef.current }));
-      onAnnotationDraftCreated?.(receipt);
-      if (selectionId !== pickerRequestIdRef.current) return;
-      browserPostRef.current = null;
-      clearBrowserTool();
-      setStatusMessage(null);
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : t('designBrowser.status.commentSendingUnavailable'));
-    } finally {
-      browserPostingRef.current = false;
       setSendingComment(false);
     }
   }
@@ -2968,9 +2998,12 @@ export function DesignBrowserPanel({
       onDraft={setCommentDraft}
       onAddDraft={queueBrowserCommentDraft}
       onRemoveQueuedNote={(index) => setQueuedCommentNotes((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-      onClose={clearBrowserTool}
+      onClose={closeBrowserCommentPopover}
       onSaveComment={() => saveBrowserComment()}
-      onSendBatch={() => postBrowserAnnotation()}
+      // Save already stages the pin into the composer (attachAfterSave), so the
+      // popover has one primary action; batch send lives in the side dock.
+      onSendBatch={() => saveBrowserComment()}
+      allowSendToChat={false}
       compact
       styleEditor={<BrowserInspectPanel embedded mode="edit" target={activeCommentTarget}
         textDraft={textDraft} canSave={false} saving={sendingComment}
@@ -2991,13 +3024,47 @@ export function DesignBrowserPanel({
       onRemoveImage={removeBrowserImage}
       onPreviewImage={setBrowserPreviewIndex}
       sending={sendingComment || applyingBrowserEdit}
-      postOnly
-      queueOnSend
       sendDisabled={!conversationId || !commentDraft.trim() && queuedCommentNotes.length === 0}
       t={t}
       scale={1}
       bounds={browserPopoverBounds}
       commenting
+    />
+  ) : null;
+  // Numbered pins and the side dock show while the comment tool is on, in the
+  // live desktop <webview> only: the iframe fallback cannot measure elements
+  // and native popups paint above any HTML overlay.
+  const pinSurfaceVisible = activeTool === 'comment' && !isBlank && !popup && desktopHostAvailable;
+  const pinSideDock = pinSurfaceVisible ? (
+    <CommentSideDock
+      comments={visibleComments}
+      projectId={projectId}
+      selectedIds={selectedPinIds}
+      activeCommentId={activePreviewCommentId}
+      collapsed={pinDockCollapsed}
+      onCollapsedChange={setPinDockCollapsed}
+      onToggleSelect={(commentId) => {
+        setSelectedPinIds((current) => {
+          const next = new Set(current);
+          if (next.has(commentId)) next.delete(commentId);
+          else next.add(commentId);
+          return next;
+        });
+      }}
+      onSelectAll={() => setSelectedPinIds(new Set(visibleComments.map((comment) => comment.id)))}
+      onClearSelection={() => setSelectedPinIds(new Set())}
+      onReply={(comment) => openSavedBrowserComment(comment, 'dock')}
+      onSendSelected={() => {
+        if (!onStagePreviewComments) return;
+        const selected = visibleComments.filter((comment) => selectedPinIds.has(comment.id));
+        if (selected.length === 0) return;
+        onStagePreviewComments(selected);
+        setSelectedPinIds(new Set());
+      }}
+      sending={false}
+      sendDisabled={!onStagePreviewComments}
+      renderCreateForm={false}
+      t={t}
     />
   ) : null;
   const statusBaseText = typeof statusMessage === 'string' ? statusMessage : statusMessage?.message ?? '';
@@ -3013,7 +3080,7 @@ export function DesignBrowserPanel({
   const showStatusMessage = Boolean(statusMessage) && !(statusIsPageSnapshot && onPageSnapshotToast);
 
   return (
-    <section className="design-browser" aria-label={t('designBrowser.aria')}>
+    <section ref={rootRef} className="design-browser" aria-label={t('designBrowser.aria')}>
       <div className="db-chrome" ref={chromeRef}>
         <div className="db-nav">
           <IconTooltipButton
@@ -3381,6 +3448,7 @@ export function DesignBrowserPanel({
       ) : null}
       {browserPreviewImageModal}
       <div className="db-content">
+        <div className="db-content-main">
         <PreviewDrawOverlay
           active={drawOverlayOpen}
           captureTarget={activeCommentTarget
@@ -3425,7 +3493,17 @@ export function DesignBrowserPanel({
                 />
               </div>
             )}
-            <div style={captureChromeHidden ? { visibility: 'hidden' } : undefined}>{commentComposer}</div>
+            <div style={captureChromeHidden ? { visibility: 'hidden' } : undefined}>
+              {pinSurfaceVisible ? (
+                <BrowserCommentMarkers
+                  activeCommentId={activePreviewCommentId}
+                  comments={visibleComments}
+                  liveTargets={browserLiveCommentTargets}
+                  onOpen={(comment) => openSavedBrowserComment(comment, 'badge')}
+                />
+              ) : null}
+              {commentComposer}
+            </div>
             {(activeTool === 'inspect' || activeTool === 'edit') && activeCommentTarget ? (
               <BrowserInspectPanel
                 mode={activeTool}
@@ -3449,6 +3527,8 @@ export function DesignBrowserPanel({
             </div>
           ) : null}
         </PreviewDrawOverlay>
+        </div>
+        {pinSideDock}
       </div>
     </section>
   );
@@ -3571,27 +3651,45 @@ function BrowserCommentMarkers({
   return (
     <div className="db-comment-layer" aria-label={t('designBrowser.comments.aria')}>
       {comments.map((comment, index) => {
-        const snapshot = liveTargets.get(`comment:${comment.id}`) ?? browserSnapshotFromComment(comment, comment.filePath);
-        const bounds = browserOverlayBounds(snapshot);
+        // Only a live rect may place a marker. The saved position belongs to
+        // the page as it was when the pin was made; on a re-laid-out or
+        // navigated page it would point at the wrong pixels, so a pin whose
+        // element is missing stays listed in the dock and is not drawn here.
+        const snapshot = liveTargets.get(`comment:${comment.id}`);
+        if (!snapshot) return null;
+        // Clamp to the guest viewport: an element that runs past the edge keeps
+        // its number on the visible part instead of at an unclipped corner the
+        // frame then hides. Fully off-screen -> no marker.
+        const bounds = browserClampedOverlayBounds(snapshot);
+        if (!bounds) return null;
         const active = comment.id === activeCommentId;
-        const label = comment.label || comment.elementId || 'Browser comment';
+        const label = comment.label || comment.elementId || t('designBrowser.comments.untitled');
+        const number = comment.pinSeq ?? index + 1;
         return (
-          <button
+          <div
             key={comment.id}
-            type="button"
             className={`db-comment-marker${active ? ' active' : ''}`}
+            data-testid={`db-comment-marker-${comment.id}`}
+            data-clamped-right={bounds.clampedRight ? 'true' : undefined}
+            data-clamped-top={bounds.clampedTop ? 'true' : undefined}
             style={{
               left: bounds.left,
               top: bounds.top,
               width: bounds.width,
               height: bounds.height,
             }}
-            title={`${index + 1}. ${label}: ${comment.note}`}
-            aria-label={t('designBrowser.comments.openFor', { label })}
-            onClick={() => onOpen(comment)}
           >
-            <span>{index + 1}</span>
-          </button>
+            <button
+              type="button"
+              className="db-comment-marker-badge"
+              title={`${number}. ${label}: ${comment.note}`}
+              aria-label={t('designBrowser.comments.openPin', { n: number, label })}
+              aria-current={active ? 'true' : undefined}
+              onClick={() => onOpen(comment)}
+            >
+              {number}
+            </button>
+          </div>
         );
       })}
     </div>
@@ -3625,89 +3723,6 @@ function browserSnapshotsEqual(left: BrowserElementSnapshot, right: BrowserEleme
     JSON.stringify(left.maskRects ?? null) === JSON.stringify(right.maskRects ?? null) &&
     JSON.stringify(left.viewport ?? null) === JSON.stringify(right.viewport ?? null) &&
     JSON.stringify(left.style ?? null) === JSON.stringify(right.style ?? null)
-  );
-}
-
-function BrowserCommentComposer({
-  draft,
-  existing,
-  notes,
-  onAddDraft,
-  onClose,
-  onDeleteComment,
-  onDraft,
-  onRemoveQueuedNote,
-  onSaveComment,
-  onSendBatch,
-  sendDisabled,
-  sending,
-  target,
-}: {
-  draft: string;
-  existing: PreviewComment | null;
-  notes: string[];
-  onAddDraft: () => void;
-  onClose: () => void;
-  onDeleteComment?: (commentId: string) => Promise<boolean | void> | void;
-  onDraft: (value: string) => void;
-  onRemoveQueuedNote: (index: number) => void;
-  onSaveComment: () => void;
-  onSendBatch: () => void;
-  sendDisabled: boolean;
-  sending: boolean;
-  target: BrowserElementSnapshot;
-}) {
-  const t = useT();
-  return (
-    <div className="comment-popover db-comment-popover" role="dialog" aria-label={t('designBrowser.comment.dialog')}>
-      <div className="comment-popover-head">
-        <div>
-          <strong title={target.label}>{target.label || t('designBrowser.comment.elementFallback')}</strong>
-          <span title={target.selector}>{target.selector}</span>
-        </div>
-        <button type="button" className="ghost" onClick={onClose} aria-label={t('designBrowser.comment.close')}>
-          <Icon name="close" size={12} />
-        </button>
-      </div>
-      {notes.length > 0 ? (
-        <div className="board-note-list">
-          {notes.map((note, index) => (
-            <div key={`${note}:${index}`} className="board-note-item">
-              <span>{note}</span>
-              <button type="button" className="ghost" onClick={() => onRemoveQueuedNote(index)}>
-                {t('common.delete')}
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
-      <textarea
-        aria-label={t('designBrowser.comment.noteAria')}
-        value={draft}
-        onChange={(event) => onDraft(event.target.value)}
-        placeholder={t('designBrowser.comment.placeholder')}
-      />
-      <div className="comment-popover-actions">
-        <div className="comment-popover-actions-start">
-          {existing && onDeleteComment ? (
-            <button type="button" className="ghost comment-popover-delete" disabled={sending} onClick={() => void onDeleteComment(existing.id)}>
-              {t('common.delete')}
-            </button>
-          ) : null}
-          <button type="button" className="ghost" disabled={sending || !draft.trim()} onClick={onAddDraft}>
-            {t('designBrowser.comment.addNote')}
-          </button>
-        </div>
-        <div className="comment-popover-actions-end">
-          <button type="button" className="ghost" disabled={sending || (!draft.trim() && !existing)} onClick={onSaveComment}>
-            {t('designBrowser.comment.saveComment')}
-          </button>
-          <button type="button" className="primary" disabled={sending || sendDisabled || (!draft.trim() && notes.length === 0 && !existing)} onClick={onSendBatch}>
-            {sending ? t('designBrowser.comment.sending') : t('designBrowser.comment.sendToChat')}
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -3915,6 +3930,33 @@ function BrowserInspectPanel({
   );
 }
 
+const PIN_TARGET_FIELD_SEPARATOR = '\u001f';
+const PIN_TARGET_RECORD_SEPARATOR = '\u001e';
+/** How long a pick (and a Save landing on it) waits for the element screenshot. */
+const BROWSER_CAPTURE_DEADLINE_MS = 1500;
+
+/**
+ * Stable string form of the saved pins to re-measure; see the poll effect.
+ * A pin with `metadata.scope` lives in a child frame or open shadow root: the
+ * top-document `querySelector` the measure script runs cannot resolve it and
+ * may hit an unrelated element with the same selector, so it is left out
+ * (listed in the dock, never badged) rather than mis-measured.
+ */
+export function browserPinTargetSignature(comments: readonly PreviewComment[]): string {
+  return comments
+    .filter((comment) => !comment.metadata?.scope)
+    .map((comment) => [comment.id, comment.elementId, comment.selector].join(PIN_TARGET_FIELD_SEPARATOR))
+    .join(PIN_TARGET_RECORD_SEPARATOR);
+}
+
+export function browserPinTargetsFromSignature(signature: string): BrowserMeasureTargetRequest[] {
+  if (!signature) return [];
+  return signature.split(PIN_TARGET_RECORD_SEPARATOR).map((record) => {
+    const [id = '', elementId = '', selector = ''] = record.split(PIN_TARGET_FIELD_SEPARATOR);
+    return { key: `comment:${id}`, elementId, selector, positionOnly: true };
+  });
+}
+
 function browserSnapshotFromComment(comment: PreviewComment, filePath: string): BrowserElementSnapshot {
   return {
     filePath,
@@ -3946,6 +3988,54 @@ export function browserTargetFromSnapshot(
   }, browserIdentity);
 }
 
+/**
+ * An in-app edit re-derives the target from the live element, and the daemon
+ * upsert replaces `metadata` wholesale. The row's `scope` (child frame / open
+ * shadow root) and `source` (which surface placed the pin) are facts about the
+ * pin, not about this edit, so they ride along unchanged.
+ */
+export function withPreservedPinMetadata(
+  target: PreviewCommentTarget,
+  existing: Pick<PreviewComment, 'metadata'> | null,
+): PreviewCommentTarget {
+  const scope = existing?.metadata?.scope;
+  const source = existing?.metadata?.source;
+  if (!scope && !source) return target;
+  return {
+    ...target,
+    metadata: {
+      ...target.metadata,
+      ...(source ? { source } : {}),
+      ...(scope ? { scope } : {}),
+    },
+  };
+}
+
+/** Marker box intersected with the guest viewport (when the measurement
+ *  carries one). `null` when nothing of the element is on screen. */
+export function browserClampedOverlayBounds(snapshot: BrowserElementSnapshot): {
+  left: number; top: number; width: number; height: number; clampedRight: boolean; clampedTop: boolean;
+} | null {
+  const raw = browserOverlayBounds(snapshot);
+  const viewport = snapshot.viewport;
+  if (!viewport || !(viewport.width > 0) || !(viewport.height > 0)) {
+    return { ...raw, clampedRight: false, clampedTop: false };
+  }
+  const left = Math.max(0, raw.left);
+  const top = Math.max(0, raw.top);
+  const right = Math.min(viewport.width, raw.left + raw.width);
+  const bottom = Math.min(viewport.height, raw.top + raw.height);
+  if (right <= left || bottom <= top) return null;
+  return {
+    left,
+    top,
+    width: right - left,
+    height: bottom - top,
+    clampedRight: right < raw.left + raw.width,
+    clampedTop: top > raw.top,
+  };
+}
+
 function browserOverlayBounds(snapshot: BrowserElementSnapshot) {
   const position = snapshot.position;
   return {
@@ -3954,53 +4044,6 @@ function browserOverlayBounds(snapshot: BrowserElementSnapshot) {
     width: Math.max(1, Math.round(position.width)),
     height: Math.max(1, Math.round(position.height)),
   };
-}
-
-function browserCommentsToAttachments(comments: PreviewComment[]): ChatCommentAttachment[] {
-  return comments.map((comment, index) => ({
-    id: comment.id,
-    order: index + 1,
-    filePath: comment.filePath,
-    elementId: comment.elementId,
-    selector: comment.selector,
-    label: comment.label,
-    comment: comment.note.trim() || 'Saved browser comment',
-    currentText: comment.text.trim().slice(0, 500),
-    pagePosition: comment.position,
-    htmlHint: comment.htmlHint.trim().slice(0, 500),
-    style: comment.style,
-    selectionKind: 'element',
-    imageAttachments: comment.attachments && comment.attachments.length > 0
-      ? comment.attachments
-      : undefined,
-    metadata: comment.metadata,
-    source: 'saved-comment',
-  }));
-}
-
-function browserBoardCommentAttachments(input: {
-  notes: string[];
-  target: PreviewCommentTarget;
-}): ChatCommentAttachment[] {
-  return input.notes
-    .map((note) => note.trim())
-    .filter(Boolean)
-    .map((note, index) => ({
-      id: `${input.target.elementId}-browser-${index + 1}`,
-      order: index + 1,
-      filePath: input.target.filePath,
-      elementId: input.target.elementId,
-      selector: input.target.selector,
-      label: input.target.label,
-      comment: note,
-      currentText: input.target.text.trim().slice(0, 500),
-      pagePosition: input.target.position,
-      htmlHint: input.target.htmlHint.trim().slice(0, 500),
-      style: input.target.style,
-      selectionKind: 'element',
-      metadata: input.target.metadata,
-      source: 'board-batch',
-    }));
 }
 
 function browserStyleDraftFromTarget(target: BrowserElementSnapshot): BrowserStyleDraft {

@@ -1,5 +1,6 @@
 import type { ProjectFile, ProjectFileKind } from './files';
 import type { RunResultPackageResponse, RunWorkspace } from './workspaces.js';
+import type { EdgeAnnotationScope } from './edge-annotations.js';
 import type {
   PreviewCommentAttachment,
   PreviewCommentMember,
@@ -977,6 +978,8 @@ export interface ChatCommentAttachment {
   style?: PreviewAnnotationStyle;
   /** Safe, bounded structural chain from picked element toward its nearest landmarks. */
   ancestors?: Array<{ tag: string; selector: string; role?: string }>;
+  /** Where `selector` resolves for a browser pin outside the top document (child frame / open shadow root). */
+  scope?: EdgeAnnotationScope;
   selectionKind?: ChatCommentSelectionKind;
   memberCount?: number;
   podMembers?: PreviewCommentMember[];

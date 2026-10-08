@@ -92,6 +92,20 @@ describe('preview comment attachment helpers', () => {
     ]);
   });
 
+  it('numbers attachments by their permanent pin number, not the batch index', () => {
+    const attachments = commentsToAttachments([
+      comment({ id: 'c3', pinSeq: 3, note: 'Third pin' }),
+      comment({ id: 'c7', pinSeq: 7, note: 'Seventh pin' }),
+      comment({ id: 'legacy', note: 'No pin number yet' }),
+    ]);
+
+    expect(attachments.map((attachment) => [attachment.id, attachment.order])).toEqual([
+      ['c3', 3],
+      ['c7', 7],
+      ['legacy', 3],
+    ]);
+  });
+
   it('preserves embedded browser identity in saved comment attachments', () => {
     const [attachment] = commentsToAttachments([
       comment({

@@ -100,8 +100,9 @@ function recordAnnotationDiagnostic(operation, result, correlationId) {
     ...(typeof result?.serverBuild === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(result.serverBuild)
       ? { serverBuild: result.serverBuild } : {}),
     ...(typeof result?.correlated === 'boolean' ? { correlated: result.correlated } : {}),
-    ...(typeof result?.id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(result.id)
-      ? { draftId: result.id } : {}),
+    // Opaque row id of the saved pin (field name kept for report readers).
+    ...(typeof result?.comment?.id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(result.comment.id)
+      ? { draftId: result.comment.id } : {}),
     ...(typeof result?.conversationId === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(result.conversationId)
       ? { destinationId: result.conversationId } : {}),
   });
@@ -113,7 +114,7 @@ const annotationDiagnosticsReady = (async () => {
   annotationDiagnosticsEnabled = saved?.annotationDiagnosticsEnabled === true;
   if (annotationDiagnosticsEnabled && Array.isArray(saved.annotationDiagnosticEvents)) {
     annotationDiagnosticEvents = saved.annotationDiagnosticEvents.slice(-100).filter((event) =>
-      event && typeof event.operation === 'string' && /^(?:odAnnotation:(pair|capture|submit|status)|server:(redeem|status|submit|revoke|poll|result))$/.test(event.operation)
+      event && typeof event.operation === 'string' && /^(?:odAnnotation:(pair|capture|status|pins|savePin|deletePin)|server:(redeem|status|revoke|poll|result|comment-list|comment-upsert|comment-delete))$/.test(event.operation)
       && Number.isFinite(event.at) && typeof event.correlationId === 'string'
       && /^[a-zA-Z0-9_-]{1,128}$/.test(event.correlationId)
       && typeof event.ok === 'boolean').map(({ at, operation, correlationId, ok, status, serverBuild, correlated, draftId, destinationId }) =>
@@ -238,7 +239,11 @@ async function annotationRequest(path, { token, body, method = 'POST', daemonUrl
     return response.ok && payload && typeof payload === 'object'
       ? { ok: true, ...payload }
       : { ok: false, status: response.status,
-        error: payload?.error?.message || payload?.message || `HTTP ${response.status}` };
+        // The broker's structured refusal carries a code; the daemon's
+        // origin guard answers with a bare string and none.
+        ...(typeof payload?.error?.code === 'string' ? { code: payload.error.code } : {}),
+        error: payload?.error?.message || (typeof payload?.error === 'string' ? payload.error : '')
+          || payload?.message || `HTTP ${response.status}` };
   } catch {
     if (correlation) recordAnnotationDiagnostic(`server:${path.split('/').pop()}`, { ok: false }, correlation);
     return { ok: false, error: 'Open Design is unavailable' };
@@ -257,6 +262,34 @@ function grantForTab(tab) {
     return null;
   }
   return granted;
+}
+
+// Pin routes (`comment-list` / `comment-upsert` / `comment-delete`) share one
+// proof: the sender's own top-frame tab, re-verified through `/status` so a
+// reloaded document rebinds its epoch, then the live grant for that tab.
+async function pinScopeForSender(sender) {
+  if (!sender?.tab || sender.frameId !== 0) return null;
+  const liveTab = await chrome.tabs.get(sender.tab.id).catch(() => null);
+  await annotationStatus(liveTab);
+  const tab = annotationTab(liveTab);
+  const grant = grantForTab(liveTab);
+  if (!tab || !grant || sender.tab.url !== liveTab.url) return null;
+  return { tab, grant };
+}
+function pinBody({ tab, grant }, msg) {
+  const url = msg?.omitUrlDetails === true
+    ? `${new URL(tab.url).origin}${new URL(tab.url).pathname}` : tab.url;
+  return { grantId: grant.grantId, tabId: tab.id, documentId: grant.documentId, url };
+}
+// A structured 401/403 from the broker means the daemon no longer honours
+// this grant. Keep it when the daemon was unreachable, the request itself was
+// invalid, or the refusal is a bare one from a layer in front of the broker
+// (the origin guard, a daemon without the comment-* operations).
+async function dropGrantOnRefusal(tabId, response) {
+  if (response.ok || (response.status !== 401 && response.status !== 403)) return;
+  if (typeof response.code !== 'string') return;
+  annotationGrants.delete(tabId);
+  await persistAnnotationConnections();
 }
 
 // Inspection does not inherit the more permissive annotation URL comparison:
@@ -1318,7 +1351,7 @@ async function setCaptureBadge(tabId, on) {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
-  const diagnosticOperation = /^odAnnotation:(pair|capture|submit|status)$/.test(msg?.type || '') ? msg.type : null;
+  const diagnosticOperation = /^odAnnotation:(pair|capture|status|pins|savePin|deletePin)$/.test(msg?.type || '') ? msg.type : null;
   const sendResponse = (result) => {
     if (diagnosticOperation && annotationDiagnosticsEnabled) {
       recordAnnotationDiagnostic(diagnosticOperation, result, crypto.randomUUID());
@@ -1449,6 +1482,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
           });
           await persistAnnotationConnections();
           void inspectionPoll(tab.id);
+          // The page lists its pins itself; a fresh pairing only tells it to.
+          void sendToTab(tab.id, { type: 'odClipper:pinsChanged' });
           sendResponse({ ok: true, projectId: response.grant.projectId });
           break;
         }
@@ -1476,7 +1511,39 @@ chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
           sendResponse({ ok: true });
           break;
         }
-        case 'odAnnotation:submit': {
+        case 'odAnnotation:pins': {
+          // Numbered pins on the paired page. `/status` first so a reloaded
+          // document rebinds its epoch before the page key is checked.
+          const scope = await pinScopeForSender(_sender);
+          if (!scope) { sendResponse({ ok: false, error: 'not paired' }); break; }
+          const response = await annotationRequest('/api/edge-annotations/comment-list', {
+            token: scope.grant.token, body: pinBody(scope, msg),
+          });
+          if (response.ok && !Array.isArray(response.comments)) {
+            sendResponse({ ok: false, error: 'Open Design did not return page pins' });
+            break;
+          }
+          await dropGrantOnRefusal(scope.tab.id, response);
+          sendResponse(response);
+          break;
+        }
+        case 'odAnnotation:deletePin': {
+          const scope = await pinScopeForSender(_sender);
+          const id = typeof msg.id === 'string' ? msg.id.trim() : '';
+          if (!scope || !id || id.length > 128) { sendResponse({ ok: false, error: 'not paired' }); break; }
+          const response = await annotationRequest('/api/edge-annotations/comment-delete', {
+            token: scope.grant.token, body: { ...pinBody(scope, msg), id },
+          });
+          await dropGrantOnRefusal(scope.tab.id, response);
+          sendResponse(response);
+          break;
+        }
+        case 'odAnnotation:savePin': {
+          // Upserts a persistent numbered pin after the same target/crop
+          // review the one-shot draft submit used to run. An `id` edits an
+          // existing pin; without a fresh crop the daemon keeps the stored
+          // screenshot.
+          const pinId = typeof msg.id === 'string' && msg.id.trim() ? msg.id.trim() : '';
           const liveTab = _sender?.tab && await chrome.tabs.get(_sender.tab.id).catch(() => null);
           await annotationStatus(liveTab);
           const tab = annotationTab(liveTab);
@@ -1485,7 +1552,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
           const scoped = msg.target?.scope !== undefined || _sender?.frameId !== 0;
           const target = tab && grant && (scoped
             ? await scopedAnnotationReview(msg, _sender, grant) : annotationTarget(msg.target, tab));
-          if (!tab || !target || !note || note.length > ANNOTATION_MAX_NOTE
+          if (!tab || !target || !note || note.length > ANNOTATION_MAX_NOTE || pinId.length > 128
             || (!scoped && (_sender?.frameId !== 0 || _sender.tab.url !== liveTab.url))) {
             sendResponse({ ok: false, error: 'invalid annotation' });
             break;
@@ -1511,29 +1578,32 @@ chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
             ? `${new URL(tab.url).origin}${new URL(tab.url).pathname}` : tab.url;
           annotationSubmitPending.add(tab.id);
           try {
-            const response = await annotationRequest('/api/edge-annotations/submit', {
+            const evidence = {
+              target: { selector: target.selector, elementId: target.selector.slice(0, 128),
+                label: target.label, text: target.text, domOutline: target.domOutline,
+                position: target.position, htmlHint: target.htmlHint, ancestors: target.ancestors,
+                style: target.style, ...(target.scope ? { scope: target.scope } : {}) },
+              ...(!omitScreenshot ? { screenshotDataUrl: crop.cropDataUrl } : {}), note,
+            };
+            const response = await annotationRequest('/api/edge-annotations/comment-upsert', {
               token: grant.token,
-              body: {
-                projectId: grant.projectId, grantId: grant.grantId, tabId: tab.id,
-                documentId: grant.documentId, url: reviewedUrl, title: tab.title,
-                eventId: typeof msg.eventId === 'string' ? msg.eventId : '',
-                target: { selector: target.selector, elementId: target.selector.slice(0, 128),
-                  label: target.label, text: target.text, domOutline: target.domOutline,
-                  position: target.position, htmlHint: target.htmlHint, ancestors: target.ancestors,
-                  style: target.style, ...(target.scope ? { scope: target.scope } : {}) },
-                ...(!omitScreenshot ? { screenshotDataUrl: crop.cropDataUrl } : {}), note,
-              },
+              // `eventId` is the popover submit's id (validated above); the daemon
+              // replays a repeat of (grantId, eventId) to the row it already
+              // created, so a Save retried after a lost answer adds no second pin.
+              body: { grantId: grant.grantId, tabId: tab.id, documentId: grant.documentId,
+                url: reviewedUrl, eventId: msg.eventId, ...(pinId ? { id: pinId } : {}), ...evidence },
             });
-            if (response.ok && !response.id) { sendResponse({ ok: false, error: 'Open Design did not confirm a draft annotation' }); break; }
+            if (response.ok && !response.comment?.id) {
+              sendResponse({ ok: false, error: 'Open Design did not confirm the pin' });
+              break;
+            }
             if (response.ok) {
               annotationCrops.delete(tab.id);
               annotationReviews.delete(tab.id);
-              await chrome.storage.session?.set({ annotationReceipt: response });
+              // A child frame cannot draw top-page badges; tell the top document.
+              if (_sender.frameId !== 0) void sendToTab(tab.id, { type: 'odClipper:pinsChanged' });
             }
-            else if (response.status === 401 || response.status === 403) {
-              annotationGrants.delete(tab.id);
-              await persistAnnotationConnections();
-            }
+            else await dropGrantOnRefusal(tab.id, response);
             sendResponse(response);
           } finally {
             annotationSubmitPending.delete(tab.id);

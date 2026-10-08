@@ -606,6 +606,29 @@ describe('preview comment agent payload', () => {
     expect(hint).toContain('ask the user before proceeding');
   });
 
+  it('numbers prompt lines by the client order (the pin number), lists them in that order, and keeps browser keys and screenshots', () => {
+    // Staged pins arrive with `order` = their permanent pinSeq, not their batch
+    // position; a browser pin's file is its page key and its screenshot is a
+    // project file path. The model must see "3." for the pin the user calls #3.
+    const normalized = normalizeCommentAttachments([
+      commentAttachment({ id: 'c7', order: 7, comment: 'seventh', filePath: 'index.html' }),
+      commentAttachment({
+        id: 'c3', order: 3, comment: 'inbox pin', filePath: 'browser:https://mail.example.com/inbox?folder=2',
+        imageAttachments: [{ path: 'browser-annotations/clipper-1.png', name: 'clipper-1.png' }],
+      }),
+    ]);
+    expect(normalized.map((entry) => [entry.id, entry.order])).toEqual([['c3', 3], ['c7', 7]]);
+
+    const hint = renderCommentAttachmentHint(normalized);
+    const third = hint.indexOf('3. ');
+    const seventh = hint.indexOf('7. ');
+    expect(third).toBeGreaterThan(-1);
+    expect(seventh).toBeGreaterThan(third);
+    expect(hint).not.toContain('1. ');
+    expect(hint).toContain('file: browser:https://mail.example.com/inbox?folder=2');
+    expect(hint).toContain('browser-annotations/clipper-1.png');
+  });
+
   it('keeps bounded ancestor context and styles in the agent hint', () => {
     const normalized = normalizeCommentAttachments([commentAttachment({
       ancestors: [

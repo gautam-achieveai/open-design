@@ -4999,6 +4999,9 @@ function StagedCommentAttachments({
             className="staged-name"
             title={`${a.screenshotPath ? `${a.screenshotPath}: ` : ''}${commentTargetDisplayName(a)}${a.comment ? `: ${a.comment}` : ''}`}
           >
+            {a.source === 'saved-comment' ? (
+              <span className="staged-comment-seq" data-testid="staged-comment-seq">#{a.order}</span>
+            ) : null}
             <strong>{commentTargetDisplayName(a)}</strong>
             {a.comment ? <span>{a.comment}</span> : null}
           </span>

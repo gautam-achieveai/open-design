@@ -282,6 +282,53 @@ describe('S26 additional ProjectView save boundaries', () => {
     expect(screen.queryByRole('status')).toBeNull();
   });
 
+  it('stores a browser pin image under browser-annotations/ and stamps the pin with its surface', async () => {
+    const browserTarget: PreviewCommentTarget = { ...target, filePath: 'browser:http://127.0.0.1:5180/#/workbench' };
+    const image = new File(['crop'], 'crop.png', { type: 'image/png' });
+    const stored = { name: 'crop.png', path: 'browser-annotations/crop.png', size: image.size };
+    const uploads: RequestInit[] = [];
+    const commentPosts: RequestInit[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === uploadPath && init?.method === 'POST') {
+        uploads.push(init);
+        return new Response(JSON.stringify({ files: [stored] }), { status: 200 });
+      }
+      if (String(input) === commentsPath && init?.method === 'POST') {
+        commentPosts.push(init);
+        const body = JSON.parse(String(init.body)) as { target: PreviewCommentTarget; attachments?: unknown[] };
+        return new Response(JSON.stringify({ comment: { ...savedComment, ...body.target, attachments: body.attachments } }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    renderOwner(conversation.id);
+    await waitFor(() => expect(listMessages).toHaveBeenCalled());
+    await waitFor(() => expect(fileWorkspaceSpy).toHaveBeenCalled());
+    await act(async () => {
+      expect(await preview().onSavePreviewComment(browserTarget, note, false, [image])).not.toBeNull();
+    });
+    // The crop lands in the shared browser-pin directory, and the row says which surface made it.
+    expect(uploads).toHaveLength(1);
+    expect((uploads[0]!.body as FormData).get('dir')).toBe('browser-annotations');
+    expect(JSON.parse(String(commentPosts[0]!.body))).toEqual({
+      target: { ...browserTarget, metadata: { source: 'browser' } }, note,
+      attachments: [{ name: 'crop.png', path: 'browser-annotations/crop.png' }],
+    });
+
+    // A Preview pin keeps the default upload directory and carries no surface stamp.
+    await act(async () => {
+      expect(await preview().onSavePreviewComment(target, note, false, [image])).not.toBeNull();
+    });
+    expect((uploads[1]!.body as FormData).get('dir')).toBeNull();
+    expect(JSON.parse(String(commentPosts[1]!.body)).target).toEqual(target);
+
+    // Editing a Clipper-made pin from here keeps the Clipper's stamp.
+    const clipperTarget: PreviewCommentTarget = { ...browserTarget, metadata: { source: 'clipper' } };
+    await act(async () => {
+      expect(await preview().onSavePreviewComment(clipperTarget, note, false)).not.toBeNull();
+    });
+    expect(JSON.parse(String(commentPosts[2]!.body)).target.metadata).toEqual({ source: 'clipper' });
+  });
+
   it('refuses deletion before a conversation exists without calling save or presenting the approved save explanation', async () => {
     let finishCreation!: (value: typeof conversation) => void;
     const creating = new Promise<typeof conversation>((resolve) => { finishCreation = resolve; });

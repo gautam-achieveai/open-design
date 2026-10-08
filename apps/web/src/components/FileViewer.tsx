@@ -1724,6 +1724,9 @@ interface Props {
    */
   onReorderPreviewComment?: (commentId: string, sortKey: number) => Promise<void>;
   onSendBoardCommentAttachments?: (attachments: ChatCommentAttachment[], images?: File[]) => Promise<CommentSendResult> | CommentSendResult;
+  /** Side-dock "Send selected": stages the pins into the composer draft as
+   *  numbered chips instead of queueing a run. */
+  onStagePreviewComments?: (comments: PreviewComment[]) => void;
   onFileSaved?: () => Promise<void> | void;
   onFileWritten?: (file: ProjectFile) => void;
   onBrandExtractionStopRequest?: () => void;
@@ -1820,6 +1823,7 @@ export const FileViewer = memo(function FileViewer({
   onRemovePreviewComment,
   onReorderPreviewComment,
   onSendBoardCommentAttachments,
+  onStagePreviewComments,
   onFileSaved,
   onFileWritten,
   onBrandExtractionStopRequest,
@@ -1910,6 +1914,7 @@ export const FileViewer = memo(function FileViewer({
         onRemovePreviewComment={onRemovePreviewComment}
         onReorderPreviewComment={onReorderPreviewComment}
         onSendBoardCommentAttachments={onSendBoardCommentAttachments}
+        onStagePreviewComments={onStagePreviewComments}
         onFileSaved={onFileSaved}
         onBrandExtractionStopRequest={onBrandExtractionStopRequest}
         onOpenFileReplacing={onOpenFileReplacing}
@@ -4961,7 +4966,7 @@ export function computeReorderedSortKey(
   return commentEffectiveSortKey(dragged);
 }
 
-function CommentSideDock({
+export function CommentSideDock({
   comments,
   projectId,
   selectedIds,
@@ -7343,6 +7348,7 @@ function HtmlViewer({
   onRemovePreviewComment,
   onReorderPreviewComment,
   onSendBoardCommentAttachments,
+  onStagePreviewComments,
   onFileSaved,
   onBrandExtractionStopRequest,
   onOpenFileReplacing,
@@ -7378,6 +7384,7 @@ function HtmlViewer({
   onRemovePreviewComment?: (commentId: string) => Promise<boolean>;
   onReorderPreviewComment?: (commentId: string, sortKey: number) => Promise<void>;
   onSendBoardCommentAttachments?: (attachments: ChatCommentAttachment[], images?: File[]) => Promise<CommentSendResult> | CommentSendResult;
+  onStagePreviewComments?: (comments: PreviewComment[]) => void;
   onFileSaved?: () => Promise<void> | void;
   onBrandExtractionStopRequest?: () => void;
   onOpenFileReplacing?: (openName: string, closeName: string) => void;
@@ -14903,7 +14910,7 @@ function HtmlViewer({
   }
 
   async function sendBoardBatch() {
-    if (!activeCommentTarget || !onSendBoardCommentAttachments) return;
+    if (!activeCommentTarget) return;
     const existingComment = currentActiveComposerComment();
     const sendingUnchangedSavedComment = Boolean(
       existingComment
@@ -14911,6 +14918,39 @@ function HtmlViewer({
       && boardImages.length === 0
       && commentDraft.trim() === existingComment.note.trim(),
     );
+    // One send model: "Send to chat" on a single pin stages it into the
+    // composer as a numbered chip, exactly like the dock's "Send selected".
+    // Nothing runs and nothing is deleted here; the user's own send marks the
+    // pin `applying`. A new or edited pin is saved first so the chip points at
+    // a real row. Queued multi-note batches have no single row to stage and
+    // keep the direct send below.
+    if (onStagePreviewComments && queuedBoardNotes.length === 0) {
+      if (existingComment && sendingUnchangedSavedComment) {
+        onStagePreviewComments([existingComment]);
+        clearBoardComposer();
+        return;
+      }
+      if (onSavePreviewComment) {
+        if (!commentDraft.trim() && boardImages.length === 0 && currentActiveComposerAttachments().length === 0) return;
+        setSendingBoardBatch(true);
+        try {
+          const saved = await onSavePreviewComment(
+            withDeckSlideIndex(targetFromSnapshot(activeCommentTarget)),
+            commentDraft.trim(),
+            false,
+            boardImages,
+            existingComment?.id ?? activeComposerComment?.id,
+          );
+          if (!saved) return;
+          onStagePreviewComments([saved]);
+          clearBoardComposer();
+        } finally {
+          setSendingBoardBatch(false);
+        }
+        return;
+      }
+    }
+    if (!onSendBoardCommentAttachments) return;
     if (existingComment && sendingUnchangedSavedComment) {
       setSendingBoardBatch(true);
       try {
@@ -16357,8 +16397,12 @@ function HtmlViewer({
         setCommentPanelOpen(true);
         setCommentSidePanelCollapsed(false);
       }}
-      onSendSelected={async () => {
-        if (!onSendBoardCommentAttachments) return;
+      // "Send selected" stages the pins into the composer draft as numbered
+      // chips. It no longer queues a run or deletes the sent comments: the
+      // user finishes the message and sends it as one turn, and the pins
+      // stay on the canvas until that send marks them `applying`.
+      onSendSelected={() => {
+        if (!onStagePreviewComments) return;
         const selected = visibleSideComments.filter(
           (comment) => (
             selectedSideCommentIds.has(comment.id)
@@ -16367,43 +16411,14 @@ function HtmlViewer({
         );
         if (selected.length === 0) return;
         fireCommentPopoverClick('send_to_chat');
-        setSendingBoardBatch(true);
-        try {
-          const result = await onSendBoardCommentAttachments(
-            commentsToAttachments(selected),
-          );
-          const completedIds = new Set(result.commentIds);
-          if (completedIds.size === 0 || !onRemovePreviewComment) return;
-          const removedIds = new Set<string>();
-          const removals = await Promise.all(
-            selected
-              .filter((comment) => completedIds.has(comment.id))
-              .map(async (comment) => ({
-                id: comment.id,
-                removed: await onRemovePreviewComment(comment.id),
-              })),
-          );
-          for (const removal of removals) {
-            if (removal.removed) removedIds.add(removal.id);
-          }
-          setSelectedSideCommentIds((current) => {
-            const next = new Set(current);
-            for (const id of removedIds) next.delete(id);
-            return next;
-          });
-          setActivePreviewCommentId((current) => (
-            current && removedIds.has(current) ? null : current
-          ));
-        } finally {
-          setSendingBoardBatch(false);
-        }
+        onStagePreviewComments(selected);
+        setSelectedSideCommentIds(new Set());
       }}
       onCreateComment={savePanelComment}
       canSendComment={canSendCommentToAgent}
       currentUser={commentAuthorSelf}
-      sending={sendingBoardBatch}
-      queueOnSend={commentQueueOnSend}
-      sendDisabled={commentSendDisabled || viewerOnly}
+      sending={false}
+      sendDisabled={!onStagePreviewComments || viewerOnly}
       sendDisabledReason={viewerOnly ? viewerOnlyDisabledTitle : undefined}
       allowSendToChat={!viewerOnly}
       renderCreateForm={!commentPortalHost}

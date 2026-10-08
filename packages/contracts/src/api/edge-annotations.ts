@@ -1,4 +1,4 @@
-import type { PreviewAnnotationStyle, PreviewCommentPosition } from './comments.js';
+import type { PreviewAnnotationStyle, PreviewComment, PreviewCommentPosition } from './comments.js';
 
 /** UI/CLI starts pairing without needing a browser tab ID. */
 export interface CreateEdgeAnnotationPairRequest {
@@ -228,6 +228,66 @@ export interface EdgeAnnotationSubmitResponse extends EdgeAnnotationDestination 
 
 export interface EdgeAnnotationRevokeResponse {
   revoked: boolean;
+}
+
+/**
+ * Grant-scoped pin routes for the paired extension. Every call carries the
+ * grant proof (`grantId` + bearer token + tab/document/url) so the daemon can
+ * re-verify the paired page; the page key is computed daemon-side from the
+ * reviewed URL (`browserCommentFileKey`), never supplied by the extension.
+ * All are POST because the extension CORS allowlist admits GET/POST only.
+ */
+export interface EdgeAnnotationCommentScope {
+  /** The grant names the project and conversation; the body never does. */
+  grantId: string;
+  tabId: number;
+  documentId: string;
+  url: string;
+}
+
+/**
+ * `POST /api/edge-annotations/comment-list` — the page's `open` pins only,
+ * the same visibility rule the in-app browser and the Preview canvas apply.
+ * A sent or resolved pin keeps its number but is neither listed nor
+ * reachable through `comment-upsert` / `comment-delete`.
+ */
+export type EdgeAnnotationCommentListRequest = EdgeAnnotationCommentScope;
+export interface EdgeAnnotationCommentListResponse {
+  /** Page key the pins are stored under: see `browserCommentFileKey` (origin + path + search + fragment). */
+  filePath: string;
+  comments: PreviewComment[];
+}
+
+/** `POST /api/edge-annotations/comment-upsert` — omit `id` to create. */
+export interface EdgeAnnotationCommentUpsertRequest extends EdgeAnnotationCommentScope {
+  id?: string;
+  target: EdgeAnnotationTarget;
+  note: string;
+  /**
+   * Optional cropped PNG data URL; stored under the project's browser-pin
+   * screenshot dir. On an edit it REPLACES the crop stored for the pin; omit it to keep
+   * the stored one.
+   */
+  screenshotDataUrl?: string;
+  /**
+   * Client-chosen id for one Save (`[A-Za-z0-9_-]{1,128}`), kept across
+   * retries of that Save. A repeat with the same `(grant, eventId)` returns
+   * the pin already written with `replayed: true` instead of a second number.
+   */
+  eventId?: string;
+}
+export interface EdgeAnnotationCommentUpsertResponse {
+  comment: PreviewComment;
+  /** Present and true when the request repeated an earlier Save (see `eventId`). */
+  replayed?: boolean;
+}
+
+/** `POST /api/edge-annotations/comment-delete` */
+export interface EdgeAnnotationCommentDeleteRequest extends EdgeAnnotationCommentScope {
+  id: string;
+}
+export interface EdgeAnnotationCommentDeleteResponse {
+  deleted: boolean;
 }
 
 /** The only read operations permitted on the specifically paired browser document. */

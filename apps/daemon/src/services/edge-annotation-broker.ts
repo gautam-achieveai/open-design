@@ -128,6 +128,11 @@ function tokenDigest(token: string): Buffer {
   return createHash('sha256').update(token).digest();
 }
 
+/** Bounded-field check for a pin target supplied by the paired extension. */
+export function validateEdgeAnnotationTarget(target: EdgeAnnotationTarget): EdgeAnnotationTarget {
+  return validateTarget(target);
+}
+
 function validateTarget(target: EdgeAnnotationTarget): EdgeAnnotationTarget {
   if (!target || typeof target !== 'object') return invalid('INVALID_ANNOTATION', 'annotation target is required');
   const { selector, elementId, label, text, domOutline, position, htmlHint, ancestors, style, scope } = target;

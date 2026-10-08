@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { act, useState } from 'react';
+import { act, useState, type ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OpenDesignHostBrowserPopup, OpenDesignHostBrowserPopupCommand } from '@open-design/host';
 import { installMockOpenDesignHost } from '@open-design/host/testing';
 
-import { DesignBrowserPanel } from '../../src/components/DesignBrowserPanel';
+import { DesignBrowserPanel, browserClampedOverlayBounds, browserPinTargetSignature, browserPinTargetsFromSignature } from '../../src/components/DesignBrowserPanel';
+import { browserCommentFilePath, type BrowserElementSnapshot } from '../../src/components/design-browser-tools';
 import { I18nProvider } from '../../src/i18n';
+import type { PreviewComment } from '../../src/types';
 import { writeProjectTextFile } from '../../src/providers/registry';
 import * as browserControl from '../../src/runtime/embedded-browser-control';
 
@@ -26,6 +28,12 @@ vi.mock('../../src/providers/registry', async () => {
 });
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+type SavePreviewComment = NonNullable<ComponentProps<typeof DesignBrowserPanel>['onSavePreviewComment']>;
+/** Popover Save hands the pick to the workspace; the panel owns nothing after. */
+function savePreviewCommentMock() {
+  return vi.fn<SavePreviewComment>(async () => null);
+}
 
 let restoreHost: (() => void) | null = null;
 
@@ -134,8 +142,9 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       const fetchMock = vi.fn(async (url: string) => url.startsWith('data:')
         ? { blob: async () => new Blob(['crop'], { type: 'image/png' }) } : { ok: true });
       vi.stubGlobal('fetch', fetchMock);
+      const save = savePreviewCommentMock();
       const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com"
-        onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+        onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={save} />);
       const node = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
       node.getBoundingClientRect = () => ({ left: 30, top: 40, right: 1030, bottom: 840,
         width: 1000, height: 800, x: 30, y: 40, toJSON() {} } as DOMRect);
@@ -161,12 +170,11 @@ describe('DesignBrowserPanel <webview> navigation', () => {
         expect(fillRect).toHaveBeenCalledWith(0, 0, 13, 13);
       } else expect(fillRect).not.toHaveBeenCalled();
       fireEvent.change(screen.getByPlaceholderText('Comment on this element…'), { target: { value: 'Review the field' } });
-      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add to chat draft' })); });
-      await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/edge-annotations/draft'))).toBe(true));
-      const post = fetchMock.mock.calls.find(([url]) => url.endsWith('/edge-annotations/draft'))!;
-      const payload = JSON.parse((post as unknown as [string, { body: string }])[1].body);
-      if (kind === 'valid') expect(payload.screenshotDataUrl).toMatch(/^data:image\/png;base64,/);
-      else expect(payload.screenshotDataUrl).toBeUndefined();
+      await act(async () => { fireEvent.click(screen.getByTestId('comment-popover-save')); });
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      const images = save.mock.calls[0]![3] ?? [];
+      if (kind === 'valid') expect(images.map((file) => file.name)).toEqual([expect.stringMatching(/^browser-annotation-/)]);
+      else expect(images).toEqual([]);
     });
 
   it.each(['stable', 'navigation', 'viewport', 'mask', 'capture-failure', 'decode-failure'] as const)(
@@ -229,8 +237,9 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       const fetchMock = vi.fn(async (url: string) => url.startsWith('data:')
         ? { blob: async () => new Blob(['crop'], { type: 'image/png' }) } : { ok: true });
       vi.stubGlobal('fetch', fetchMock);
+      const save = savePreviewCommentMock();
       const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" browserTabId="__browser__:2"
-        popup={popup} onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+        popup={popup} onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={save} />);
       const surface = container.querySelector('[data-popup-surface]')! as HTMLElement & { getURL(): string };
       surface.getBoundingClientRect = () => ({ left: 30, top: 40, right: 330, bottom: 240,
         width: 300, height: 200, x: 30, y: 40, toJSON() {} } as DOMRect);
@@ -244,16 +253,14 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       }
       const note = screen.getByPlaceholderText('Comment on this element…');
       fireEvent.change(note, { target: { value: 'Review the field' } });
-      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add to chat draft' })); });
-      await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/edge-annotations/draft'))).toBe(true));
-      const post = fetchMock.mock.calls.find(([url]) => url.endsWith('/edge-annotations/draft'));
-      expect(post).toBeTruthy();
-      const payload = JSON.parse((post as unknown as [string, { body: string }])[1].body);
+      await act(async () => { fireEvent.click(screen.getByTestId('comment-popover-save')); });
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      const savedImages = save.mock.calls[0]![3] ?? [];
       if (change === 'stable') {
         expect(drawImage.mock.calls[0]!.slice(1)).toEqual([0, 60, 200, 150, 0, 0, 200, 150]);
         expect(fillRect).toHaveBeenCalledWith(50, 45, 20, 30);
-        expect(payload.screenshotDataUrl).toMatch(/^data:image\/png;base64,/);
-      } else expect(payload.screenshotDataUrl).toBeUndefined();
+        expect(savedImages.map((file) => file.name)).toEqual([expect.stringMatching(/^browser-annotation-/)]);
+      } else expect(savedImages).toEqual([]);
     });
 
   it('omits a native screenshot if a field moves between the two geometry checks', async () => {
@@ -264,9 +271,10 @@ describe('DesignBrowserPanel <webview> navigation', () => {
     const fetchMock = vi.fn(async (_url: string, _options: { body: string }) => ({ ok: true,
       json: async () => ({ projectId: 'p1', conversationId: 'c1', id: '11111111-1111-4111-8111-111111111111', replayed: false }) }));
     vi.stubGlobal('fetch', fetchMock);
+    const save = savePreviewCommentMock();
     try {
       const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1"
-        initialUrl="http://localhost:1234/signin" onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+        initialUrl="http://localhost:1234/signin" onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={save} />);
       const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
       webview.getBoundingClientRect = () => ({ left: 0, top: 0, right: 300, bottom: 200,
         width: 300, height: 200, x: 0, y: 0, toJSON() {} } as DOMRect);
@@ -283,54 +291,464 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       await waitFor(() => expect(measured).toBeGreaterThanOrEqual(2));
       const note = screen.getByPlaceholderText('Comment on this element…');
       fireEvent.change(note, { target: { value: 'Adjust the field layout' } });
-      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add to chat draft' })); });
-      expect(JSON.parse(fetchMock.mock.calls[0]![1].body).screenshotDataUrl).toBeUndefined();
+      await act(async () => { fireEvent.click(screen.getByTestId('comment-popover-save')); });
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      expect(save.mock.calls[0]![3] ?? []).toEqual([]);
     } finally { vi.unstubAllGlobals(); }
   });
 
-  it.each(['HTTP failure', 'wrong destination', 'invalid receipt'] as const)(
-    'collects one native annotation without screenshot or agent, retaining the event after %s', async (failure) => {
+  it('saves a picked element as a staged preview comment, draws its pinSeq marker and edits it in place', async () => {
     const agentSend = vi.fn();
-    const save = vi.fn();
-    const onAnnotationDraftCreated = vi.fn();
-    const receipt = { projectId: 'p1', conversationId: 'c1', id: '11111111-1111-4111-8111-111111111111', replayed: false };
-    const firstResponse = failure === 'HTTP failure' ? { ok: false }
-      : { ok: true, json: async () => failure === 'wrong destination'
-        ? { ...receipt, conversationId: 'another-conversation' } : {} };
-    const fetchMock = vi.fn().mockResolvedValueOnce(firstResponse).mockResolvedValue({ ok: true, json: async () => receipt });
+    const fetchMock = vi.fn(async (_url: string) => ({ ok: true, json: async () => ({}) }));
     vi.stubGlobal('fetch', fetchMock);
+    const hero = { elementId: 'hero', selector: '#hero', label: 'div', text: 'Save', htmlHint: '<div id="hero">',
+      domOutline: 'div\n  h1 Save', position: { x: 0, y: 0, width: 100, height: 100 } };
+    const save = vi.fn<SavePreviewComment>(async (target, note, _attach, _images, commentId) => ({
+      id: commentId ?? 'cmt-1', projectId: 'p1', conversationId: 'c1', filePath: target.filePath,
+      elementId: target.elementId, selector: target.selector, label: target.label, text: target.text,
+      htmlHint: target.htmlHint, position: target.position, note, status: 'open', pinSeq: 7,
+      createdAt: 1, updatedAt: 1,
+    }));
+    function Harness() {
+      const [previewComments, setPreviewComments] = useState<PreviewComment[]>([]);
+      return (
+        <DesignBrowserPanel projectId="p1" conversationId="c1"
+          initialUrl="http://localhost:1234/demo?view=wide#hero" onOpenFile={() => {}} onRefreshFiles={() => {}}
+          previewComments={previewComments}
+          onSendBoardCommentAttachments={agentSend}
+          onSavePreviewComment={async (...args) => {
+            const saved = await save(...args);
+            if (saved) setPreviewComments((current) => [...current.filter((item) => item.id !== saved.id), saved]);
+            return saved;
+          }} />
+      );
+    }
     try {
-      const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1"
-        initialUrl="http://localhost:1234/demo?view=wide#hero" onOpenFile={() => {}} onRefreshFiles={() => {}}
-        onSendBoardCommentAttachments={agentSend} onSavePreviewComment={save}
-        onAnnotationDraftCreated={onAnnotationDraftCreated} />);
+      const { container } = render(<Harness />);
       const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
-      webview.executeJavaScript = vi.fn(async (script: string) => script.includes('function snapshotFor(el, ev)') ? {
-        elementId: 'hero', selector: '#hero', label: 'div', text: 'Save', htmlHint: '<div id="hero">',
-        domOutline: 'div\n  h1 Save', ancestors: [{ tag: 'body', selector: 'body' }],
-        position: { x: 0, y: 0, width: 100, height: 100 },
-      } : null);
+      webview.executeJavaScript = vi.fn(async (script: string) => {
+        if (script.includes('function snapshotFor(el, ev)')) return hero;
+        if (script.includes('const targets =')) {
+          // Every requested key resolves to the hero rect, so saved pins get a live rect.
+          return Array.from(script.matchAll(/"key":"([^"]+)"/g), (match) => ({ ...hero, key: match[1] }));
+        }
+        return null;
+      });
       await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
       const input = screen.getByPlaceholderText('Comment on this element…');
       fireEvent.change(input, { target: { value: 'Make Save clearer' } });
-      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
-      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add to chat draft' })); });
-      expect((input as HTMLTextAreaElement).value).toBe('Make Save clearer');
-      expect(screen.getByPlaceholderText('Comment on this element…')).toBe(input);
-      expect(onAnnotationDraftCreated).not.toHaveBeenCalled();
-      const first = JSON.parse(fetchMock.mock.calls[0]![1].body);
-      expect(fetchMock.mock.calls[0]![0]).toBe('/api/projects/p1/edge-annotations/draft');
-      expect(first).toMatchObject({ conversationId: 'c1', note: 'Make Save clearer', target: { domOutline: 'div\n  h1 Save' } });
-      expect(first.screenshotDataUrl).toBeUndefined();
-      await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }); });
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(JSON.parse(fetchMock.mock.calls[1]![1].body)).toEqual(first);
-      expect(onAnnotationDraftCreated).toHaveBeenCalledExactlyOnceWith(receipt);
-      expect(screen.queryByPlaceholderText('Comment on this element…')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Add to chat draft' })).toBeNull();
+      await act(async () => { fireEvent.click(screen.getByTestId('comment-popover-save')); });
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      const [target, note, attachAfterSave, images, commentId] = save.mock.calls[0]!;
+      expect(target).toMatchObject({ filePath: 'browser:http://localhost:1234/demo?view=wide#hero', selector: '#hero' });
+      expect(note).toBe('Make Save clearer');
+      expect(attachAfterSave).toBe(true);
+      expect(images).toEqual([]);
+      expect(commentId).toBeUndefined();
       expect(agentSend).not.toHaveBeenCalled();
-      expect(save).not.toHaveBeenCalled();
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/edge-annotations/'))).toBe(false);
       expect(writeProjectTextFile).not.toHaveBeenCalled();
+
+      // The saved pin is drawn from its live rect, numbered by pinSeq, and the
+      // popover stays open on it so the note can be edited in place.
+      // The accessible name carries the pin number and the open pin is
+      // announced through aria-current, not colour alone.
+      const badge = await screen.findByRole('button', { name: 'Open pin #7: div' });
+      expect(badge.textContent).toBe('7');
+      expect(badge.getAttribute('aria-current')).toBe('true');
+      expect(screen.getByTestId('db-comment-marker-cmt-1')).toBeTruthy();
+      expect(screen.getByTestId('comment-side-dock')).toBeTruthy();
+      fireEvent.change(screen.getByPlaceholderText('Comment on this element…'), { target: { value: 'Make Save bolder' } });
+      await act(async () => { fireEvent.click(screen.getByTestId('comment-popover-save')); });
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+      expect(save.mock.calls[1]![1]).toBe('Make Save bolder');
+      expect(save.mock.calls[1]![4]).toBe('cmt-1');
+      expect(screen.getAllByTestId(/^db-comment-marker-/)).toHaveLength(1);
     } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('clamps a saved pin marker to the guest viewport so its number stays visible (D2)', async () => {
+    const pin: PreviewComment = {
+      id: 'cmt-wide', projectId: 'p1', conversationId: 'c1', filePath: browserCommentFilePath('https://example.com'),
+      elementId: 'dom:#card2', selector: '#card2', label: 'p', text: 'Another block', htmlHint: '<p>',
+      position: { x: 45, y: 300, width: 300, height: 40 }, note: 'Card copy is vague', status: 'open',
+      pinSeq: 2, createdAt: 1, updatedAt: 1,
+    };
+    const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com"
+      previewComments={[pin]} onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={savePreviewCommentMock()} />);
+    const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    // The picker never resolves (no click); the measure script sees the pin
+    // 45px in from the left of a 303px-wide guest viewport, 42px past its edge.
+    webview.executeJavaScript = vi.fn(async (script: string) => script.includes('const targets =')
+      ? Array.from(script.matchAll(/"key":"([^"]+)"/g), (match) => ({ key: match[1],
+        elementId: pin.elementId, selector: pin.selector, label: pin.label, text: pin.text, htmlHint: pin.htmlHint,
+        position: pin.position, viewport: { width: 303, height: 600 } }))
+      : new Promise(() => {}));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    const marker = await screen.findByTestId('db-comment-marker-cmt-wide');
+    expect(marker.style.left).toBe('45px');
+    expect(marker.style.width).toBe('258px');
+    expect(marker.getAttribute('data-clamped-right')).toBe('true');
+    expect(marker.getAttribute('data-clamped-top')).toBeNull();
+    const badge = screen.getByRole('button', { name: 'Open pin #2: p' });
+    expect(badge.textContent).toBe('2');
+    expect(badge.getAttribute('aria-current')).toBeNull();
+  });
+
+  it('does not measure saved pins while the browser tab is hidden, even with the comment tool on (F6)', async () => {
+    const pin: PreviewComment = {
+      id: 'cmt-hidden', projectId: 'p1', conversationId: 'c1', filePath: browserCommentFilePath('https://example.com'),
+      elementId: 'dom:#hero', selector: '#hero', label: 'div', text: 'Hero', htmlHint: '<div>',
+      position: { x: 10, y: 10, width: 100, height: 40 }, note: 'Hero note', status: 'open',
+      pinSeq: 1, createdAt: 1, updatedAt: 1,
+    };
+    const measure = vi.fn(async (script: string) => script.includes('const targets =')
+      ? Array.from(script.matchAll(/"key":"([^"]+)"/g), (match) => ({ key: match[1],
+        elementId: pin.elementId, selector: pin.selector, label: pin.label, text: pin.text, htmlHint: pin.htmlHint,
+        position: pin.position, viewport: { width: 300, height: 200 } }))
+      : new Promise(() => {}));
+    function Harness({ active }: { active: boolean }) {
+      return (
+        <DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com" browserTabActive={active}
+          previewComments={[pin]} onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={savePreviewCommentMock()} />
+      );
+    }
+    const { container, rerender } = render(<Harness active />);
+    const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    webview.executeJavaScript = measure;
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    await screen.findByTestId('db-comment-marker-cmt-hidden');
+    const measuredWhileActive = measure.mock.calls.filter(([script]) => script.includes('"key":"comment:cmt-hidden"')).length;
+    expect(measuredWhileActive).toBeGreaterThan(0);
+
+    rerender(<Harness active={false} />);
+    const measuredAtHide = measure.mock.calls.filter(([script]) => script.includes('"key":"comment:cmt-hidden"')).length;
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+    const measuredWhileHidden = measure.mock.calls.filter(([script]) => script.includes('"key":"comment:cmt-hidden"')).length;
+    expect(measuredWhileHidden).toBe(measuredAtHide);
+  });
+
+  it('stops measuring the picked element too once the browser tab is hidden (F6 residual)', async () => {
+    const hero = { elementId: 'dom:#hero', selector: '#hero', label: 'div', text: 'Hero', htmlHint: '<div>',
+      position: { x: 10, y: 10, width: 100, height: 40 }, viewport: { width: 300, height: 200 } };
+    const measure = vi.fn(async (script: string) => {
+      if (script.includes('function snapshotFor(el, ev)')) return hero;
+      if (script.includes('const targets =')) {
+        return Array.from(script.matchAll(/"key":"([^"]+)"/g), (match) => ({ ...hero, key: match[1] }));
+      }
+      return null;
+    });
+    const activeMeasurements = () => measure.mock.calls.filter(([script]) => script.includes('"key":"active"')).length;
+    function Harness({ active }: { active: boolean }) {
+      return (
+        <DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com" browserTabActive={active}
+          onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={savePreviewCommentMock()} />
+      );
+    }
+    const { container, rerender } = render(<Harness active />);
+    const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    webview.executeJavaScript = measure;
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    await screen.findByPlaceholderText('Comment on this element…');
+    await waitFor(() => expect(activeMeasurements()).toBeGreaterThan(0));
+
+    rerender(<Harness active={false} />);
+    await act(async () => { await Promise.resolve(); });
+    const atHide = activeMeasurements();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+    expect(activeMeasurements()).toBe(atHide);
+  });
+
+  it('stages the selected dock pins into the composer without sending or deleting them', async () => {
+    const pins: PreviewComment[] = [1, 2].map((n) => ({
+      id: `cmt-${n}`, projectId: 'p1', conversationId: 'c1', filePath: browserCommentFilePath('https://example.com'),
+      elementId: `dom:#el${n}`, selector: `#el${n}`, label: 'p', text: `Text ${n}`, htmlHint: '<p>',
+      position: { x: 10, y: 10 + n * 50, width: 100, height: 40 }, note: `Pin ${n}`, status: 'open',
+      pinSeq: n, createdAt: n, updatedAt: n,
+    }));
+    const onStagePreviewComments = vi.fn();
+    const onSendBoardCommentAttachments = vi.fn();
+    const onRemovePreviewComment = vi.fn(async () => true);
+    const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com"
+      previewComments={pins} onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={savePreviewCommentMock()}
+      onStagePreviewComments={onStagePreviewComments} onSendBoardCommentAttachments={onSendBoardCommentAttachments}
+      onRemovePreviewComment={onRemovePreviewComment} />);
+    const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    webview.executeJavaScript = vi.fn(async () => new Promise(() => {}));
+    expect(screen.queryByTestId('comment-side-dock')).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    expect(screen.getByTestId('comment-side-dock')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+    fireEvent.click(screen.getByTestId('comment-side-send-claude'));
+    expect(onStagePreviewComments).toHaveBeenCalledTimes(1);
+    expect(onStagePreviewComments.mock.calls[0]![0].map((comment: PreviewComment) => comment.id).sort()).toEqual(['cmt-1', 'cmt-2']);
+    expect(onSendBoardCommentAttachments).not.toHaveBeenCalled();
+    expect(onRemovePreviewComment).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('comment-side-selectbar')).toBeNull();
+    expect(screen.getByText('Pin 1')).toBeTruthy();
+    expect(screen.getByText('Pin 2')).toBeTruthy();
+  });
+
+  it('waits for a still-pending element capture and saves its screenshot (F8)', async () => {
+    const dataUrl = 'data:image/png;base64,cGl4ZWxz';
+    const captured = { x: 278 / 1.2, y: 290 / 1.2, width: 287 / 1.2, height: 191 / 1.2 };
+    let resolveCapture: ((value: unknown) => void) | null = null;
+    // Typed `never` so the deferred promise fits the host capture signature;
+    // the test resolves it with a real capture payload below.
+    const capturePage = vi.fn(() => new Promise<never>((resolve) => { resolveCapture = resolve as (value: unknown) => void; }));
+    restoreHost?.(); restoreHost = installMockOpenDesignHost({ host: { capture: { page: capturePage } } });
+    vi.stubGlobal('Image', class {
+      naturalWidth = 287; naturalHeight = 191; onload?: () => void;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn(), fillRect: vi.fn() } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue(dataUrl);
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.startsWith('data:')
+      ? { blob: async () => new Blob(['crop'], { type: 'image/png' }) } : { ok: true }));
+    const save = savePreviewCommentMock();
+    const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com"
+      onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={save} />);
+    const node = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    node.getBoundingClientRect = () => ({ left: 30, top: 40, right: 1030, bottom: 840,
+      width: 1000, height: 800, x: 30, y: 40, toJSON() {} } as DOMRect);
+    const target = { elementId: 'dom:#field', selector: '#field', label: 'input', text: '', htmlHint: 'input',
+      position: { x: 201, y: 201, width: 240, height: 160 }, viewport: { width: 1000, height: 800 }, maskRects: [] };
+    node.executeJavaScript = vi.fn(async (script: string) => {
+      if (script.includes('function snapshotFor(el, ev)')) return target;
+      if (script.includes('const targets =')) return [{ ...target, key: 'capture' }];
+      if (script.includes('data-od-annotation-text')) return true;
+      return null;
+    });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    await waitFor(() => expect(capturePage).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByPlaceholderText('Comment on this element…'), { target: { value: 'Review the field' } });
+    // Save lands while the host capture is still pending: nothing is staged yet.
+    expect(screen.queryByRole('button', { name: /^Attach image \(1\)/ })).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByTestId('comment-popover-save')); });
+    expect(save).not.toHaveBeenCalled();
+    await act(async () => { resolveCapture!({ ok: true, dataUrl, w: 287, h: 191, capturedCssRect: captured }); });
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect((save.mock.calls[0]![3] ?? []).map((file) => file.name)).toEqual([expect.stringMatching(/^browser-annotation-/)]);
+  });
+
+  it('neither measures nor draws a scoped Clipper pin, but keeps it listed in the dock', async () => {
+    const scope = { frame: 'child' as const, url: 'https://example.com/frame', selectorRoot: 'document' as const,
+      shadowHosts: [], screenshot: 'not-supported' as const };
+    const scoped: PreviewComment = {
+      id: 'cmt-scoped', projectId: 'p1', conversationId: 'c1', filePath: browserCommentFilePath('https://example.com'),
+      elementId: 'dom:#hero', selector: '#hero', label: 'div', text: 'Framed hero', htmlHint: '<div>',
+      position: { x: 10, y: 10, width: 100, height: 40 }, note: 'Inside the frame', status: 'open',
+      pinSeq: 1, createdAt: 1, updatedAt: 1, metadata: { source: 'clipper', scope },
+    };
+    const plain: PreviewComment = { ...scoped, id: 'cmt-plain', selector: '#cta', elementId: 'dom:#cta', pinSeq: 2,
+      note: 'Top document', metadata: { source: 'browser' } };
+    const measure = vi.fn(async (script: string) => script.includes('const targets =')
+      ? Array.from(script.matchAll(/"key":"([^"]+)"/g), (match) => ({ key: match[1],
+        elementId: 'dom:#hero', selector: '#hero', label: 'div', text: '', htmlHint: '<div>',
+        position: { x: 10, y: 10, width: 100, height: 40 }, viewport: { width: 300, height: 200 } }))
+      : new Promise(() => {}));
+    const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com"
+      previewComments={[scoped, plain]} onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={savePreviewCommentMock()} />);
+    const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    webview.executeJavaScript = measure;
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    await screen.findByTestId('db-comment-marker-cmt-plain');
+    // The top-document querySelector cannot resolve a child-frame / shadow
+    // selector, so a scoped pin is never requested and never badged on a
+    // top-document element that happens to share its selector.
+    expect(measure.mock.calls.some(([script]) => script.includes('"key":"comment:cmt-scoped"'))).toBe(false);
+    expect(measure.mock.calls.some(([script]) => script.includes('"key":"comment:cmt-plain"'))).toBe(true);
+    expect(screen.queryByTestId('db-comment-marker-cmt-scoped')).toBeNull();
+    expect(container.querySelector('.comment-side-item[data-comment-id="cmt-scoped"]')).toBeTruthy();
+  });
+
+  it("keeps a pin's scope and source metadata when its note is edited in the in-app browser", async () => {
+    const scope = { frame: 'child' as const, url: 'https://example.com/frame', selectorRoot: 'open-shadow' as const,
+      shadowHosts: ['#host'], screenshot: 'not-supported' as const };
+    const pin: PreviewComment = {
+      id: 'cmt-scoped', projectId: 'p1', conversationId: 'c1', filePath: browserCommentFilePath('https://example.com'),
+      elementId: 'dom:#hero', selector: '#hero', label: 'div', text: 'Framed hero', htmlHint: '<div>',
+      position: { x: 10, y: 10, width: 100, height: 40 }, note: 'Inside the frame', status: 'open',
+      pinSeq: 1, createdAt: 1, updatedAt: 1, metadata: { source: 'clipper', scope },
+    };
+    const save = savePreviewCommentMock();
+    const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com"
+      previewComments={[pin]} onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={save} />);
+    const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    webview.executeJavaScript = vi.fn(async (script: string) => script.includes('const targets =') ? [] : new Promise(() => {}));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    fireEvent.click(container.querySelector('.comment-side-item[data-comment-id="cmt-scoped"]')!);
+    const input = await screen.findByPlaceholderText('Comment on this element…') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'Inside the frame, revised' } });
+    await act(async () => { fireEvent.click(screen.getByTestId('comment-popover-save')); });
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    const [target, , , , commentId] = save.mock.calls[0]!;
+    expect(commentId).toBe('cmt-scoped');
+    // The upsert replaces metadata wholesale: dropping these here would strip
+    // the Clipper pin of the scope that makes its selector resolvable.
+    expect(target.metadata).toMatchObject({ source: 'clipper', scope });
+  });
+
+  it('saves without the screenshot when the element capture never settles, after the capture deadline', async () => {
+    const capturePage = vi.fn(() => new Promise<never>(() => {}));
+    restoreHost?.(); restoreHost = installMockOpenDesignHost({ host: { capture: { page: capturePage } } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const save = savePreviewCommentMock();
+    const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com"
+      onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={save} />);
+    const node = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    node.getBoundingClientRect = () => ({ left: 30, top: 40, right: 1030, bottom: 840,
+      width: 1000, height: 800, x: 30, y: 40, toJSON() {} } as DOMRect);
+    const target = { elementId: 'dom:#field', selector: '#field', label: 'input', text: '', htmlHint: 'input',
+      position: { x: 201, y: 201, width: 240, height: 160 }, viewport: { width: 1000, height: 800 }, maskRects: [] };
+    node.executeJavaScript = vi.fn(async (script: string) => {
+      if (script.includes('function snapshotFor(el, ev)')) return target;
+      if (script.includes('const targets =')) return [{ ...target, key: 'capture' }];
+      if (script.includes('data-od-annotation-text')) return true;
+      return null;
+    });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    await waitFor(() => expect(capturePage).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByPlaceholderText('Comment on this element…'), { target: { value: 'Review the field' } });
+    vi.useFakeTimers();
+    await act(async () => { fireEvent.click(screen.getByTestId('comment-popover-save')); });
+    expect(save).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0]![1]).toBe('Review the field');
+    expect(save.mock.calls[0]![3]).toEqual([]);
+    expect(warn.mock.calls.some(([line]) => String(line).includes('"reason":"save-deadline"'))).toBe(true);
+  });
+
+  it('returns focus to the badge and keeps the comment tool on when the pin popover closes on Escape (F-028)', async () => {
+    const pin: PreviewComment = {
+      id: 'cmt-focus', projectId: 'p1', conversationId: 'c1', filePath: browserCommentFilePath('https://example.com'),
+      elementId: 'dom:#hero', selector: '#hero', label: 'div', text: 'Hero', htmlHint: '<div>',
+      position: { x: 10, y: 10, width: 100, height: 40 }, note: 'Hero note', status: 'open',
+      pinSeq: 5, createdAt: 1, updatedAt: 1,
+    };
+    const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com"
+      previewComments={[pin]} onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={savePreviewCommentMock()} />);
+    const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    webview.executeJavaScript = vi.fn(async (script: string) => script.includes('const targets =')
+      ? Array.from(script.matchAll(/"key":"([^"]+)"/g), (match) => ({ key: match[1],
+        elementId: pin.elementId, selector: pin.selector, label: pin.label, text: '', htmlHint: pin.htmlHint,
+        position: pin.position, viewport: { width: 300, height: 200 } }))
+      : new Promise(() => {}));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    fireEvent.click(await screen.findByRole('button', { name: 'Open pin #5: div' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Annotation' });
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Annotation' })).toBeNull());
+    // Closing the popover must not strand keyboard focus on <body>: it goes
+    // back to the badge the pin was opened from, which stays mounted because
+    // the comment tool stays on (PC2) and the panel returns to pick mode.
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open pin #5: div' }));
+    expect(screen.getByRole('button', { name: 'Annotate' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('comment-side-dock')).toBeTruthy();
+    expect(container.querySelector('.db-tool-hint')?.textContent).toBe('Click an element to comment');
+  });
+
+  it('requests saved pins position-only so the poll skips the per-pin mask walk', () => {
+    const pins = [
+      { id: 'c1', elementId: 'hero', selector: '#hero' },
+      { id: 'c2', elementId: 'cta', selector: 'main > a.cta' },
+    ] as PreviewComment[];
+    expect(browserPinTargetsFromSignature(browserPinTargetSignature(pins))).toEqual([
+      { key: 'comment:c1', elementId: 'hero', selector: '#hero', positionOnly: true },
+      { key: 'comment:c2', elementId: 'cta', selector: 'main > a.cta', positionOnly: true },
+    ]);
+    expect(browserPinTargetsFromSignature('')).toEqual([]);
+  });
+
+  it('clamps overlay bounds to the guest viewport on every edge', () => {
+    const snapshot = (position: BrowserElementSnapshot['position'], viewport?: BrowserElementSnapshot['viewport']): BrowserElementSnapshot => ({
+      filePath: browserCommentFilePath('https://example.com'), elementId: 'dom:#x', selector: '#x', label: 'div', text: '', htmlHint: '<div>',
+      position, ...(viewport ? { viewport } : {}),
+    });
+    const viewport = { width: 300, height: 200 };
+    expect(browserClampedOverlayBounds(snapshot({ x: 20, y: -10, width: 50, height: 40 }, viewport)))
+      .toEqual({ left: 20, top: 0, width: 50, height: 30, clampedRight: false, clampedTop: true });
+    expect(browserClampedOverlayBounds(snapshot({ x: 400, y: 20, width: 50, height: 40 }, viewport))).toBeNull();
+    expect(browserClampedOverlayBounds(snapshot({ x: 20, y: 250, width: 50, height: 40 }, viewport))).toBeNull();
+    expect(browserClampedOverlayBounds(snapshot({ x: 20, y: 20, width: 50, height: 40 }, viewport)))
+      .toEqual({ left: 20, top: 20, width: 50, height: 40, clampedRight: false, clampedTop: false });
+    expect(browserClampedOverlayBounds(snapshot({ x: 20, y: 20, width: 500, height: 40 })))
+      .toEqual({ left: 20, top: 20, width: 500, height: 40, clampedRight: false, clampedTop: false });
+  });
+
+  it('lists an unmeasured pin in the dock without a marker and opens it for edit from its row', async () => {
+    const pin: PreviewComment = {
+      id: 'cmt-gone', projectId: 'p1', conversationId: 'c1', filePath: browserCommentFilePath('https://example.com'),
+      elementId: 'dom:#gone', selector: '#gone', label: 'p', text: 'Gone', htmlHint: '<p>',
+      position: { x: 10, y: 10, width: 100, height: 40 }, note: 'Element navigated away', status: 'open',
+      pinSeq: 3, createdAt: 1, updatedAt: 1,
+    };
+    const save = savePreviewCommentMock();
+    const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com"
+      previewComments={[pin]} onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={save}
+      onRemovePreviewComment={async () => true} />);
+    const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    // The selector no longer matches anything on the page: the measure returns nothing.
+    webview.executeJavaScript = vi.fn(async (script: string) => script.includes('const targets =') ? [] : new Promise(() => {}));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    await waitFor(() => expect(webview.executeJavaScript).toHaveBeenCalled());
+    expect(screen.queryByTestId('db-comment-marker-cmt-gone')).toBeNull();
+    const row = container.querySelector('.comment-side-item[data-comment-id="cmt-gone"]')!;
+    expect(row).toBeTruthy();
+    fireEvent.click(row);
+    const input = await screen.findByPlaceholderText('Comment on this element…') as HTMLTextAreaElement;
+    expect(input.value).toBe('Element navigated away');
+    // Reopened from the row: Save updates that pin instead of creating a second one.
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy();
+    fireEvent.change(input, { target: { value: 'Element navigated away (checked)' } });
+    await act(async () => { fireEvent.click(screen.getByTestId('comment-popover-save')); });
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![1]).toBe('Element navigated away (checked)');
+    expect(save.mock.calls[0]![4]).toBe('cmt-gone');
+  });
+
+  it('reopens a persisted pin from its badge and saves to the same id', async () => {
+    const pin: PreviewComment = {
+      id: 'cmt-badge', projectId: 'p1', conversationId: 'c1', filePath: browserCommentFilePath('https://example.com'),
+      elementId: 'dom:#hero', selector: '#hero', label: 'div', text: 'Hero', htmlHint: '<div>',
+      position: { x: 10, y: 10, width: 100, height: 40 }, note: 'Hero note', status: 'open',
+      pinSeq: 4, createdAt: 1, updatedAt: 1,
+    };
+    const save = savePreviewCommentMock();
+    const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com"
+      previewComments={[pin]} onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={save}
+      onRemovePreviewComment={async () => true} />);
+    const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    // Saved pins are measured position-only (no text/style); the live rect is
+    // moved on purpose so the reopened target proves it took the fresh geometry.
+    // The full `active` measurement that follows a reopen is left hanging, as
+    // on a slow guest, so Save lands inside that window.
+    const moved = { x: 50, y: 60, width: 100, height: 40 };
+    webview.executeJavaScript = vi.fn(async (script: string) => script.includes('const targets =') && !script.includes('"key":"active"')
+      ? Array.from(script.matchAll(/"key":"([^"]+)"/g), (match) => ({ key: match[1],
+        elementId: pin.elementId, selector: pin.selector, label: pin.label, text: '', htmlHint: pin.htmlHint,
+        position: moved, viewport: { width: 300, height: 200 } }))
+      : new Promise(() => {}));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    const badge = await screen.findByRole('button', { name: 'Open pin #4: div' });
+    expect(badge.getAttribute('aria-current')).toBeNull();
+    fireEvent.click(badge);
+    const input = await screen.findByPlaceholderText('Comment on this element…') as HTMLTextAreaElement;
+    expect(input.value).toBe('Hero note');
+    expect(screen.getByRole('button', { name: 'Open pin #4: div' }).getAttribute('aria-current')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy();
+    fireEvent.change(input, { target: { value: 'Hero note, tightened' } });
+    await act(async () => { fireEvent.click(screen.getByTestId('comment-popover-save')); });
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]![1]).toBe('Hero note, tightened');
+    expect(save.mock.calls[0]![4]).toBe('cmt-badge');
+    // Fresh geometry from the live pin, element text from the row: the
+    // position-only measurement must not blank what the row already knows.
+    expect(save.mock.calls[0]![0]).toMatchObject({ position: moved, text: 'Hero' });
+    expect(screen.getAllByTestId(/^db-comment-marker-/)).toHaveLength(1);
   });
 
   it('keeps external browser mutation and annotation tools hidden', () => {
@@ -992,7 +1410,7 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       id: 'comment-fallback-1',
       projectId: 'proj-browser-fallback-comments',
       conversationId: 'conv-1',
-      filePath: 'browser:https://example.com',
+      filePath: browserCommentFilePath('https://example.com'),
       elementId: 'dom:#card',
       selector: '#card',
       label: 'article.card',
@@ -1092,7 +1510,7 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       id: 'comment-1',
       projectId: 'proj-webview-live-comment-marker',
       conversationId: 'conv-1',
-      filePath: 'browser:https://example.com',
+      filePath: browserCommentFilePath('https://example.com'),
       elementId: 'dom:#card',
       selector: '#card',
       label: 'article.card',
@@ -1259,8 +1677,9 @@ describe('DesignBrowserPanel compact style edits', () => {
       json: async () => ({ projectId: 'style-context', conversationId: 'c1', id: '11111111-1111-4111-8111-111111111111', replayed: false }) }));
     vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { queueMicrotask(() => callback(0)); return 1; });
+    const save = savePreviewCommentMock();
     const { container } = render(<DesignBrowserPanel projectId="style-context" conversationId="c1" browserTabId="tab-style"
-      initialUrl="https://example.com" onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+      initialUrl="https://example.com" onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={save} />);
     const node = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
     const target = { elementId: 'dom:#heading', selector: '#heading', label: 'h1', text: 'Heading', htmlHint: 'h1',
       style: { color: '#0D0C22' }, position: { x: 10, y: 10, width: 100, height: 30 },
@@ -1290,12 +1709,12 @@ describe('DesignBrowserPanel compact style edits', () => {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
       expect(screen.getByRole('textbox', { name: 'Element text' })).toHaveProperty('value', 'hello ');
     }
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add to chat draft' })); });
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/edge-annotations/draft'))).toBe(true));
-    const post = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/edge-annotations/draft'))!;
-    const payload = JSON.parse((post as unknown as [string, { body: string }])[1].body);
-    expect(payload.target.style.color).toBe(applied ? '#ff0000' : '#0D0C22');
-    expect(payload.note).toBe('Update the heading');
+    await act(async () => { fireEvent.click(screen.getByTestId('comment-popover-save')); });
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    const [savedTarget, note, attachAfterSave] = save.mock.calls[0]!;
+    expect(savedTarget.style?.color).toBe(applied ? '#ff0000' : '#0D0C22');
+    expect(note).toBe('Update the heading');
+    expect(attachAfterSave).toBe(true);
   });
 
   it('awaits capture cleanup and rejects same-node navigation before applying a style', async () => {

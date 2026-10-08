@@ -94,6 +94,8 @@ import {
   type PendingBrowserAnnotation,
   type ProjectWorkspaceScope,
   type ResearchOptions,
+  BROWSER_ANNOTATION_SCREENSHOT_DIR,
+  isBrowserCommentFileKey,
 } from '@open-design/contracts';
 import {
   anonymizeArtifactId,
@@ -6235,7 +6237,9 @@ export function ProjectView({
         const result = await uploadProjectFiles(
           project.id,
           images,
-          undefined,
+          // Browser-pin crops share one project directory with the Clipper's,
+          // so every surface stores (and replaces) pin screenshots in one place.
+          isBrowserCommentFileKey(target.filePath) ? BROWSER_ANNOTATION_SCREENSHOT_DIR : undefined,
           projectRunWorkspaceContext,
         );
         if (result.uploaded.length !== images.length) {
@@ -6258,7 +6262,12 @@ export function ProjectView({
         commentConversationId,
         {
           ...(commentId ? { id: commentId } : {}),
-          target,
+          // Browser pins carry their surface like Clipper pins do (`source:
+          // 'clipper'`), so a consumer can tell the two apart later. A pin
+          // another surface made keeps its own stamp when edited here.
+          target: isBrowserCommentFileKey(target.filePath)
+            ? { ...target, metadata: { ...target.metadata, source: target.metadata?.source ?? 'browser' } }
+            : target,
           note,
           ...(attachments.length > 0 ? { attachments } : {}),
         },
@@ -6401,6 +6410,24 @@ export function ProjectView({
   const detachPreviewComment = useCallback((commentId: string) => {
     setAttachedComments((current) => removeAttachedComment(current, commentId));
   }, []);
+
+  /**
+   * "Send selected" from a canvas / side dock: stage every pin into the
+   * composer draft as numbered chips. Nothing is queued and nothing is
+   * deleted — the user finishes the message and sends it as one turn.
+   */
+  const stagePreviewComments = useCallback((comments: PreviewComment[]) => {
+    if (comments.length === 0) return;
+    setAttachedComments((current) =>
+      comments.reduce((acc, comment) => mergeAttachedComments(acc, comment), current),
+    );
+    setProjectActionsToast({
+      message: t('chat.comments.attached'),
+      details: null,
+      tone: 'success',
+      ttlMs: 2500,
+    });
+  }, [t]);
 
   const patchAttachedStatuses = useCallback(
     async (attachments: ChatCommentAttachment[], status: PreviewComment['status']) => {
@@ -14130,11 +14157,6 @@ export function ProjectView({
         ) : null}
         <FileWorkspace
           projectId={project.id}
-          onAnnotationDraftCreated={(receipt) => {
-            if (receipt.projectId === project.id && receipt.conversationId === activeConversationId) {
-              refreshAnnotationDraftRef.current?.();
-            }
-          }}
           projectName={currentProject.name}
           viewerOnly={projectMutationReadOnly}
           materializationPending={projectCollab.materializationPending}
@@ -14184,6 +14206,7 @@ export function ProjectView({
           onRemovePreviewComment={removePreviewComment}
           onReorderPreviewComment={reorderPreviewComment}
           onSendBoardCommentAttachments={handleSendBoardCommentAttachments}
+          onStagePreviewComments={stagePreviewComments}
           onBrandExtractionStopRequest={projectIsProgrammaticBrandExtraction ? handleStop : undefined}
           onRequestBrowserUsePrompt={handleBrowserUsePrompt}
           onPluginFolderAgentAction={handlePluginFolderAgentAction}

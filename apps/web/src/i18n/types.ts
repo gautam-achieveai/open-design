@@ -3281,7 +3281,8 @@ export interface Dict {
   'designBrowser.status.commentSaved': string;
   'designBrowser.status.commentSendingUnavailable': string;
   'designBrowser.comments.aria': string;
-  'designBrowser.comments.openFor': string;
+  'designBrowser.comments.openPin': string;
+  'designBrowser.comments.untitled': string;
   'designBrowser.comment.dialog': string;
   'designBrowser.comment.elementFallback': string;
   'designBrowser.comment.close': string;

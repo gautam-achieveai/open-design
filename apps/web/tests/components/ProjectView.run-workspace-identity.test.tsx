@@ -240,18 +240,13 @@ vi.mock('../../src/components/FileWorkspace', async () => {
     DESIGN_SYSTEM_TAB: '__design_system__',
     FileWorkspace: ({
       onTabsStateChange,
-      onAnnotationDraftCreated,
     }: {
-      onAnnotationDraftCreated?: (receipt: { projectId: string; conversationId: string; id: string; replayed: boolean }) => void;
       onTabsStateChange?: (state: { tabs: string[]; active: string | null }) => void;
     }) => {
       const { workspaceContext } = useProjectCollabContext();
       resourceContextObservations.push(workspaceContext);
       return (
         <div data-testid="file-workspace">
-          <button data-testid="native-annotation-receipt" onClick={() => onAnnotationDraftCreated?.({
-            projectId: PROJECT_ID, conversationId: 'conv-second', id: '11111111-1111-4111-8111-111111111111', replayed: false,
-          })}>Stage native annotation</button>
           <button
             type="button"
             data-testid="queue-tab-write"
@@ -1674,7 +1669,7 @@ describe('a Home auto-send observes a project billing scope that settles after m
     expect(window.sessionStorage.getItem(`od:auto-send-first:${PROJECT_ID}`)).toBeNull();
   });
 
-  it.each(['event', 'focus', 'native receipt'] as const)('refreshes browser annotations through %s after a conversation becomes active', async (signal) => {
+  it.each(['event', 'focus'] as const)('refreshes browser annotations through %s after a conversation becomes active', async (signal) => {
     const source = readFileSync(resolve('src/components/ProjectView.tsx'), 'utf8');
     const callback = source.slice(source.indexOf('const handleProjectEvent = useCallback('),
       source.indexOf('// A bound project must not open a headerless EventSource'));
@@ -1725,10 +1720,8 @@ describe('a Home auto-send observes a project billing scope that settles after m
           type: 'annotation-draft-available', projectId: PROJECT_ID,
           conversationId: note.conversationId, at: Date.now(),
         });
-      } else if (signal === 'focus') {
-        window.dispatchEvent(new Event('focus'));
       } else {
-        fireEvent.click(screen.getByTestId('native-annotation-receipt'));
+        window.dispatchEvent(new Event('focus'));
       }
     });
     await waitFor(() => expect(chatPaneSpy.mock.calls.at(-1)?.[0].annotationDrafts).toEqual([note]));

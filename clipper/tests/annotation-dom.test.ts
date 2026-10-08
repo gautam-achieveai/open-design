@@ -38,11 +38,11 @@ test('open-shadow internals retain root-local selectors and suppress sensitive h
     color.value = '#112233'; color.dispatchEvent(new app.window.Event('change'));
     (review.querySelector('textarea') as HTMLTextAreaElement).value = 'Improve button';
     (review.querySelector('[data-act="send"]') as HTMLElement).click();
-    await app.waitFor(() => app.messages.some(message => message.type === 'odAnnotation:submit'));
+    await app.waitFor(() => app.messages.some(message => message.type === 'odAnnotation:savePin'));
     const reviews = app.messages.filter(message => message.type === 'odAnnotation:review');
     assert.equal(reviews.length, 2);
-    assert.deepEqual(app.messages.find(message => message.type === 'odAnnotation:submit')!.target, reviews[1].target);
-    assert.equal(app.messages.find(message => message.type === 'odAnnotation:submit')!.omitScreenshot, true);
+    assert.deepEqual(app.messages.find(message => message.type === 'odAnnotation:savePin')!.target, reviews[1].target);
+    assert.equal(app.messages.find(message => message.type === 'odAnnotation:savePin')!.omitScreenshot, true);
   } finally { app.window.close(); }
 });
 
@@ -56,13 +56,17 @@ test('editable controls remain annotatable while their entered contents are omit
   (review.querySelector('textarea') as HTMLTextAreaElement).value = 'Improve editor design';
   review.querySelector('textarea')!.dispatchEvent(new fixture.window.Event('input', { bubbles: true }));
   (review.querySelector('[data-act="send"]') as HTMLElement).click();
-  await fixture.waitFor(() => fixture.messages.some(message => message.type === 'odAnnotation:submit'));
+  await fixture.waitFor(() => fixture.messages.some(message => message.type === 'odAnnotation:savePin'));
 });
 
-function page(html: string, options: { captureError?: string; nearbyField?: boolean; submitError?: string; recaptureGate?: Promise<void> } = {}) {
+type Pin = { id: string; pinSeq: number; selector: string; elementId?: string; note?: string; metadata?: Record<string, unknown> };
+
+function page(html: string, options: { captureError?: string; nearbyField?: boolean; submitError?: string; recaptureGate?: Promise<void>; pins?: Pin[] | ((call: number) => Pin[]); savePinResponse?: Record<string, unknown> } = {}) {
   const dom = new JSDOM(`<!doctype html><html><head><title>Example</title></head><body>${html}</body></html>`, {
     url: 'https://app.example.test/page?view=designer&access_token=private#panel=hero&code=secret',
     runScripts: 'outside-only',
+    // The pin layer skips layout while the document is hidden, which is jsdom's default.
+    ...(options.pins ? { pretendToBeVisual: true } : {}),
   });
   const { window } = dom;
   if (options.submitError) {
@@ -87,7 +91,17 @@ function page(html: string, options: { captureError?: string; nearbyField?: bool
     return { x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
   };
   document.elementsFromPoint = () => [document.getElementById('save')!] as Element[];
-  window.requestAnimationFrame = (callback) => { queueMicrotask(() => callback(0)); return 1; };
+  // rAF as a microtask, with a working cancel so the layer's pagehide unbind
+  // stops a queued layout the way a browser does.
+  const frames = new Set<number>();
+  let frameId = 0;
+  window.requestAnimationFrame = (callback) => {
+    const id = ++frameId;
+    frames.add(id);
+    queueMicrotask(() => { if (frames.delete(id)) callback(0); });
+    return id;
+  };
+  window.cancelAnimationFrame = (id) => { frames.delete(id); };
   Object.defineProperty(window, 'innerWidth', { value: 800 });
   Object.defineProperty(window, 'innerHeight', { value: 600 });
   const chrome = {
@@ -101,8 +115,13 @@ function page(html: string, options: { captureError?: string; nearbyField?: bool
           if (messages.filter(item => item.type === 'odAnnotation:capture').length > 1) await options.recaptureGate;
           return options.captureError ? { ok: false, error: options.captureError } : { ok: true, cropDataUrl: screenshot };
         }
-        if (message.type === 'odAnnotation:submit') return options.submitError
-          ? { ok: false, error: options.submitError } : { ok: true, messageId: 'message-1' };
+        if (message.type === 'odAnnotation:pins') {
+          const call = messages.filter((item) => item.type === 'odAnnotation:pins').length;
+          const comments = typeof options.pins === 'function' ? options.pins(call) : options.pins;
+          return comments ? { ok: true, filePath: 'browser:' + window.location.href, comments } : { ok: false, error: 'not paired' };
+        }
+        if (message.type === 'odAnnotation:savePin') return options.savePinResponse ?? (options.submitError
+          ? { ok: false, error: options.submitError } : { ok: true, comment: { id: 'pin-1', pinSeq: 1 } });
         return { ok: true };
       },
     },
@@ -139,7 +158,7 @@ function page(html: string, options: { captureError?: string; nearbyField?: bool
   const message = (value: Record<string, unknown>) => new Promise<{ ok: boolean }>((resolve) => {
     listener?.(value, {}, (result) => resolve(result as { ok: boolean }));
   });
-  return { window, document, messages, start, waitFor, inspect, message };
+  return { window, document, messages, start, waitFor, inspect, message, shadowRoots };
 }
 
 test('inspection screenshot is available with visible fields whose pixels are masked', () => {
@@ -204,11 +223,11 @@ test('reviewed DOM evidence contains safe nested text but not hidden, form, edit
     assert.equal((review.querySelector('[data-act="send"]') as HTMLButtonElement).disabled, false);
     (review.querySelector('textarea') as HTMLTextAreaElement).value = 'Make this clearer';
     (review.querySelector('[data-act="send"]') as HTMLButtonElement).click();
-    await app.waitFor(() => app.messages.some((message) => message.type === 'odAnnotation:submit'));
-    const posted = app.messages.find((message) => message.type === 'odAnnotation:submit')!;
+    await app.waitFor(() => app.messages.some((message) => message.type === 'odAnnotation:savePin'));
+    const posted = app.messages.find((message) => message.type === 'odAnnotation:savePin')!;
     assert.deepEqual(posted.target, captured.target);
     assert.equal(posted.note, 'Make this clearer');
-    assert.equal(app.messages.filter((message) => message.type === 'odAnnotation:submit').length, 1);
+    assert.equal(app.messages.filter((message) => message.type === 'odAnnotation:savePin').length, 1);
   } finally { app.window.close(); }
 });
 
@@ -225,8 +244,8 @@ test('empty sign-in inputs show a masked crop without copying field attributes o
     assert.equal(app.window.location.pathname, '/signin');
     (review.querySelector('textarea') as HTMLTextAreaElement).value = 'Improve the password field styling';
     (review.querySelector('[data-act="send"]') as HTMLButtonElement).click();
-    await app.waitFor(() => app.messages.some((message) => message.type === 'odAnnotation:submit'));
-    const sent = app.messages.find((message) => message.type === 'odAnnotation:submit')!;
+    await app.waitFor(() => app.messages.some((message) => message.type === 'odAnnotation:savePin'));
+    const sent = app.messages.find((message) => message.type === 'odAnnotation:savePin')!;
     assert.equal(sent.note, 'Improve the password field styling');
     assert.equal(sent.target?.url, 'https://app.example.test/signin?view=form');
     assert.equal(sent.target?.domOutline, 'input');
@@ -244,8 +263,8 @@ test('filled sign-in inputs stage design feedback without capturing typed pixels
     assert.equal((review.querySelector('.preview') as HTMLImageElement).src, screenshot);
     (review.querySelector('textarea') as HTMLTextAreaElement).value = 'Increase the text box contrast';
     (review.querySelector('[data-act="send"]') as HTMLButtonElement).click();
-    await app.waitFor(() => app.messages.some((message) => message.type === 'odAnnotation:submit'));
-    const sent = app.messages.find((message) => message.type === 'odAnnotation:submit')!;
+    await app.waitFor(() => app.messages.some((message) => message.type === 'odAnnotation:savePin'));
+    const sent = app.messages.find((message) => message.type === 'odAnnotation:savePin')!;
     assert.equal(sent.omitScreenshot, false);
     assert.equal(sent.target?.domOutline, 'input');
     assert.equal(sent.target?.text, '');
@@ -265,8 +284,8 @@ test('textareas and selects remain selectable without serializing their contents
       assert.equal(app.messages.filter((message) => message.type === 'odAnnotation:capture').length, 1);
       (review.querySelector('textarea') as HTMLTextAreaElement).value = 'Improve this control';
       (review.querySelector('[data-act="send"]') as HTMLButtonElement).click();
-      await app.waitFor(() => app.messages.some((message) => message.type === 'odAnnotation:submit'));
-      const sent = app.messages.find((message) => message.type === 'odAnnotation:submit')!;
+      await app.waitFor(() => app.messages.some((message) => message.type === 'odAnnotation:savePin'));
+      const sent = app.messages.find((message) => message.type === 'odAnnotation:savePin')!;
       assert.equal(sent.target?.text, '');
       assert.doesNotMatch(JSON.stringify(sent.target), /Private draft text|Private choice|private/);
     } finally { app.window.close(); }
@@ -319,10 +338,10 @@ test('style-only feedback recaptures the updated target and restores temporary p
     assert.equal(app.window.getComputedStyle(app.document.getElementById('save')!).fontSize, '24px');
     assert.equal((review.querySelector('.preview') as HTMLImageElement).hidden, true);
     (review.querySelector('[data-act="send"]') as HTMLButtonElement).click();
-    await app.waitFor(() => app.messages.some(message => message.type === 'odAnnotation:submit'));
+    await app.waitFor(() => app.messages.some(message => message.type === 'odAnnotation:savePin'));
     const captures = app.messages.filter(message => message.type === 'odAnnotation:capture');
     assert.equal(captures.length, 2);
-    const sent = app.messages.find(message => message.type === 'odAnnotation:submit')!;
+    const sent = app.messages.find(message => message.type === 'odAnnotation:savePin')!;
     assert.deepEqual(sent.target, captures[1].target);
     assert.match(sent.note!, /fontSize: 24px/);
     assert.equal(sent.omitScreenshot, false);
@@ -347,7 +366,7 @@ test('cancel restores preview styles and text while preserving concurrent page s
     (review.querySelector('[data-act="cancel"]') as HTMLButtonElement).click();
     assert.equal(element.textContent, 'Save');
     assert.equal(element.style.fontSize, '30px');
-    assert.equal(app.messages.some(message => message.type === 'odAnnotation:submit'), false);
+    assert.equal(app.messages.some(message => message.type === 'odAnnotation:savePin'), false);
   } finally { app.window.close(); }
 });
 
@@ -365,7 +384,7 @@ test('unsafe CSS is rejected and corrected styles allow feedback without submitt
     assert.equal((review.querySelector('[data-act="send"]') as HTMLButtonElement).disabled, false);
     app.document.getElementById('save')!.textContent = 'Changed by page';
     (review.querySelector('[data-act="send"]') as HTMLButtonElement).click();
-    assert.equal(app.messages.some(message => message.type === 'odAnnotation:submit'), false);
+    assert.equal(app.messages.some(message => message.type === 'odAnnotation:savePin'), false);
   } finally { app.window.close(); }
 });
 
@@ -420,7 +439,7 @@ test('navigation during preview recapture prevents posting and leaves the stale 
     app.window.history.replaceState(null, '', '/different-page');
     release();
     await new Promise<void>(resolve => setImmediate(resolve));
-    assert.equal(app.messages.some(message => message.type === 'odAnnotation:submit'), false);
+    assert.equal(app.messages.some(message => message.type === 'odAnnotation:savePin'), false);
     assert.equal((review.querySelector('[data-act="close"]') as HTMLButtonElement).disabled, false);
     (review.querySelector('[data-act="close"]') as HTMLButtonElement).click();
     assert.equal(app.document.getElementById('od-clipper-annotation'), null);
@@ -450,7 +469,7 @@ test('Cancel discards the optional screenshot and closes the review', async () =
     assert.equal((review.querySelector('[data-act="send"]') as HTMLButtonElement).disabled, false);
     (review.querySelector('[data-act="cancel"]') as HTMLButtonElement).click();
     assert.equal(app.document.getElementById('od-clipper-annotation'), null);
-    assert.equal(app.messages.filter((message) => message.type === 'odAnnotation:submit').length, 0);
+    assert.equal(app.messages.filter((message) => message.type === 'odAnnotation:savePin').length, 0);
     assert.equal(app.messages.at(-1)?.type, 'odAnnotation:discard');
   } finally { app.window.close(); }
 });
@@ -473,8 +492,8 @@ test('review allows posting note and context after a capture failure', async () 
     assert.equal((review.querySelector('[data-act="send"]') as HTMLButtonElement).disabled, false);
     (review.querySelector('textarea') as HTMLTextAreaElement).value = 'Make it clearer';
     (review.querySelector('[data-act="send"]') as HTMLButtonElement).click();
-    await app.waitFor(() => app.messages.some((message) => message.type === 'odAnnotation:submit'));
-    assert.equal(app.messages.find((message) => message.type === 'odAnnotation:submit')?.omitScreenshot, true);
+    await app.waitFor(() => app.messages.some((message) => message.type === 'odAnnotation:savePin'));
+    assert.equal(app.messages.find((message) => message.type === 'odAnnotation:savePin')?.omitScreenshot, true);
   } finally { app.window.close(); }
 });
 
@@ -617,4 +636,151 @@ test('credential-shaped direct text is omitted without refusing the design revie
     assert.doesNotMatch(captured.target!.domOutline, /private/);
     assert.equal(app.messages.filter((message) => message.type === 'odAnnotation:capture').length, 1);
   } finally { app.window.close(); }
+});
+
+// DEFECT-3 (manual test, step 6b): a child-frame pin's selector is relative to
+// the child document. The top document must not badge whichever of its own
+// elements happens to match it.
+test('a scoped (child-frame) pin never draws its badge on a top-document element', async () => {
+  const scope = { frame: 'child', url: 'https://app.example.test/child.html', selectorRoot: 'document', shadowHosts: [], screenshot: 'not-supported' };
+  const app = page('<p id="save">stray top paragraph</p>', { pins: [
+    { id: 'pin-top', pinSeq: 1, selector: 'body > p', metadata: { source: 'clipper' } },
+    { id: 'pin-child', pinSeq: 5, selector: 'body > p', metadata: { source: 'clipper', scope } },
+  ] });
+  try {
+    await app.waitFor(() => Boolean(app.shadowRoots.get('od-clipper-pins')?.querySelector('.pin:not([hidden])')));
+    const badges = Array.from(app.shadowRoots.get('od-clipper-pins')!.querySelectorAll('.pin'))
+      .map((badge) => [badge.textContent, (badge as HTMLElement).hidden]);
+    assert.deepEqual(badges, [['1', false], ['5', true]]);
+  } finally {
+    // jsdom's close() tears the document down without `pagehide`; the layer's
+    // mutation observer must be gone before that or it sees no `document`.
+    app.window.dispatchEvent(new app.window.Event('pagehide'));
+    app.window.close();
+  }
+});
+
+test('badges are numbered from pinSeq and hide once their element leaves the page', async () => {
+  const app = page('<p id="save">pinned copy</p>', { pins: [
+    { id: 'pin-a', pinSeq: 4, selector: 'body > p', note: 'tighten copy', metadata: { source: 'clipper' } },
+    { id: 'pin-b', pinSeq: 9, selector: 'body > em', metadata: { source: 'clipper' } },
+  ] });
+  try {
+    await app.waitFor(() => Boolean(app.shadowRoots.get('od-clipper-pins')?.querySelector('.pin:not([hidden])')));
+    const layer = app.shadowRoots.get('od-clipper-pins')!;
+    const badges = () => Array.from(layer.querySelectorAll('.pin'))
+      .map((badge) => [badge.textContent, (badge as HTMLElement).hidden]);
+    assert.deepEqual(badges(), [['4', false], ['9', true]]);
+    const first = layer.querySelector('.pin') as HTMLElement;
+    assert.equal(first.getAttribute('aria-label'), 'annotationPinLabel');
+    assert.equal(first.title, 'tighten copy');
+    // Rect is 40,40 → badge sits 10px up-left of the element.
+    assert.deepEqual([first.style.left, first.style.top], ['30px', '30px']);
+    app.document.getElementById('save')!.remove();
+    await app.waitFor(() => badges()[0][1] === true);
+    assert.deepEqual(badges(), [['4', true], ['9', true]]);
+  } finally {
+    app.window.dispatchEvent(new app.window.Event('pagehide'));
+    app.window.close();
+  }
+});
+
+const savedPin = { id: 'pin-a', pinSeq: 4, selector: 'body > p', note: 'tighten copy', metadata: { source: 'clipper' } };
+async function openEditor(app: ReturnType<typeof page>) {
+  await app.waitFor(() => Boolean(app.shadowRoots.get('od-clipper-pins')?.querySelector('.pin:not([hidden])')));
+  (app.shadowRoots.get('od-clipper-pins')!.querySelector('.pin') as HTMLElement).click();
+  await app.waitFor(() => Boolean(app.shadowRoots.get('od-clipper-annotation')));
+  return app.shadowRoots.get('od-clipper-annotation')!;
+}
+const closePage = (app: ReturnType<typeof page>) => {
+  app.window.dispatchEvent(new app.window.Event('pagehide'));
+  app.window.close();
+};
+
+test('clicking a badge edits that pin: note pre-filled, Enter saves with the pin id and no new crop', async () => {
+  const app = page('<p id="save">pinned copy</p>', { pins: [savedPin] });
+  try {
+    const editor = await openEditor(app);
+    const textarea = editor.querySelector('textarea') as HTMLTextAreaElement;
+    assert.equal(textarea.value, 'tighten copy');
+    assert.ok(editor.querySelector('[data-act="delete"]'));
+    assert.equal(app.messages.some((message) => message.type === 'odAnnotation:capture'), false);
+    textarea.value = 'tighten copy more';
+    textarea.dispatchEvent(new app.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await app.waitFor(() => app.messages.some((message) => message.type === 'odAnnotation:savePin'));
+    const saved = app.messages.find((message) => message.type === 'odAnnotation:savePin') as Sent & { id?: string };
+    assert.equal(saved.id, 'pin-a');
+    assert.equal(saved.omitScreenshot, true);
+    assert.equal(saved.note, 'tighten copy more');
+    // The layer re-lists after a save.
+    await app.waitFor(() => app.messages.filter((message) => message.type === 'odAnnotation:pins').length === 2);
+  } finally { closePage(app); }
+});
+
+test('a pin removed elsewhere reports as gone on save, and Delete removes the pin then re-lists', async () => {
+  const gone = page('<p id="save">pinned copy</p>', { pins: [savedPin], savePinResponse: { ok: false, status: 404, error: 'pin not found on the paired page' } });
+  try {
+    const editor = await openEditor(gone);
+    (editor.querySelector('[data-act="send"]') as HTMLElement).click();
+    await gone.waitFor(() => editor.querySelector('.submit-error')!.textContent === 'annotationPinGone');
+    await gone.waitFor(() => gone.messages.filter((message) => message.type === 'odAnnotation:pins').length === 2);
+    assert.ok(gone.shadowRoots.get('od-clipper-annotation')!.querySelector('textarea'), 'editor stays open with the note');
+  } finally { closePage(gone); }
+  const removed = page('<p id="save">pinned copy</p>', { pins: [savedPin] });
+  try {
+    const editor = await openEditor(removed);
+    (editor.querySelector('[data-act="delete"]') as HTMLElement).click();
+    await removed.waitFor(() => removed.messages.some((message) => message.type === 'odAnnotation:deletePin'));
+    assert.equal((removed.messages.find((message) => message.type === 'odAnnotation:deletePin') as Sent & { id?: string }).id, 'pin-a');
+    await removed.waitFor(() => removed.messages.filter((message) => message.type === 'odAnnotation:pins').length === 2);
+    assert.equal(removed.document.getElementById('od-clipper-annotation'), null, 'editor closed after delete');
+  } finally { closePage(removed); }
+});
+
+// DEFECT-5: a hash router changes the page key without re-running the content
+// script, so the previous route's badges stayed on screen.
+test('same-document navigation re-lists pins and drops the previous route badges', async () => {
+  const app = page('<p id="save">pinned copy</p>', { pins: (call) => (call === 1 ? [savedPin] : []) });
+  try {
+    await app.waitFor(() => Boolean(app.shadowRoots.get('od-clipper-pins')?.querySelector('.pin:not([hidden])')));
+    app.window.location.hash = '#route-b';
+    // jsdom queues hashchange as a timer task, beyond waitFor's setImmediate spins.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await app.waitFor(() => app.messages.filter((message) => message.type === 'odAnnotation:pins').length === 2);
+    // The layer removes its host when the new route has no pins (the harness's
+    // cached shadow root is detached, so check the document itself).
+    await app.waitFor(() => app.document.getElementById('od-clipper-pins') === null);
+    // popstate + hashchange fire for one navigation; they coalesce into one list.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(app.messages.filter((message) => message.type === 'odAnnotation:pins').length, 2);
+  } finally { closePage(app); }
+});
+
+// Review finding: closing a pin editor dropped keyboard focus to <body>
+// because the editor host is removed and the badge layer is rebuilt.
+test('closing a pin editor returns focus to its badge, or to the next badge after a delete', async () => {
+  const badge = (app: ReturnType<typeof page>) => app.shadowRoots.get('od-clipper-pins')?.activeElement as HTMLElement | null;
+  const escaped = page('<p id="save">pinned copy</p>', { pins: [savedPin] });
+  try {
+    assert.equal(escaped.shadowRoots.get('od-clipper-toast')!.getElementById('t')!.getAttribute('role'), 'status');
+    const editor = await openEditor(escaped);
+    editor.querySelector('textarea')!.dispatchEvent(new escaped.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await escaped.waitFor(() => escaped.document.getElementById('od-clipper-annotation') === null);
+    assert.equal(badge(escaped)?.dataset.id, 'pin-a', 'Escape returns focus to the badge');
+  } finally { closePage(escaped); }
+  const saved = page('<p id="save">pinned copy</p>', { pins: [savedPin] });
+  try {
+    const editor = await openEditor(saved);
+    (editor.querySelector('[data-act="send"]') as HTMLElement).click();
+    await saved.waitFor(() => saved.messages.filter((message) => message.type === 'odAnnotation:pins').length === 2);
+    await saved.waitFor(() => badge(saved)?.dataset.id === 'pin-a');
+  } finally { closePage(saved); }
+  const other = { ...savedPin, id: 'pin-b', pinSeq: 5 };
+  const removed = page('<p id="save">pinned copy</p>', { pins: (call) => (call === 1 ? [savedPin, other] : [other]) });
+  try {
+    const editor = await openEditor(removed);
+    (editor.querySelector('[data-act="delete"]') as HTMLElement).click();
+    await removed.waitFor(() => removed.messages.filter((message) => message.type === 'odAnnotation:pins').length === 2);
+    await removed.waitFor(() => badge(removed)?.dataset.id === 'pin-b');
+  } finally { closePage(removed); }
 });

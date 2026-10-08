@@ -19,6 +19,7 @@ import {
   eventsEndedWithUnfinishedWork,
   isTodoWriteToolName,
   latestTodoWriteInputFromEvents,
+  normalizeEdgeAnnotationScope,
   stripArtifactFocusMarkers,
   stripDoneMarkers,
   stripNextStepMarkers,
@@ -4543,18 +4544,31 @@ function normalizePreviewCommentAttachments(input: unknown) {
     .slice(0, 20);
 }
 
+const PREVIEW_COMMENT_SOURCES = new Set(['preview', 'browser', 'clipper']);
+
 function normalizePreviewCommentMetadata(input: unknown) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const source = PREVIEW_COMMENT_SOURCES.has((input as DbRow).source)
+    ? ((input as DbRow).source as string)
+    : undefined;
   const browser = (input as DbRow).browser;
-  if (!browser || typeof browser !== 'object' || Array.isArray(browser)) return undefined;
-  const tabId = typeof (browser as DbRow).tabId === 'string'
-    ? (browser as DbRow).tabId.trim().slice(0, 128)
-    : '';
-  const webContentsId = (browser as DbRow).webContentsId;
-  if (!tabId || !Number.isSafeInteger(webContentsId) || Number(webContentsId) <= 0) {
-    return undefined;
+  let liveBrowser: { tabId: string; webContentsId: number } | undefined;
+  if (browser && typeof browser === 'object' && !Array.isArray(browser)) {
+    const tabId = typeof (browser as DbRow).tabId === 'string'
+      ? (browser as DbRow).tabId.trim().slice(0, 128)
+      : '';
+    const webContentsId = (browser as DbRow).webContentsId;
+    if (tabId && Number.isSafeInteger(webContentsId) && Number(webContentsId) > 0) {
+      liveBrowser = { tabId, webContentsId: Number(webContentsId) };
+    }
   }
-  return { browser: { tabId, webContentsId: Number(webContentsId) } };
+  const scope = normalizeEdgeAnnotationScope((input as DbRow).scope);
+  if (!source && !liveBrowser && !scope) return undefined;
+  return {
+    ...(liveBrowser ? { browser: liveBrowser } : {}),
+    ...(source ? { source } : {}),
+    ...(scope ? { scope } : {}),
+  };
 }
 
 function cleanRequiredString(value: unknown, name: string): string {

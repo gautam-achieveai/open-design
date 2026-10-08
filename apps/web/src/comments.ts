@@ -413,13 +413,23 @@ export function commentToAttachment(
     podMembers: podMembers.length > 0 ? podMembers : undefined,
     ...(typeof comment.slideIndex === 'number' ? { slideIndex: comment.slideIndex } : {}),
     ...(comment.metadata ? { metadata: comment.metadata } : {}),
+    // Browser pins outside the top document carry where `selector` resolves.
+    ...(comment.metadata?.scope ? { scope: comment.metadata.scope } : {}),
     imageAttachments: imageAttachments.length > 0 ? imageAttachments : undefined,
     source: 'saved-comment',
   };
 }
 
+/**
+ * `order` is the number the user sees on the canvas pin and on the composer
+ * chip, so it must be the permanent `pinSeq` the daemon assigned — not the
+ * batch index — or the model's `1.` would not match the user's "#3".
+ * A row without `pinSeq` (legacy / fixture) falls back to its batch rank.
+ */
 export function commentsToAttachments(comments: PreviewComment[]): ChatCommentAttachment[] {
-  return comments.map((comment, index) => commentToAttachment(comment, index + 1));
+  return comments.map((comment, index) =>
+    commentToAttachment(comment, typeof comment.pinSeq === 'number' ? comment.pinSeq : index + 1),
+  );
 }
 
 /**
@@ -429,11 +439,13 @@ export function commentsToAttachments(comments: PreviewComment[]): ChatCommentAt
  * already have handed out for this file — mirroring its `MAX(pin_seq)+1`
  * assignment rule (`upsertPreviewComment` in apps/daemon/src/db.ts), which
  * scans every row for the project/file regardless of status — never
- * `count + 1`. Pin numbers are permanent: deleting a comment retires its
- * number, and a non-open comment (resolved / attached / applying /
- * needs_review / failed) keeps its row — and therefore its number — even
- * though the canvas renders no marker for it. Callers must therefore pass
- * the file's comments across ALL statuses, not just the open ones on screen.
+ * `count + 1`. A number is never rewritten while its row exists, and a
+ * non-open comment (resolved / attached / applying / needs_review / failed)
+ * keeps its row — and therefore its number — even though the canvas renders
+ * no marker for it. Callers must therefore pass the file's comments across
+ * ALL statuses, not just the open ones on screen. (Deleting the HIGHEST pin
+ * does let the daemon hand that number out again — there is no per-file
+ * high-water mark; see the "pin number reuse" follow-up in the ledger.)
  *
  * A comment without a server-assigned `pinSeq` yet (legacy row / test
  * fixture) contributes its creation rank (`index + 1` — callers pass

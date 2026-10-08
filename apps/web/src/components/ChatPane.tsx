@@ -6745,6 +6745,10 @@ const UserMessage = memo(UserMessageImpl);
             {commentAttachments.filter((attachment) => attachment.selectionKind !== 'visual').map((a) => (
               <span key={a.id} className="user-attachment staged-comment">
                 <span className="staged-name" title={a.comment ? `${commentTargetDisplayName(a)}: ${a.comment}` : commentTargetDisplayName(a)}>
+                  {/* Same number as the pin it came from, so "fix #2" next turn has a referent. */}
+                  {a.source === 'saved-comment' ? (
+                    <span className="staged-comment-seq" data-testid="history-comment-seq">#{a.order}</span>
+                  ) : null}
                   <strong>{commentTargetDisplayName(a)}</strong>
                   {a.comment ? <span>{a.comment}</span> : null}
                 </span>

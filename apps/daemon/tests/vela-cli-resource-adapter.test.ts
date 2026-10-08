@@ -153,6 +153,10 @@ describe('createVelaCliResourceAdapter', () => {
     for (const name of ['.git', '.ssh', '.aws', '.netrc', '.git-credentials', 'terraform.tfstate']) {
       expect(excluded).toContain(name);
     }
+    // Browser-pin screenshots sync with the project like Preview pin images:
+    // the pin rows relay to the Team, so the crops they reference must too.
+    expect(excluded).not.toContain('browser-annotations');
+    expect(excluded).not.toContain('browser-annotations/');
     const prefixAt = calls[0]!.indexOf('--exclude-prefix');
     expect(prefixAt).toBeGreaterThan(-1);
     expect(calls[0]![prefixAt + 1]).toBe('.env');

@@ -34,6 +34,7 @@ import {
 } from '@open-design/contracts';
 import {
   advanceAuthenticatedDoneCapture,
+  BROWSER_ANNOTATION_SCREENSHOT_DIR,
   isTodoWriteToolName,
   stopReasonIsTruncation,
   todoItemsFromTodoWriteInput,
@@ -942,6 +943,7 @@ import { registerTerminalRoutes } from './routes/terminal.js';
 import { registerBrowserSessionRoutes } from './routes/browser-sessions.js';
 import { registerBrowserControlRoutes } from './routes/browser-control.js';
 import { registerEdgeAnnotationRoutes } from './routes/edge-annotations.js';
+import { pairedMemberRelayContext } from './routes/project/comments.js';
 import { createEdgeAnnotationBroker } from './services/edge-annotation-broker.js';
 import { appendReviewedCliChatMessage, appendReviewedEdgeChatMessage, claimedEdgeAnnotationContexts, claimedEdgeAnnotationImages, discardPendingEdgeAnnotation, edgeChatImageForMessage, listPendingEdgeAnnotations, pendingEdgeAnnotationContext, pendingEdgeAnnotationImage, claimedEdgeAnnotationContext, storePendingEdgeAnnotation, storePendingNativeAnnotation } from './services/edge-chat-message.js';
 import { createTerminalService } from './terminals.js';
@@ -1196,6 +1198,7 @@ import {
   configuredAllowedOrigins,
   isAllowedBrowserOrigin,
   isLocalSameOrigin,
+  isEdgeAnnotationExtensionRequest,
   isZeroConfigClipperLibraryRequest,
   parseHostHeader,
 } from './origin-validation.js';
@@ -3431,11 +3434,10 @@ export async function startServer({
     }
 
     // Pairing gives an extension an expiring project-and-tab capability. Only
-    // these exact operations may reach their own Origin + capability checks;
-    // the Library's zero-config extension trust does not extend to comments.
-    if ((/^\/edge-annotations\/(?:redeem|status|submit|revoke)$/.test(req.path)
-      || /^\/edge-annotations\/inspect\/(?:poll|result)$/.test(req.path))
-      && (req.method === 'POST' || req.method === 'OPTIONS')) {
+    // the operations listed in origin-validation.ts may reach their own Origin
+    // + capability checks; the Library's zero-config extension trust does not
+    // extend to comments.
+    if (isEdgeAnnotationExtensionRequest(req.method, req.path)) {
       return next();
     }
 
@@ -8668,6 +8670,17 @@ export async function startServer({
     browserControl,
     authorizeProjectRequest,
   });
+  const clipperPinRelayContext = (
+    projectId: string,
+    workspace?: { workspaceId: string; workspaceMemberId: string },
+  ) => pairedMemberRelayContext(
+    workspace,
+    getWorkspaceProjectByProjectId(db, projectId),
+    (headers) => verifyExplicitWorkspaceRequestContext(
+      { req: { get: (name: string) => headers[name.toLowerCase()] } },
+      { fresh: true },
+    ),
+  );
   registerEdgeAnnotationRoutes(app, {
     db,
     broker: edgeAnnotations,
@@ -8705,6 +8718,45 @@ export async function startServer({
     emitChatMessage: (projectId, conversationId, messageId) => emitProjectEvent(projectId, {
       type: 'conversation-message-created', projectId, conversationId, messageId, at: Date.now(),
     }),
+    comments: {
+      list: (projectId, conversationId) => listPreviewComments(db, projectId, conversationId),
+      get: (projectId, conversationId, id) => getPreviewComment(db, projectId, conversationId, id),
+      // A Clipper pin relays to the Team like any other pin. The paired member
+      // is re-read from the signed directory (Vela); header-only local mode
+      // has no verifiable Team identity for the extension, so it stays local.
+      upsert: async (projectId, conversationId, input, workspace) => {
+        const relay = await clipperPinRelayContext(projectId, workspace);
+        return db.transaction(() => {
+          const saved = upsertPreviewComment(db, projectId, conversationId, input, {
+            pinPendingCloudConfirm: Boolean(relay),
+          });
+          if (saved && relay && !collabCloud.enqueueComment(saved, relay)) {
+            throw new Error('failed to persist Team comment relay delivery');
+          }
+          return saved;
+        })();
+      },
+      remove: async (projectId, conversationId, id, workspace) => {
+        const relay = await clipperPinRelayContext(projectId, workspace);
+        return db.transaction(() => {
+          const existing = relay ? getPreviewComment(db, projectId, conversationId, id) : null;
+          const removed = deletePreviewComment(db, projectId, conversationId, id);
+          if (removed && relay && existing && !collabCloud.enqueueCommentDeletion(existing, relay)) {
+            throw new Error('failed to persist Team comment relay delivery');
+          }
+          return removed;
+        })();
+      },
+      storeScreenshot: async (projectId, data) => {
+        const name = `${BROWSER_ANNOTATION_SCREENSHOT_DIR}/clipper-${randomUUID()}.png`;
+        await writeProjectFile(PROJECTS_DIR, projectId, name, data, { overwrite: false }, getProject(db, projectId)?.metadata);
+        return name;
+      },
+      discardScreenshot: async (projectId, path) => {
+        await deleteProjectFile(PROJECTS_DIR, projectId, path, getProject(db, projectId)?.metadata);
+      },
+      emitChanged: (projectId) => emitProjectEvent(projectId, { type: 'comment-changed', projectId, at: Date.now() }),
+    },
   });
   // OD Library — global asset registry (clipper ingest, grid, pairing, apply).
   registerLibraryRoutes(app, {
