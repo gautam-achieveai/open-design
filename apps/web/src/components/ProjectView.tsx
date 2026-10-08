@@ -10884,8 +10884,46 @@ export function ProjectView({
   // canceled, and drop the streaming state. Defined here — ahead of the
   // queued-send handlers — because "send now" interrupts the active run to
   // make room for the prioritized send.
+  /**
+   * A stopped turn gets no terminal callback that would move its pins on, so
+   * its pins return to 'open' and reappear in the Comments dock. A run moves
+   * the pins it sends to 'applying' when it starts; queued sends hold theirs
+   * in 'applying' too, and those stay reserved for the run that will take
+   * them. So the stopped turn's pins are exactly the 'applying' ones that no
+   * queued send owns.
+   */
+  const releaseStoppedRunPins = useCallback(() => {
+    const queuedCommentIds = new Set(
+      queuedChatSendsRef.current.flatMap((send) =>
+        send.commentAttachments.map((attachment) => attachment.id),
+      ),
+    );
+    const stopped = previewCommentsRef.current.filter(
+      (comment) => comment.status === 'applying' && !queuedCommentIds.has(comment.id),
+    );
+    if (stopped.length === 0) return;
+    const stoppedIds = new Set(stopped.map((comment) => comment.id));
+    commitPreviewComments((current) =>
+      current.map((comment) =>
+        stoppedIds.has(comment.id) ? { ...comment, status: 'open' } : comment,
+      ),
+    );
+    void Promise.all(
+      stopped.map((comment) =>
+        patchPreviewCommentStatus(
+          project.id,
+          comment.conversationId,
+          comment.id,
+          'open',
+          projectRunWorkspaceContext,
+        ),
+      ),
+    ).catch(() => {});
+  }, [commitPreviewComments, project.id, projectRunWorkspaceContext]);
+
   const handleStop = useCallback(() => {
     const stoppedAt = Date.now();
+    releaseStoppedRunPins();
     const programmaticBrandId = isProgrammaticBrandExtractionProject(currentProject.metadata)
       ? currentProject.metadata?.brandId?.trim() || ''
       : '';
@@ -10942,6 +10980,7 @@ export function ProjectView({
     onProjectsRefresh,
     persistMessage,
     projectDetail.refresh,
+    releaseStoppedRunPins,
     requestOpenFile,
     refreshWorkspaceItems,
   ]);
@@ -10976,41 +11015,8 @@ export function ProjectView({
       for (const controller of reattachControllersRef.current.values()) {
         supersededRunsRef.current.add(controller);
       }
-      // The interrupted turn moved its preview-comment attachments to
-      // 'applying' when it started; since we now suppress its terminal
-      // callbacks, reset them to 'open' so they don't stay stuck mid-apply.
-      // Reset ONLY the in-flight run's comments: queued sends (including the
-      // one being prioritized) also hold their attachments in 'applying', and
-      // those must stay reserved — the replacement run re-applies them. The
-      // in-flight run's comments are exactly the 'applying' ones not owned by
-      // any queued send.
-      const queuedCommentIds = new Set(
-        queuedChatSendsRef.current.flatMap((send) =>
-          send.commentAttachments.map((attachment) => attachment.id),
-        ),
-      );
-      const stuckApplying = previewCommentsRef.current.filter(
-        (comment) => comment.status === 'applying' && !queuedCommentIds.has(comment.id),
-      );
-      if (stuckApplying.length > 0) {
-        const resetIds = new Set(stuckApplying.map((comment) => comment.id));
-        commitPreviewComments((current) =>
-          current.map((comment) =>
-            resetIds.has(comment.id) ? { ...comment, status: 'open' } : comment,
-          ),
-        );
-        void Promise.all(
-          stuckApplying.map((comment) =>
-            patchPreviewCommentStatus(
-              project.id,
-              comment.conversationId,
-              comment.id,
-              'open',
-              projectRunWorkspaceContext,
-            ),
-          ),
-        ).catch(() => {});
-      }
+      // handleStop() returns the interrupted turn's pins to 'open'; the queued
+      // sends (this one included) keep theirs reserved.
       prioritizeQueuedChatSend(id);
       handleStop();
       return;
@@ -11025,7 +11031,7 @@ export function ProjectView({
       );
       if (started) removeQueuedChatSend(id);
     })();
-  }, [armSlideNavForQueuedSend, commitPreviewComments, currentConversationBusy, handleSend, handleStop, prioritizeQueuedChatSend, project.id, removeQueuedChatSend, projectRunWorkspaceContext]);
+  }, [armSlideNavForQueuedSend, currentConversationBusy, handleSend, handleStop, prioritizeQueuedChatSend, removeQueuedChatSend]);
 
   /*
    * B11 「引导对话」 —— 队列行领头那颗按钮走的就是上面的

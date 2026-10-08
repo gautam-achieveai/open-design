@@ -125,7 +125,13 @@ import {
 } from '../runtime/todos';
 import type { AppConfig, ChatAttachment, ChatCommentAttachment, ChatMessage, ChatMessageFeedbackChange, Conversation, DesignSystemSummary, PreviewComment, Project, ProjectFile, ProjectMetadata, SkillSummary } from '../types';
 import { agentDisplayName } from '../utils/agentLabels';
-import { commentTargetDisplayName, commentsToAttachments, simplePositionLabel } from '../comments';
+import {
+  commentPageLabel,
+  commentTargetDisplayName,
+  commentsToAttachments,
+  pinsNeedingPageLabel,
+  simplePositionLabel,
+} from '../comments';
 import { AssistantMessage, type QuestionFormSubmitHandler } from './AssistantMessage';
 import { chatSeam } from './chat/ChatRoot';
 import { PlanPill } from './chat/PlanPill';
@@ -6742,18 +6748,28 @@ const UserMessage = memo(UserMessageImpl);
         ) : null}
         {commentAttachments.some((attachment) => attachment.selectionKind !== 'visual') ? (
           <div className="user-attachments comment-history-attachments">
-            {commentAttachments.filter((attachment) => attachment.selectionKind !== 'visual').map((a) => (
-              <span key={a.id} className="user-attachment staged-comment">
-                <span className="staged-name" title={a.comment ? `${commentTargetDisplayName(a)}: ${a.comment}` : commentTargetDisplayName(a)}>
-                  {/* Same number as the pin it came from, so "fix #2" next turn has a referent. */}
-                  {a.source === 'saved-comment' ? (
-                    <span className="staged-comment-seq" data-testid="history-comment-seq">#{a.order}</span>
-                  ) : null}
-                  <strong>{commentTargetDisplayName(a)}</strong>
-                  {a.comment ? <span>{a.comment}</span> : null}
-                </span>
-              </span>
-            ))}
+            {(() => {
+              const pins = commentAttachments.filter((attachment) => attachment.selectionKind !== 'visual');
+              // Numbers count per page: a repeated #N names its page.
+              const needsPage = pinsNeedingPageLabel(pins);
+              return pins.map((a) => {
+                const name = needsPage.has(a.id)
+                  ? `${commentTargetDisplayName(a)} · ${commentPageLabel(a.filePath)}`
+                  : commentTargetDisplayName(a);
+                return (
+                  <span key={a.id} className="user-attachment staged-comment">
+                    <span className="staged-name" title={a.comment ? `${name}: ${a.comment}` : name}>
+                      {/* Same number as the pin it came from, so "fix #2" next turn has a referent. */}
+                      {a.source === 'saved-comment' ? (
+                        <span className="staged-comment-seq" data-testid="history-comment-seq">#{a.order}</span>
+                      ) : null}
+                      <strong>{name}</strong>
+                      {a.comment ? <span>{a.comment}</span> : null}
+                    </span>
+                  </span>
+                );
+              });
+            })()}
           </div>
         ) : null}
         {message.content ? (

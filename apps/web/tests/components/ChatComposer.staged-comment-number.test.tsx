@@ -107,4 +107,29 @@ describe('ChatComposer staged comment numbering', () => {
     expect(within(withText!).getByText('A long title')).toBeTruthy();
     expect(within(withoutText!).getByText('h1.hero-title')).toBeTruthy();
   });
+  it('names the page on cards whose pin number repeats on another page', () => {
+    render(
+      <ChatComposer
+        projectId="project-1"
+        projectFiles={[]}
+        streaming={false}
+        onEnsureProject={async () => 'project-1'}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        commentAttachments={[
+          { ...base, id: 'a1', order: 1, filePath: 'browser:https://shop.example.test/cart?x=1' },
+          { ...base, id: 'b1', order: 1, filePath: 'browser:https://shop.example.test/checkout' },
+          { ...base, id: 'a2', order: 2, filePath: 'browser:https://shop.example.test/cart?x=1' },
+        ]}
+      />,
+    );
+
+    const cards = screen.getAllByTestId('staged-comment-card');
+    // Pin numbers count per page: both #1 cards say which page they are on,
+    // the unique #2 stays a plain card.
+    expect(cards.map((card) => card.querySelector('[data-testid="staged-comment-page"]')?.textContent ?? null))
+      .toEqual(['shop.example.test/cart', 'shop.example.test/checkout', null]);
+    // Screen readers hear the page too, on both the open and the remove button.
+    expect(within(cards[1]!).getAllByRole('button', { name: /#1 .*· shop\.example\.test\/checkout/ })).toHaveLength(2);
+  });
 });

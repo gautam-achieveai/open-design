@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  commentPageLabel,
+  pinsNeedingPageLabel,
   buildBoardCommentAttachments,
   buildVisualAnnotationAttachment,
   commentSnapshotOverlayEqual,
@@ -690,5 +692,28 @@ describe('queuedSlideNavTarget', () => {
     expect(
       queuedSlideNavTarget([commentAttachment({ slideIndex: -1 })]),
     ).toBeNull();
+  });
+});
+
+describe('pin page labels', () => {
+  const pin = (id: string, order: number, filePath: string, source: ChatCommentAttachment['source'] = 'saved-comment') =>
+    ({ id, order, filePath, source } as ChatCommentAttachment);
+
+  it('names a browser page by host, path and hash route, and a file by its base name', () => {
+    expect(commentPageLabel('browser:https://shop.example.test/cart/?ref=mail')).toBe('shop.example.test/cart');
+    expect(commentPageLabel('browser:https://app.example.test/#/settings')).toBe('app.example.test#/settings');
+    expect(commentPageLabel('pages/landing/index.html')).toBe('index.html');
+    expect(commentPageLabel('browser:not a url')).toBe('not a url');
+  });
+
+  it('flags only saved pins whose number repeats on another page', () => {
+    const ids = pinsNeedingPageLabel([
+      pin('a1', 1, 'a.html'),
+      pin('b1', 1, 'b.html'),
+      pin('a2', 2, 'a.html'),
+      pin('a2-again', 2, 'a.html'),
+      pin('note', 1, 'c.html', 'board-batch'),
+    ]);
+    expect([...ids].sort()).toEqual(['a1', 'b1']);
   });
 });

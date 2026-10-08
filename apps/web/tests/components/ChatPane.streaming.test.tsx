@@ -1183,6 +1183,19 @@ describe('ChatPane streaming state', () => {
             pagePosition: { x: 1, y: 2, width: 3, height: 4 },
             htmlHint: '<button>',
           },
+          {
+            id: 'comment-other-3',
+            order: 3,
+            source: 'saved-comment',
+            filePath: 'browser:http://127.0.0.1:5180/pricing',
+            elementId: 'plan',
+            selector: '#plan',
+            label: 'Plan',
+            comment: 'Bigger price',
+            currentText: '$9',
+            pagePosition: { x: 1, y: 2, width: 3, height: 4 },
+            htmlHint: '<div>',
+          },
         ],
       },
     ];
@@ -1207,7 +1220,10 @@ describe('ChatPane streaming state', () => {
     );
 
     // Same number as the pin on the page, so "fix #3" next turn has a referent.
-    expect(screen.getAllByTestId('history-comment-seq').map((node) => node.textContent)).toEqual(['#3']);
+    // Numbers count per page, so two #3 chips name their pages.
+    expect(screen.getAllByTestId('history-comment-seq').map((node) => node.textContent)).toEqual(['#3', '#3']);
+    expect(screen.getByText('CTA · 127.0.0.1:5180')).toBeTruthy();
+    expect(screen.getByText('Plan · 127.0.0.1:5180/pricing')).toBeTruthy();
   });
 
   it('summarizes auto-sent design-system workspace prompts', () => {

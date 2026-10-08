@@ -14,10 +14,12 @@ type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => 
  * One staged pin in the composer: the element picture with the pin number
  * (`#N`, the canvas pin's `pinSeq`) and the note on one line. Click opens the
  * whole picture and note. A pin without a picture shows its target name.
+ * `page` names the pin's page when another staged pin shares its number.
  */
-export function StagedCommentCard({ attachment, imageUrl, onRemove, t }: {
+export function StagedCommentCard({ attachment, imageUrl, page, onRemove, t }: {
   attachment: ChatCommentAttachment;
   imageUrl?: string;
+  page?: string;
   onRemove: () => void;
   t: TranslateFn;
 }) {
@@ -26,7 +28,7 @@ export function StagedCommentCard({ attachment, imageUrl, onRemove, t }: {
   useEffect(() => setImageFailed(false), [imageUrl]);
   const name = commentTargetDisplayName(attachment);
   const seq = attachment.source === 'saved-comment' ? `#${attachment.order}` : null;
-  const label = seq ? `${seq} ${name}` : name;
+  const label = [seq, name, page ? `· ${page}` : null].filter(Boolean).join(' ');
   const showImage = Boolean(imageUrl) && !imageFailed;
   return (
     <span {...chatSeam(styles.card)} data-testid="staged-comment-card">
@@ -39,6 +41,7 @@ export function StagedCommentCard({ attachment, imageUrl, onRemove, t }: {
             : <span className={styles.fallback}>{attachment.currentText?.trim() || name}</span>}
         </span>
         <span className={styles.note}>{attachment.comment}</span>
+        {page ? <span className={styles.page} data-testid="staged-comment-page">{page}</span> : null}
         {seq ? <span className={styles.seq} data-testid="staged-comment-seq">{seq}</span> : null}
       </Button>
       <Button variant="ghost" className={styles.remove} onClick={onRemove}

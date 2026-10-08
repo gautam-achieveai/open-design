@@ -411,6 +411,7 @@ vi.mock('../../src/components/ChatPane', () => ({
     onSelectConversation,
     onSend,
     onSendQueuedNow,
+    onStop,
     onNewConversation,
     error,
     onRetry,
@@ -440,6 +441,7 @@ vi.mock('../../src/components/ChatPane', () => ({
       meta?: unknown,
     ) => void;
     onSendQueuedNow?: (id: string) => void;
+    onStop?: () => void;
     onNewConversation: () => void;
     onRetry?: (message: ChatMessage) => void;
     onResendUserMessage?: (message: ChatMessage) => void;
@@ -555,6 +557,9 @@ vi.mock('../../src/components/ChatPane', () => ({
             {conversation.id}
           </button>
         ))}
+        <button type="button" data-testid="stop-run" onClick={() => onStop?.()}>
+          stop
+        </button>
         <button
           type="button"
           data-testid="attach-first-comment"
@@ -921,6 +926,7 @@ describe('ProjectView conversation run isolation', () => {
     });
     createConversation.mockResolvedValue(createdConversation);
     fetchPreviewComments.mockResolvedValue([]);
+    patchPreviewCommentStatus.mockReset();
     loadTabs.mockResolvedValue({ tabs: [], active: null });
     fetchProjectFiles.mockResolvedValue([]);
     fetchLiveArtifacts.mockResolvedValue([]);
@@ -2617,6 +2623,54 @@ describe('ProjectView conversation run isolation', () => {
         expect.objectContaining({ role: 'user', content: 'hello from c' }),
       ]),
     }));
+  });
+
+  it('returns a stopped run\'s pins to open so they reappear in the dock', async () => {
+    conversationAMessages = [];
+    // The daemon keeps the status it was sent, so a refresh reads it back.
+    let storedStatus: PreviewComment['status'] = 'open';
+    patchPreviewCommentStatus.mockImplementation(async (...args: unknown[]) => {
+      storedStatus = args[3] as PreviewComment['status'];
+      return { ...previewComment, status: storedStatus };
+    });
+    fetchPreviewComments.mockImplementation(async () => [{ ...previewComment, status: storedStatus }]);
+    streamViaDaemon.mockImplementation(async (input: unknown) => {
+      const options = input as {
+        onRunCreated?: (runId: string) => void;
+        onRunStatus?: (status: NonNullable<ChatMessage['runStatus']>) => void;
+      };
+      options.onRunCreated?.('run-1');
+      options.onRunStatus?.('running');
+    });
+
+    renderProjectView(
+      config,
+      project,
+      [{ id: 'agent-1', name: 'OpenCode', bin: 'opencode', available: true, models: [] }],
+    );
+
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-a'));
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+    fireEvent.click(screen.getByTestId('attach-first-comment'));
+    await waitFor(() => expect(screen.getByTestId('attached-comment-count').textContent).toBe('1'));
+    fireEvent.click(screen.getByTestId('send-message'));
+    await waitFor(() => expect(screen.getByTestId('streaming-state').textContent).toBe('streaming'));
+    await waitFor(() =>
+      expect(patchPreviewCommentStatus).toHaveBeenCalledWith(
+        'project-1', 'conv-a', previewComment.id, 'applying', workspaceScopeMocks.personalContext(),
+      ),
+    );
+    patchPreviewCommentStatus.mockClear();
+
+    // A user Stop gets no terminal callback that moves the pin on, so Stop
+    // itself hands the pin back.
+    fireEvent.click(screen.getByTestId('stop-run'));
+
+    await waitFor(() =>
+      expect(patchPreviewCommentStatus).toHaveBeenCalledWith(
+        'project-1', 'conv-a', previewComment.id, 'open', workspaceScopeMocks.personalContext(),
+      ),
+    );
   });
 
   it('does not surface a stale failure banner when the interrupted run errors late', async () => {

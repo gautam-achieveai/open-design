@@ -72,6 +72,16 @@
   text-overflow: ellipsis;
   border-top: 1px solid var(--chat-border-soft);
 }
+/* Only when another staged pin has the same number (numbers count per page). */
+.page {
+  padding: 0 8px 5px;
+  overflow: hidden;
+  font-size: 10px;
+  line-height: 13px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--chat-text-muted);
+}
 .remove {
   position: absolute;
   top: -8px;

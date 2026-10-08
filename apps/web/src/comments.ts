@@ -1,4 +1,8 @@
-import { BROWSER_ANNOTATION_SCREENSHOT_DIR, normalizeEdgeAnnotationAncestors } from '@open-design/contracts';
+import {
+  BROWSER_ANNOTATION_SCREENSHOT_DIR,
+  BROWSER_COMMENT_FILE_KEY_PREFIX,
+  normalizeEdgeAnnotationAncestors,
+} from '@open-design/contracts';
 import type {
   ChatCommentAttachment,
   ChatCommentSelectionKind,
@@ -591,6 +595,43 @@ export function pinPreviewImage(
 ): PreviewCommentAttachment | undefined {
   if (!images || images.length === 0) return undefined;
   return images.find((image) => image.path.startsWith(`${BROWSER_ANNOTATION_SCREENSHOT_DIR}/`)) ?? images[0];
+}
+
+/**
+ * Short page name for a pin's file: host, path and hash route for a browser
+ * page (the query is left out as noise), the base name for a project file.
+ */
+export function commentPageLabel(filePath: string): string {
+  if (filePath.startsWith(BROWSER_COMMENT_FILE_KEY_PREFIX)) {
+    const raw = filePath.slice(BROWSER_COMMENT_FILE_KEY_PREFIX.length);
+    try {
+      const url = new URL(raw);
+      const path = url.pathname.replace(/\/+$/, '');
+      return url.host ? `${url.host}${path}${url.hash}` : raw;
+    } catch {
+      return raw;
+    }
+  }
+  return filePath.split('/').filter(Boolean).pop() || filePath;
+}
+
+/**
+ * Pin numbers count per page, so two staged pins from different pages can
+ * both be `#1`. Returns the ids of saved pins whose number repeats on another
+ * page; those show their page next to the number.
+ */
+export function pinsNeedingPageLabel(attachments: ChatCommentAttachment[]): Set<string> {
+  const filesByNumber = new Map<number, Set<string>>();
+  for (const attachment of attachments) {
+    if (attachment.source !== 'saved-comment') continue;
+    const files = filesByNumber.get(attachment.order) ?? new Set<string>();
+    files.add(attachment.filePath);
+    filesByNumber.set(attachment.order, files);
+  }
+  return new Set(attachments
+    .filter((attachment) => attachment.source === 'saved-comment'
+      && (filesByNumber.get(attachment.order)?.size ?? 0) > 1)
+    .map((attachment) => attachment.id));
 }
 
 export function mergePreviewCommentAttachments(

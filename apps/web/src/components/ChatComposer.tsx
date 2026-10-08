@@ -67,7 +67,7 @@ import type {
   WorkspaceCollabContext,
   WorkspaceContextItem,
 } from '@open-design/contracts';
-import { buildVisualAnnotationAttachment, pinPreviewImage } from '../comments';
+import { buildVisualAnnotationAttachment, commentPageLabel, pinPreviewImage, pinsNeedingPageLabel } from '../comments';
 import { Icon, type IconName } from "./Icon";
 import { ChatCloseIcon, ChatFileIcon, ChatSendArrowIcon } from "./chat/primitives/icons";
 import { ComposerPlusMenu, PLUS_SUBMENU_RESOURCE_KIND, type PlusMenuSubmenu } from './ComposerPlusMenu';
@@ -4995,6 +4995,7 @@ function StagedCommentAttachments({
 }) {
   const visibleAttachments = attachments.filter((attachment) => attachment.selectionKind !== 'visual');
   if (visibleAttachments.length === 0) return null;
+  const needsPage = pinsNeedingPageLabel(visibleAttachments);
   return (
     <div className="staged-row comment-staged-row" data-testid="staged-comment-attachments">
       {visibleAttachments.map((a) => {
@@ -5004,6 +5005,7 @@ function StagedCommentAttachments({
             key={a.id}
             attachment={a}
             imageUrl={image ? imageUrl(image.path) : undefined}
+            page={needsPage.has(a.id) ? commentPageLabel(a.filePath) : undefined}
             onRemove={() => onRemove(a.id)}
             t={t}
           />
