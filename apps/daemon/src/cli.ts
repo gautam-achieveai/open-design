@@ -11213,7 +11213,8 @@ function printCommentHelp() {
                     --status open|attached|applying|needs_review|resolved|failed [--json]
   od comment delete <commentId> --project <id> --conversation <id> [--json]
 
-Each pin carries a permanent number (pinSeq) per file key. Stage pins into a
+Each pin keeps its number (pinSeq) per file key. Numbers count the pins still
+open or attached, so a new batch starts at #1 once the last one is sent. Stage pins into a
 run with: od run start --project <id> --conversation <id> --comment <id,...>
 
 Common options:

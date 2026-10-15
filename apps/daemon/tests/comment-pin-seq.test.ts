@@ -12,6 +12,7 @@ import {
   mergeSyncedPreviewComment,
   openDatabase,
   reorderPreviewComment,
+  updatePreviewCommentStatus,
   upsertPreviewComment,
 } from '../src/db.js';
 
@@ -102,6 +103,36 @@ describe('pin_seq assignment (recvq5BVsolIxi)', () => {
     expect(onIndex?.pinSeq).toBe(1);
     expect(onAbout?.pinSeq).toBe(1);
     expect(secondOnIndex?.pinSeq).toBe(2);
+  });
+
+  it('numbers each batch from 1 once the previous pins have been sent', () => {
+    const db = seededDb();
+    const pin = (elementId: string) => upsertPreviewComment(db, 'project-1', 'conversation-1', {
+      target: target({ elementId }),
+      note: elementId,
+    });
+    const first = pin('a');
+    const second = pin('b');
+    expect([first?.pinSeq, second?.pinSeq]).toEqual([1, 2]);
+
+    // Staged into the composer: still this batch, so numbering continues.
+    updatePreviewCommentStatus(db, 'project-1', 'conversation-1', first!.id, 'attached');
+    const third = pin('c');
+    expect(third?.pinSeq).toBe(3);
+
+    // Sending #1 and #2 leaves #3 in the dock, so the next pin follows it.
+    for (const sent of [first!, second!]) {
+      updatePreviewCommentStatus(db, 'project-1', 'conversation-1', sent.id, 'applying');
+    }
+    const fourth = pin('d');
+    expect(fourth?.pinSeq).toBe(4);
+
+    // Once the whole batch is sent, the dock is empty and numbering restarts.
+    for (const id of [third!.id, fourth!.id]) {
+      updatePreviewCommentStatus(db, 'project-1', 'conversation-1', id, 'applying');
+    }
+    expect(pin('e')?.pinSeq).toBe(1);
+    expect(pin('f')?.pinSeq).toBe(2);
   });
 
   it('assigns a default sort_key so a fresh comment sorts to the front by default', () => {

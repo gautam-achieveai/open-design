@@ -3860,11 +3860,14 @@ export function upsertPreviewComment(
   let sortKey: number | null = null;
   let pinSeqConfirmed = 1;
   if (!existing) {
+    // Numbers count within the current batch: pins still in the dock (open)
+    // or staged in the composer (attached). Once a batch is sent its pins
+    // leave both, so the next batch starts again at #1.
     const pinScope = db
       .prepare(
         `SELECT COALESCE(MAX(pin_seq), 0) AS maxPinSeq
            FROM preview_comments
-          WHERE project_id = ? AND file_path = ?`,
+          WHERE project_id = ? AND file_path = ? AND status IN ('open', 'attached')`,
       )
       .get(projectId, filePath) as DbRow;
     pinSeq = Number(pinScope?.maxPinSeq ?? 0) + 1;
