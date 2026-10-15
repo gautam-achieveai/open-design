@@ -206,7 +206,7 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       const popup: OpenDesignHostBrowserPopup = { surfaceId: 'popup:annotation', projectId: 'p1', openerTabId: '__browser__:1',
         ancestorTabIds: ['__browser__:1'], tabId: '__browser__:2', webContentsId: 77, url: 'about:blank', title: 'Written child',
         loading: false, canGoBack: false, canGoForward: false, disposition: 'new-window' };
-      let measured = 0, restored = false, currentPageUrl = popup.url;
+      let measured = 0, picks = 0, restored = false, currentPageUrl = popup.url;
       const hiddenAtCapture: Array<{ popover: boolean; status: boolean }> = [];
       const hiddenByAncestor = (node: Element | null) => {
         for (let el = node as HTMLElement | null; el; el = el.parentElement) if (el.style?.visibility === 'hidden') return true;
@@ -224,7 +224,10 @@ describe('DesignBrowserPanel <webview> navigation', () => {
           return { ok: true as const, value: nativeDataUrl };
         }
         if (request.kind !== 'evaluate') return { ok: true as const };
-        if (request.code.includes('function snapshotFor(el, ev)')) return { ok: true as const, value: target };
+        // Only the first pick lands; the picker re-armed after Save waits for a click.
+        if (request.code.includes('function snapshotFor(el, ev)')) {
+          return ++picks === 1 ? { ok: true as const, value: target } : new Promise<never>(() => {});
+        }
         if (request.code.includes('const targets =') && request.code.includes('"key":"capture"')) {
           measured++;
           if (measured === 2 && change === 'navigation') currentPageUrl = 'https://example.com/changed';
@@ -324,7 +327,7 @@ describe('DesignBrowserPanel <webview> navigation', () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
-  it('saves a picked element as a dock pin without staging it, draws its pinSeq marker and edits it in place', async () => {
+  it('saves a picked element as a dock pin without staging it, re-arms the picker and edits the pin from its badge', async () => {
     const agentSend = vi.fn();
     const fetchMock = vi.fn(async (_url: string) => ({ ok: true, json: async () => ({}) }));
     vi.stubGlobal('fetch', fetchMock);
@@ -353,8 +356,13 @@ describe('DesignBrowserPanel <webview> navigation', () => {
     try {
       const { container } = render(<Harness />);
       const webview = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+      // The first pick lands on the hero; later picks wait for a click that
+      // never comes, like a picker armed over the page.
+      let picks = 0;
       webview.executeJavaScript = vi.fn(async (script: string) => {
-        if (script.includes('function snapshotFor(el, ev)')) return hero;
+        if (script.includes('function snapshotFor(el, ev)')) {
+          return ++picks === 1 ? hero : new Promise<never>(() => {});
+        }
         if (script.includes('const targets =')) {
           // Every requested key resolves to the hero rect, so saved pins get a live rect.
           return Array.from(script.matchAll(/"key":"([^"]+)"/g), (match) => ({ ...hero, key: match[1] }));
@@ -380,21 +388,30 @@ describe('DesignBrowserPanel <webview> navigation', () => {
       expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/edge-annotations/'))).toBe(false);
       expect(writeProjectTextFile).not.toHaveBeenCalled();
 
-      // The saved pin is drawn from its live rect, numbered by pinSeq, and the
-      // popover stays open on it so the note can be edited in place.
-      // The accessible name carries the pin number and the open pin is
-      // announced through aria-current, not colour alone.
+      // Save closes the popover and re-arms the picker, so the next click
+      // annotates another element without toggling the tool.
+      await waitFor(() => expect(picks).toBe(2));
+      expect(screen.queryByPlaceholderText('Comment on this element…')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Annotate' }).getAttribute('aria-pressed')).toBe('true');
+
+      // The saved pin is drawn from its live rect and numbered by pinSeq. The
+      // accessible name carries the pin number; the open pin is announced
+      // through aria-current, not colour alone.
       const badge = await screen.findByRole('button', { name: 'Open pin #7: div' });
       expect(badge.textContent).toBe('7');
-      expect(badge.getAttribute('aria-current')).toBe('true');
+      expect(badge.getAttribute('aria-current')).not.toBe('true');
       expect(screen.getByTestId('db-comment-marker-cmt-1')).toBeTruthy();
       expect(screen.getByTestId('comment-side-dock')).toBeTruthy();
+      fireEvent.click(badge);
+      expect(badge.getAttribute('aria-current')).toBe('true');
       fireEvent.change(screen.getByPlaceholderText('Comment on this element…'), { target: { value: 'Make Save bolder' } });
       await act(async () => { fireEvent.click(screen.getByTestId('comment-popover-save')); });
       await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
       expect(save.mock.calls[1]![1]).toBe('Make Save bolder');
       expect(save.mock.calls[1]![4]).toBe('cmt-1');
       expect(screen.getAllByTestId(/^db-comment-marker-/)).toHaveLength(1);
+      await waitFor(() => expect(picks).toBe(3));
+      expect(screen.queryByPlaceholderText('Comment on this element…')).toBeNull();
     } finally { vi.unstubAllGlobals(); }
   });
 

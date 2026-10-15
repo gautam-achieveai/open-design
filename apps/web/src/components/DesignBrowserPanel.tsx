@@ -2966,13 +2966,14 @@ export function DesignBrowserPanel({
         activeSavedComment?.id,
       );
       if (saved) {
-        setActivePreviewCommentId(saved.id);
-        setCommentDraft(saved.note);
-        setQueuedCommentNotes([]);
-        setBrowserImages([]);
-        setBrowserPreviewIndex(null);
+        // Saving finishes the pin: close the popover and re-arm the picker so
+        // the next click annotates another element. The saved pin stays
+        // editable from its badge or dock row.
+        pinOpenOriginRef.current = null;
+        void pickBrowserElement('comment');
         // A failed or late capture still saves the note; say so, because the
-        // agent will get the pin without a picture of the element.
+        // agent will get the pin without a picture of the element. Set after
+        // the re-arm so it replaces the picker's "click an element" hint.
         const hasPicture = images.length > 0 || (activeSavedComment?.attachments?.length ?? 0) > 0;
         setStatusMessage(t(hasPicture ? 'designBrowser.status.commentSaved' : 'designBrowser.status.commentSavedNoPicture'));
       }
