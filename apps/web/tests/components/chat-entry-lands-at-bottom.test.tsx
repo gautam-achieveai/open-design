@@ -411,7 +411,7 @@ describe('一条读完了、确实是空的会话', () => {
     const firstTurn: ChatMessage[] = [
       { id: 'user-0', role: 'user', content: 'make me a deck', createdAt: 1_700_000_000_000 },
     ];
-    geom.contentHeight = 700;
+    geom.contentHeight = 300;
     geom.lastUserTopInContent = 100;
     await act(async () => {
       rerender(pane({ messages: firstTurn, loading: false }));
@@ -420,14 +420,17 @@ describe('一条读完了、确实是空的会话', () => {
     await flushFrames();
     await flushFrames();
 
-    // 回复开始往下长。钉顶接管的意思就是:这条用户消息**不动**,不被拽到底。
-    geom.contentHeight = SETTLED_CONTENT_H;
+    // The reply grows but still fits below the message: the anchor holds and
+    // the message is not dragged to the bottom. (Past the fold it hands off to
+    // bottom-follow; see chat-anchor-to-top.test.tsx.) Without the anchor this
+    // content fits on one screen and would sit at scrollTop 0.
+    geom.contentHeight = 500;
     await fireResize();
     await flushFrames();
     await flushFrames();
 
     expect(geom.scrollTop).toBe(anchorScrollTop(100));
-    expect(geom.scrollTop).not.toBe(maxScrollTop());
+    expect(geom.scrollTop).not.toBe(0);
   });
 });
 

@@ -12,12 +12,12 @@ describe('measured chat virtual-window anchoring', () => {
     const oldSizes = items.map(() => 100);
     const anchor = captureVirtualScrollAnchor(items, oldOffsets, oldSizes, 5_250);
 
-    expect(anchor).toEqual({ key: 'message:52', offset: -50 });
+    expect(anchor).toEqual({ key: 'message:52', offset: -50, scrollTop: 5_250 });
 
     // Ten earlier rows grew by 12px each after async media/tool content
     // measured. message:52 should remain clipped by the same 50px.
     const newOffsets = items.map((_, index) => index * 100 + Math.min(index, 10) * 12);
-    expect(scrollTopForVirtualScrollAnchor(anchor!, items, newOffsets, 9_720)).toBe(5_370);
+    expect(scrollTopForVirtualScrollAnchor(anchor!, items, newOffsets, 9_720, 5_250)).toBe(5_370);
   });
 
   it('does not move when only rows below the first-visible key change', () => {
@@ -28,7 +28,7 @@ describe('measured chat virtual-window anchoring', () => {
       index > 60 ? offset + (index - 60) * 50 : offset,
     );
 
-    expect(scrollTopForVirtualScrollAnchor(anchor!, items, offsetsWithLaterGrowth, 12_000)).toBe(
+    expect(scrollTopForVirtualScrollAnchor(anchor!, items, offsetsWithLaterGrowth, 12_000, 5_250)).toBe(
       5_250,
     );
   });
@@ -38,6 +38,18 @@ describe('measured chat virtual-window anchoring', () => {
     const sizes = items.map(() => 100);
     const anchor = captureVirtualScrollAnchor(items, offsets, sizes, 9_450);
 
-    expect(scrollTopForVirtualScrollAnchor(anchor!, items, offsets, 9_200)).toBe(9_200);
+    expect(scrollTopForVirtualScrollAnchor(anchor!, items, offsets, 9_200, 9_450)).toBe(9_200);
+  });
+
+  it('keeps a scroll that lands between capture and restore', () => {
+    // A streaming row remeasures; the anchor is captured at 5_250. Before the
+    // restore runs, the user's wheel moves the view down 100px. Restoring the
+    // stale position would undo that wheel: the "scroll down, it jumps up" bug.
+    const offsets = items.map((_, index) => index * 100);
+    const sizes = items.map(() => 100);
+    const anchor = captureVirtualScrollAnchor(items, offsets, sizes, 5_250);
+    const newOffsets = items.map((_, index) => index * 100 + Math.min(index, 10) * 12);
+
+    expect(scrollTopForVirtualScrollAnchor(anchor!, items, newOffsets, 9_720, 5_350)).toBe(5_470);
   });
 });

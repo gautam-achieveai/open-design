@@ -1021,7 +1021,9 @@ describe('「回到最新」什么时候该在(用户 2026-08-27:「总是在不
     await flushFrames();
 
     // 占位块缩完之后,底下那点真内容(72px)离「很上面」差得远,不该给入口。
-    expect(geom.contentHeight - geom.scrollTop - geom.clientHeight).toBe(72);
+    // The reply now runs 72px past the fold, so the anchor hands the turn to
+    // bottom-follow: the view tracks the newest output and no pill is offered.
+    expect(geom.contentHeight - geom.scrollTop - geom.clientHeight).toBe(0);
     expect(jumpBtnShown()).toBe(false);
 
     // 反面:回复真长过一屏之后,最新的输出确实跑到视口下面去了 —— 这时必须给入口。
@@ -1051,8 +1053,9 @@ describe('「回到最新」什么时候该在(用户 2026-08-27:「总是在不
     await triggerResize();
     await flushFrames();
 
-    expect(geom.contentHeight - geom.scrollTop - geom.clientHeight).toBe(512);
-    expect(jumpBtnShown()).toBe(true);
+    // Still following: the newest output stays in view, so still no pill.
+    expect(geom.contentHeight - geom.scrollTop - geom.clientHeight).toBe(0);
+    expect(jumpBtnShown()).toBe(false);
   });
 
   it('预留空白不算「底下还有内容」—— 在 anchor 轮里往上滚不该唤出浮标', async () => {

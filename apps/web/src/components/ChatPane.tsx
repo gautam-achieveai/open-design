@@ -3036,6 +3036,7 @@ export function ChatPane({
     if (anchorActiveRef.current) {
       requestAnimationFrame(() => {
         sizeAnchorSpacer();
+        handOffAnchorOnceReplyFillsView();
         syncFollowState();
       });
       return;
@@ -3312,8 +3313,10 @@ export function ChatPane({
         // 松手之后走另一条:那块冻住的空白只在戳进视口时才收,而且一帧一格。
         // 两条互斥 —— 上面那条是等量置换,这条是净减,混用会晃掉锚点。
         let collapsing = false;
-        if (anchorActiveRef.current) sizeAnchorSpacer();
-        else collapsing = stepTailSpacerCollapse();
+        if (anchorActiveRef.current) {
+          sizeAnchorSpacer();
+          handOffAnchorOnceReplyFillsView();
+        } else collapsing = stepTailSpacerCollapse();
         syncFollowState();
         // A layout-only resize changes the geometry that the next scroll
         // event is compared against. Refresh the baseline after the resize
@@ -3850,6 +3853,22 @@ export function ChatPane({
       spacerHeight: spacer.offsetHeight,
       messageTopInContent: msgTopInContent,
     })}px`;
+  }
+
+  /**
+   * Pinning the new turn to the top only lasts while the reply fits below it.
+   * Once the reply runs past the bottom edge (the spacer is used up), hand the
+   * turn to bottom-follow so the newest output stays in view. Runs only while
+   * still anchored: a user who scrolled away already released the anchor and
+   * keeps their reading position.
+   */
+  function handOffAnchorOnceReplyFillsView() {
+    const el = logRef.current;
+    if (!el || !anchorActiveRef.current) return;
+    if (reservedTailHeight() > 0) return;
+    if (isSampleAtBottom(readViewportSample(el))) return;
+    anchorActiveRef.current = false;
+    armFollow();
   }
 
   /**
@@ -5815,6 +5834,7 @@ function useMeasuredVirtualWindow<T extends { key: string }>(
       items,
       layout.offsets,
       Math.max(0, element.scrollHeight - element.clientHeight),
+      element.scrollTop,
     );
     if (nextTop === null || Math.abs(nextTop - element.scrollTop) < 0.5) return;
     const writer = scrollTopWriterRef.current;

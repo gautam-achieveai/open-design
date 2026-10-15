@@ -998,3 +998,68 @@ describe('W105 松手之后的尾部占位块:空白戳到眼前才收', () => {
     expect(tailSpacerHeight()).toBe(8);
   });
 });
+
+/*
+ * ── 回复撑满一屏之后,交给贴底跟随 ─────────────────────────────────────
+ *
+ * 钉顶只管「回复还装得下」的那一段。回复一旦长出视口底边,用户要看的是最新输出:
+ * 视图得跟着底部走,而不是停在用户消息顶端、让新内容一路长到屏幕外面去。
+ */
+describe('回复撑满一屏之后,视图跟着最新输出走', () => {
+  async function growReply(totalPx: number, step: number) {
+    for (let grown = step; grown <= totalPx; grown += step) {
+      geom.contentHeight += step;
+      await act(async () => {
+        rerender(chatPaneEl(withNewTurn('a'.repeat(grown)), true));
+      });
+      await flushFrames();
+      await triggerResize();
+      await flushFrames();
+    }
+  }
+  let rerender: ReturnType<typeof render>['rerender'];
+
+  it('钉顶期间回复长出视口,就贴着底部继续跟', async () => {
+    ({ rerender } = render(chatPaneEl(history(), false)));
+    await flushMounts();
+    await flushFrames();
+
+    arriveNewUserTurn();
+    await act(async () => {
+      rerender(chatPaneEl(withNewTurn(null), true));
+    });
+    await flushFrames();
+    expect(geom.scrollTop).toBe(anchoredScrollTop());
+
+    // 80 + 1000 > 600:回复已经长出视口底边。
+    await growReply(1_000, 200);
+    expect(tailSpacerHeight()).toBe(0);
+    expect(geom.scrollTop).toBe(maxScrollTop());
+
+    // 之后再长,继续贴底。
+    await growReply(400, 200);
+    expect(geom.scrollTop).toBe(maxScrollTop());
+  });
+
+  it('用户先往上滚开过,回复再长也不许把他拽到底', async () => {
+    ({ rerender } = render(chatPaneEl(history(), false)));
+    await flushMounts();
+    await flushFrames();
+
+    arriveNewUserTurn();
+    await act(async () => {
+      rerender(chatPaneEl(withNewTurn(null), true));
+    });
+    await flushFrames();
+
+    // 往上滚出容差:松开钉顶,也松开跟随。
+    geom.scrollTop = anchoredScrollTop() - 300;
+    fireEvent.wheel(chatLog(), { deltaY: -300 });
+    fireEvent.scroll(chatLog());
+    await flushFrames();
+    const parked = geom.scrollTop;
+
+    await growReply(1_000, 200);
+    expect(geom.scrollTop).toBe(parked);
+  });
+});
