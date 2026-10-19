@@ -1979,7 +1979,23 @@ export function ChatPane({
   const [showConvList, setShowConvList] = useState(false);
   const [conversationSearch, setConversationSearch] = useState('');
   const deferredConversationSearch = useDeferredValue(conversationSearch);
-  const [scrolledFromBottom, setScrolledFromBottom] = useState(false);
+  const [scrolledFromBottom, setScrolledFromBottomState] = useState(false);
+  /**
+   * The pill value last handed to React. `syncFollowState` runs on every
+   * streamed delta and scroll event, so an unchanged value must not queue an
+   * update at all. A `prev => prev` updater is not enough: React drops it
+   * before scheduling only when the fiber has no pending work, and during
+   * streaming it usually has some. Each call then became a wasted render
+   * queued from the passive-effect flush, and enough of those in a row trip
+   * React's "Maximum update depth exceeded".
+   */
+  const scrolledFromBottomRef = useRef(false);
+  function setScrolledFromBottom(update: (shown: boolean) => boolean) {
+    const next = update(scrolledFromBottomRef.current);
+    if (next === scrolledFromBottomRef.current) return;
+    scrolledFromBottomRef.current = next;
+    setScrolledFromBottomState(next);
+  }
   // SDF liquid-glass refraction on the jump pill (frosted fallback via CSS).
   const jumpBtnGlassRef = useLiquidGlass<HTMLButtonElement>({ strength: 0.2 });
   const [composerPortalTarget, setComposerPortalTarget] = useState<HTMLElement | null>(null);
@@ -3154,8 +3170,8 @@ export function ChatPane({
       // 用户上滑背书 —— 那是把跟随焊死,比它要修的 bug 更糟。
       resetWheelWitness();
       snapshot(target);
-      // `syncFollowState` 里的函数式更新在值没变时原地返回,所以流式期间那一串
-      // scroll 事件不会每一跳都排一次重渲,也就不会撞上 React 的
+      // `syncFollowState` 只在浮标的值真变了才交给 React(见 `setScrolledFromBottom`),
+      // 所以流式期间那一串 scroll 事件不会每一跳都排一次重渲,也就不会撞上 React 的
       // "Maximum update depth exceeded"。
       syncFollowState();
       /*
@@ -3689,16 +3705,15 @@ export function ChatPane({
      * (`shouldShowJumpToLatest` 的 `scrollHeight <= clientHeight + 1`),不需要在这里
      * 反过来改意图。
      */
-    setScrolledFromBottom((prev) => {
-      const next = shouldShowJumpToLatest({
+    setScrolledFromBottom((prev) =>
+      shouldShowJumpToLatest({
         distance: Math.max(0, sample.scrollHeight - sample.scrollTop - sample.clientHeight),
         clientHeight: sample.clientHeight,
         scrollHeight: sample.scrollHeight,
         shown: prev,
         following: isFollowingTail(),
-      });
-      return prev === next ? prev : next;
-    });
+      }),
+    );
   }
 
   function handleQuoteSelectionActivityChange(active: boolean) {
