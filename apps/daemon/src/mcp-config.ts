@@ -15,7 +15,7 @@
 // users can copy-paste between OpenDesign and other tools without
 // translation.
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -293,6 +293,56 @@ export function isManagedProjectCwd(
   if (typeof projectsDir !== 'string' || projectsDir.length === 0) return false;
   if (cwd === projectsDir) return false; // PROJECTS_DIR root, not a project
   return cwd.startsWith(projectsDir + path.sep);
+}
+
+/**
+ * Daemon-data path of the Claude `--mcp-config` file for an imported-folder
+ * project. Imported folders are the user's own tree (often a repo with its own
+ * `.mcp.json`), so the daemon never writes MCP config there; it keeps one file
+ * per project under the daemon data root instead and hands it to Claude Code
+ * with `--mcp-config`. `dataDir` must be the resolved daemon data root.
+ */
+export function importedProjectClaudeMcpConfigPath(dataDir: string, projectId: string): string {
+  if (typeof dataDir !== 'string' || !path.isAbsolute(dataDir)) {
+    throw new Error('daemon data root must be an absolute path');
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(projectId) || projectId === '.' || projectId === '..') {
+    throw new Error('invalid project id');
+  }
+  return path.join(dataDir, 'claude-mcp-config', `${projectId}.json`);
+}
+
+/**
+ * Write (or retire) the imported-folder Claude `--mcp-config` file for one
+ * project and return the path to pass, or null when no external server is
+ * enabled. The file is replaced atomically on every run, so concurrent runs of
+ * the same project never read a half-written file, and a stale file is removed
+ * once the user disables every server. Throws on I/O failure; the caller
+ * decides whether that is fatal.
+ */
+export async function prepareImportedProjectClaudeMcpConfig(input: {
+  dataDir: string;
+  projectId: string;
+  servers: McpServerConfig[];
+  tokens?: Record<string, string>;
+}): Promise<string | null> {
+  const file = importedProjectClaudeMcpConfigPath(input.dataDir, input.projectId);
+  const json = buildClaudeMcpJson(input.servers, input.tokens ?? {});
+  if (!json) {
+    await rm(file, { force: true });
+    return null;
+  }
+  await mkdir(path.dirname(file), { recursive: true });
+  const tmp = file + '.' + randomBytes(4).toString('hex') + '.tmp';
+  // The JSON can carry OAuth bearer tokens; keep it owner-readable only.
+  try {
+    await writeFile(tmp, JSON.stringify(json, null, 2), { encoding: 'utf8', mode: 0o600 });
+    await rename(tmp, file);
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+  return file;
 }
 
 /**

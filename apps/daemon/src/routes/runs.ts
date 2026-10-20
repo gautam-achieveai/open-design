@@ -1975,7 +1975,18 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       const rolloutTaskType = odNextTaskTypeForProjectScenarioBinding(
         verifiedStrategyBinding ?? verifiedScenarioBinding,
       );
-      const routeApplicability = explicitUserPlugin
+      // Build mode is product work in the user's code, composed by the legacy
+      // stack's Build charter; the OD Next design pipeline never applies.
+      // Session mode is resolved for the run further down, so read the same
+      // two sources here: the request, else the conversation's saved mode.
+      const requestedSessionMode = typeof requestBody.sessionMode === 'string'
+        ? requestBody.sessionMode
+        : typeof requestBody.conversationId === 'string' && requestBody.conversationId
+          ? getConversation(db, requestBody.conversationId)?.sessionMode
+          : undefined;
+      const routeApplicability = requestedSessionMode === 'build'
+        ? 'not_applicable' as const
+        : explicitUserPlugin
         ? 'explicit_user' as const
         : rolloutTaskType
           ? 'eligible' as const
@@ -2455,7 +2466,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     // Resolve session mode before omit-pin seed so the user turn stores the
     // same mode the run will use (matches web PUT /messages persistence).
     meta.sessionMode =
-      meta.sessionMode === 'chat' || meta.sessionMode === 'design' || meta.sessionMode === 'plan'
+      meta.sessionMode === 'chat' || meta.sessionMode === 'design' || meta.sessionMode === 'plan' || meta.sessionMode === 'build'
         ? normalizeConversationSessionMode(meta.sessionMode)
         : normalizeConversationSessionMode(conversationSession?.sessionMode);
     // Web always mints assistantMessageId client-side. API clients that already
@@ -2983,7 +2994,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
                       snapshotId: resolvedSnapshot.snapshotId,
                       selectedAgentId: candidate.agentId!,
                       initialRunId: candidate.id,
-                      sessionMode: meta.sessionMode === 'chat' || meta.sessionMode === 'plan' ? meta.sessionMode : 'design',
+                      sessionMode: meta.sessionMode === 'chat' || meta.sessionMode === 'plan' || meta.sessionMode === 'build' ? meta.sessionMode : 'design',
                       frozenSkillPackage,
                       promptBundleText: preparedPromptBundleText,
                       taskInputManifestSha256: initialTaskInputSnapshot.manifestSha256,

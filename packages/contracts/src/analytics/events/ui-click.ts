@@ -771,7 +771,7 @@ export interface ChatPanelClickProps {
 // (the wire / DB value is `chat`; the UI labels it "Ask"); `design` is the
 // full design-agent run. Map the wire `chat` → `ask` at every emit site via
 // `sessionModeToTracking` so analytics speaks the product's language.
-export type TrackingSessionMode = 'ask' | 'design' | 'plan';
+export type TrackingSessionMode = 'ask' | 'design' | 'plan' | 'build';
 
 // Toggling the ask/design switch in the chat composer.
 export interface ComposerSessionModeClickProps {

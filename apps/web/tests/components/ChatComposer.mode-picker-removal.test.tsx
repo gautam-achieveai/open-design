@@ -28,4 +28,24 @@ describe('ChatComposer fixed Design mode', () => {
     expect(screen.queryByTestId('composer-mode-trigger')).toBeNull();
     expect(screen.queryByTestId('composer-mode-clear')).toBeNull();
   });
+
+  it('shows the picker, with Build, only when the host offers Build mode', async () => {
+    const onSessionModeChange = vi.fn();
+    render(
+      <ChatComposer
+        projectId="project-1"
+        projectFiles={[]}
+        streaming={false}
+        sessionMode="build"
+        onSessionModeChange={onSessionModeChange}
+        buildModeAvailable
+        onEnsureProject={async () => 'project-1'}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+    await flushMounts();
+
+    expect(screen.getByTestId('composer-mode-trigger').getAttribute('aria-label')).toBe('Mode: Build');
+  });
 });

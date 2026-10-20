@@ -12,6 +12,7 @@
 
 import type http from 'node:http';
 import Database from 'better-sqlite3';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, promises as fsp, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,14 +21,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { insertConversation } from '../src/db.js';
 import { startServer } from '../src/server.js';
 
-async function withFakeClaude<T>(run: () => Promise<T>): Promise<T> {
+async function withFakeClaude<T>(run: () => Promise<T>, customScript?: string): Promise<T> {
   const dir = await fsp.mkdtemp(join(tmpdir(), 'od-mcp-spawn-bin-'));
   const oldPath = process.env.PATH;
   const oldClaudeBin = process.env.CLAUDE_BIN;
   const oldAgentHome = process.env.OD_AGENT_HOME;
   // Fake `claude` that prints stream-json the daemon understands and exits 0.
   // The single result frame is enough to drive the run to `succeeded`.
-  const script = `
+  const script = customScript ?? `
 const out = {
   type: 'result',
   subtype: 'success',
@@ -114,7 +115,13 @@ describe('spawn writes external MCP config for Claude Code', () => {
       body: JSON.stringify({ servers: [] }),
     }).catch(() => {});
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true });
+      // Post-run file listing of an imported folder runs `git ls-files` with
+      // that folder as cwd; on Windows a still-exiting child pins the
+      // directory briefly, so retry; a temp dir still locked after that is
+      // left for the OS to reap rather than failing a test that passed.
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 40, retryDelay: 100 });
+      } catch {}
     }
   });
 
@@ -553,6 +560,111 @@ describe('spawn writes external MCP config for Claude Code', () => {
     expect(messagesBody.messages.some((msg) => msg.content === 'imported run-scoped tools')).toBe(false);
     expect(messagesBody.messages.some((msg) => msg.content === 'imported chat-scoped tools')).toBe(false);
   });
+
+  it('hands imported git folders external MCP via a data-root --mcp-config and keeps staging out of git', async () => {
+    // A fake `claude` that advertises `--mcp-config` in `-p --help` (so the
+    // capability probe enables it) and records the run argv beside itself.
+    const recordingScript = `
+const fs = require('node:fs');
+const path = require('node:path');
+const argv = process.argv.slice(2);
+if (argv.includes('--help')) { console.log('--add-dir <dirs...>\\n--mcp-config <configs...>'); process.exit(0); }
+if (argv.includes('--version')) { console.log('9.9.9 (Claude Code)'); process.exit(0); }
+if (argv[0] === 'auth') { console.log('{"loggedIn":true}'); process.exit(0); }
+fs.writeFileSync(path.join(__dirname, 'argv.json'), JSON.stringify(argv));
+console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, duration_ms: 1, total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 }, result: 'ok' }));
+process.exit(0);
+`;
+    await withFakeClaude(async () => {
+      const putRes = await fetch(`${baseUrl}/api/mcp/servers`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          servers: [{ id: 'imported-sse', transport: 'sse', enabled: true, url: 'https://mcp.example.test' }],
+        }),
+      });
+      expect(putRes.ok).toBe(true);
+
+      const { id, externalDir } = await importFolderProject();
+      execFileSync('git', ['init', '-q'], { cwd: externalDir });
+
+      const runsRes = await fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agentId: 'claude', projectId: id, message: 'imported mcp' }),
+      });
+      expect(runsRes.status).toBe(202);
+      const { runId } = (await runsRes.json()) as { runId: string };
+      await waitForRunStatus(baseUrl, runId);
+
+      const dataRoot = process.env.OD_DATA_DIR ?? join(process.cwd(), '.od');
+      const mcpFile = join(dataRoot, 'claude-mcp-config', `${id}.json`);
+      const written = JSON.parse(await fsp.readFile(mcpFile, 'utf8'));
+      expect(written.mcpServers['imported-sse']).toMatchObject({ type: 'sse' });
+      const argv = JSON.parse(
+        await fsp.readFile(join(process.env.PATH!.split(delimiter)[0]!, 'argv.json'), 'utf8'),
+      ) as string[];
+      expect(argv[argv.indexOf('--mcp-config') + 1]).toBe(mcpFile);
+      expect(argv).not.toContain('--strict-mcp-config');
+      expect(existsSync(join(externalDir, '.mcp.json'))).toBe(false);
+      expect(await fsp.readFile(join(externalDir, '.git', 'info', 'exclude'), 'utf8')).toContain(
+        '# OpenDesign staging (local, not committed)\n.od-skills/\n.od-frames/\n',
+      );
+      rmSync(mcpFile, { force: true });
+    }, recordingScript);
+  }, 60_000);
+
+  it('runs the first turn of an imported git repo in Build mode with the user’s slash command', async () => {
+    // Records the first stdin message — the composed prompt — then ends the turn.
+    const recordingScript = `
+const fs = require('node:fs');
+const path = require('node:path');
+const argv = process.argv.slice(2);
+if (argv.includes('--help')) { console.log('--add-dir <dirs...>'); process.exit(0); }
+if (argv.includes('--version')) { console.log('9.9.9 (Claude Code)'); process.exit(0); }
+if (argv[0] === 'auth') { console.log('{"loggedIn":true}'); process.exit(0); }
+require('node:readline').createInterface({ input: process.stdin }).once('line', (line) => {
+  fs.writeFileSync(path.join(__dirname, 'stdin.jsonl'), line);
+  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, duration_ms: 1, total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 }, result: 'ok' }));
+  process.exit(0);
+});
+`;
+    await withFakeClaude(async () => {
+      const externalDir = await fsp.mkdtemp(join(tmpdir(), 'od-build-import-'));
+      tempDirs.push(externalDir);
+      execFileSync('git', ['init', '-q'], { cwd: externalDir });
+      const imported = (await (await fetch(`${baseUrl}/api/import/folder`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ baseDir: externalDir }),
+      })).json()) as { project: { id: string }; conversationId: string };
+      projectsToClean.push(imported.project.id);
+
+      const runsRes = await fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          agentId: 'claude',
+          projectId: imported.project.id,
+          conversationId: imported.conversationId,
+          message: '/review the checkout flow',
+        }),
+      });
+      expect(runsRes.status).toBe(202);
+      const { runId } = (await runsRes.json()) as { runId: string };
+      await waitForRunStatus(baseUrl, runId);
+
+      const frame = JSON.parse(
+        await fsp.readFile(join(process.env.PATH!.split(delimiter)[0]!, 'stdin.jsonl'), 'utf8'),
+      ) as { message: { content: unknown } };
+      const prompt = JSON.stringify(frame.message.content);
+      expect(prompt).toContain('# OpenDesign Build Charter');
+      expect(prompt).not.toContain('# OpenDesign Charter');
+      expect(prompt).toContain('`/review`');
+      const status = execFileSync('git', ['status', '--porcelain'], { cwd: externalDir, encoding: 'utf8' });
+      expect(status).not.toMatch(/\.od-(skills|frames)/);
+    }, recordingScript);
+  }, 60_000);
 
   it('rejects malformed run-scoped MCP bundles before creating runs', async () => {
     const { id } = await createProject();

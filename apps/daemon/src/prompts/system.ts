@@ -37,6 +37,7 @@ import {
   renderSlimCoreCharter,
   SLIM_V2_ROLE_BOUNDARY_GUARD,
 } from './core-slim.js';
+import { BUILD_MODE_CHARTER } from './build-charter.js';
 import { renderDirectionIndexBlock, renderDirectionSpecBlock } from './directions.js';
 import { renderDeckFrameworkDirective } from './deck-framework.js';
 import {
@@ -46,6 +47,7 @@ import {
 import { renderPanelPrompt } from './panel.js';
 import { defaultCritiqueConfig, type CritiqueConfig } from '@open-design/contracts/critique';
 import {
+  AGENT_CONFIGURATION_DIRECTIVE,
   composeOdNextStrategyRequestPromptV2,
   executionProfileFromStreamFormat,
   INTEGRATIONS_MCP_PATH,
@@ -986,6 +988,18 @@ export function composeSystemPrompt({
   // layered composition until the A/B comparison signs off.
   const isSlimCore = promptCoreVariant === 'slim';
   const isAskModeEarly = sessionMode === 'chat';
+  const headExecutionProfile = executionProfile ?? executionProfileFromStreamFormat(streamFormat);
+  // Build mode changes the user's own files, so it needs file tools. A
+  // text-artifact (API/BYOK) run has none and composes Design mode instead.
+  // Its charter is the whole head: the designer charter, discovery layer,
+  // direction library, deck/media contracts and critique panel stay off.
+  const isBuildMode = sessionMode === 'build' && headExecutionProfile === 'filesystem';
+  // Heads with no numbered priority list of their own carry the
+  // agent-configuration rule as a block; the slim charter and the Build
+  // charter state it inside their lists. Filesystem runs only (no agent CLI on
+  // a text-artifact run).
+  const agentConfigurationHead =
+    headExecutionProfile === 'filesystem' ? [AGENT_CONFIGURATION_DIRECTIVE, '\n\n---\n\n'] : [];
   const runtimeMediaDefaults = mediaDefaultsForRuntime(
     agentId,
     byokMediaDefaults,
@@ -1000,7 +1014,7 @@ export function composeSystemPrompt({
     metadata?.kind === 'image' ||
     metadata?.kind === 'video' ||
     metadata?.kind === 'audio';
-  const isSlimCharterHead = isSlimCore && !isAskModeEarly && !isMediaSurfaceEarly;
+  const isSlimCharterHead = isSlimCore && !isAskModeEarly && !isMediaSurfaceEarly && !isBuildMode;
 
   // Head ordering differs by variant, following prompt-caching prefix rules
   // (stable content first — see shared prompt-caching guidance):
@@ -1019,7 +1033,9 @@ export function composeSystemPrompt({
   // the charter's TodoWrite/render instructions, which classic guaranteed by
   // always composing the override first. Cache-neutral — plain runs use the
   // text_artifact charter variant and form their own prefix family anyway.
-  const parts: string[] = isSlimCharterHead
+  const parts: string[] = isBuildMode
+    ? [BUILD_MODE_CHARTER, '\n\n---\n\n']
+    : isSlimCharterHead
     ? [
         ...(streamFormat === 'plain' ? [API_MODE_OVERRIDE, '\n\n---\n\n'] : []),
         renderSlimCoreCharter(
@@ -1037,6 +1053,7 @@ export function composeSystemPrompt({
           '\n\n---\n\n',
           PROMPT_INJECTION_RESISTANCE,
           '\n\n---\n\n',
+          ...agentConfigurationHead,
         ]
       : isSlimCore
         ? [
@@ -1048,13 +1065,14 @@ export function composeSystemPrompt({
             ...(streamFormat === 'plain' ? [API_MODE_OVERRIDE, '\n\n---\n\n'] : []),
             PROMPT_INJECTION_RESISTANCE,
             '\n\n---\n\n',
+            ...agentConfigurationHead,
           ]
-        : [PROMPT_INJECTION_RESISTANCE, '\n\n---\n\n'];
+        : [PROMPT_INJECTION_RESISTANCE, '\n\n---\n\n', ...agentConfigurationHead];
   // The slim charter's plan step stays generic ("use your runtime's plan/todo
   // tool, else a numbered list") because it is prepended to every slim run and
   // some runtimes genuinely have no such tool. The concrete tool NAME is added
   // here instead, per runtime, so only the runs that can act on it pay for it.
-  if (isSlimCharterHead) {
+  if (isSlimCharterHead || isBuildMode) {
     const planToolNote = planToolNoteForRuntime(agentId, streamFormat);
     if (planToolNote) parts.push(planToolNote, '\n\n---\n\n');
   }
@@ -1116,7 +1134,9 @@ export function composeSystemPrompt({
   // parse and override all of those rules before it can start, adding tokens
   // and LLM inference time. The MEDIA_GENERATION_CONTRACT (pushed below) is
   // the sole workflow authority for these surfaces.
-  if (metadata?.examplePrompt === true) {
+  if (isBuildMode) {
+    // Build mode has no design brief to skip or seed.
+  } else if (metadata?.examplePrompt === true) {
     parts.push(buildExamplePromptOverride(metadata.examplePromptTitle, metadata.examplePromptBrief));
     parts.push('\n\n---\n\n');
   } else if (metadata?.skipDiscoveryBrief === true) {
@@ -1132,7 +1152,7 @@ export function composeSystemPrompt({
     parts.push('\n\n---\n\n');
   }
 
-  if (!isMediaSurfaceEarly && !isAskMode) {
+  if (!isMediaSurfaceEarly && !isAskMode && !isBuildMode) {
     if (!isSlimCore) {
       parts.push(renderDiscoveryAndPhilosophy(resolvedExecutionProfile), '\n\n---\n\n');
     }
@@ -1194,7 +1214,7 @@ export function composeSystemPrompt({
   // Ask mode skips the multi-thousand-token designer charter entirely — the
   // CHAT_MODE_OVERRIDE above is its self-contained identity. Plan/Design keep
   // it. Slim already opened the document with its charter (see head above).
-  if (!isAskMode && !isSlimCore) {
+  if (!isAskMode && !isSlimCore && !isBuildMode) {
     parts.push(
       '# Identity and workflow charter (background)\n\n',
       renderOfficialDesignerPrompt(resolvedExecutionProfile, {
@@ -1340,7 +1360,7 @@ export function composeSystemPrompt({
     );
   }
 
-  if (!isAskMode) {
+  if (!isAskMode && !isBuildMode) {
     parts.push(`\n\n${SEMANTIC_OUTPUT_FILE_NAMES}`);
   }
 
@@ -1392,13 +1412,14 @@ export function composeSystemPrompt({
   const isFreeformProject = activeSkillModes.size === 0 && (!metadata || metadata.kind === 'other');
   const hasDeckSkillSeed =
     activeSkillModes.has('deck') && !!skillBody && /assets\/template\.html/.test(skillBody);
-  if (!isAskMode && isDeckProject && !hasDeckSkillSeed) {
+  if (!isAskMode && !isBuildMode && isDeckProject && !hasDeckSkillSeed) {
     // ⚠️ This decides WHEN the legacy path gets the deck scaffold. OD Next has
     // its own gate — `resolveOdNextDeckFrameworkMode` in `od-next-strategy.ts`.
     // The scaffold is shared; the injection conditions are not. Change both.
     parts.push(`\n\n---\n\n${deckFrameworkDirective}`);
   } else if (
     !isAskMode &&
+    !isBuildMode &&
     !isDeckProject &&
     !isMediaSurfaceEarly &&
     !hasDeckSkillSeed &&
@@ -1423,7 +1444,7 @@ export function composeSystemPrompt({
     // Ask mode ships neither the media-generation contract nor the dispatch
     // hint. The override above tells the agent to nudge the user toward Design
     // mode for anything that actually generates media.
-  } else if (isMediaSurface) {
+  } else if (isMediaSurface && !isBuildMode) {
     parts.push(renderMediaGenerationContract(mediaExecution, byokMediaDefaults));
     const runtimeDefaultsHint = renderRuntimeMediaDefaultsHint(
       runtimeMediaDefaults,
@@ -1453,7 +1474,7 @@ export function composeSystemPrompt({
   // the critique flag is a no-op there until a media-aware panel template
   // lands.
   const cfg = critique ?? defaultCritiqueConfig();
-  if (cfg.enabled && critiqueBrand && critiqueSkill && !isMediaSurface && !isAskMode) {
+  if (cfg.enabled && critiqueBrand && critiqueSkill && !isMediaSurface && !isAskMode && !isBuildMode) {
     parts.push('\n\n' + renderPanelPrompt({ cfg, brand: critiqueBrand, skill: critiqueSkill }));
   }
 
@@ -1463,7 +1484,7 @@ export function composeSystemPrompt({
   // them would reintroduce the duplication the rewrite removes. Ask mode
   // composes no core charter, so it keeps the clarifying-questions tail as
   // its only question-form guidance.
-  if (!isSlimCore && !isAskMode && activeDesignSystemBody && activeDesignSystemBody.length > 0) {
+  if (!isSlimCore && !isAskMode && !isBuildMode && activeDesignSystemBody && activeDesignSystemBody.length > 0) {
     parts.push(ACTIVE_DESIGN_SYSTEM_VISUAL_DIRECTION_OVERRIDE);
   }
 
@@ -1474,7 +1495,7 @@ export function composeSystemPrompt({
   parts.push(...slimTurnVariableParts);
 
 
-  if (!isSlimCore && resolvedExecutionProfile === 'filesystem') {
+  if (!isSlimCore && !isBuildMode && resolvedExecutionProfile === 'filesystem') {
     parts.push(FILESYSTEM_HANDOFF_OVERRIDE);
   }
 

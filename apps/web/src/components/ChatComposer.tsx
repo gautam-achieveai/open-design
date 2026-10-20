@@ -71,6 +71,7 @@ import { buildVisualAnnotationAttachment, commentPageLabel, pinPreviewImage, pin
 import { Icon, type IconName } from "./Icon";
 import { ChatCloseIcon, ChatFileIcon, ChatSendArrowIcon } from "./chat/primitives/icons";
 import { ComposerPlusMenu, PLUS_SUBMENU_RESOURCE_KIND, type PlusMenuSubmenu } from './ComposerPlusMenu';
+import { ComposerModePicker } from './ComposerModePicker';
 import { LibraryPicker } from './LibraryPicker';
 import { FigmaImportModal } from './FigmaImportModal';
 import { FigmaHelpModal } from './FigmaHelpModal';
@@ -313,6 +314,13 @@ interface Props {
   activeProjectFileName?: string | null;
   streaming: boolean;
   sessionMode?: ChatSessionMode;
+  /**
+   * Switches the conversation's session mode. When set, the composer shows the
+   * mode picker; without it the mode is only changed by next-step actions.
+   */
+  onSessionModeChange?: (mode: ChatSessionMode) => void;
+  /** Offer Build mode in the picker: true only when an agent CLI runs the chat. */
+  buildModeAvailable?: boolean;
   sendDisabled?: boolean;
   // Read-only viewer of a team-shared project: makes the Lexical editor
   // non-editable (in addition to `sendDisabled` blocking the send action) so
@@ -581,6 +589,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       activeProjectFileName = null,
       streaming,
       sessionMode = 'design',
+      onSessionModeChange,
+      buildModeAvailable = false,
       sendDisabled = false,
       inputDisabled = false,
       initialDraft,
@@ -3942,12 +3952,20 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
             {designSystemPicker}
             {leadingAccessory}
             <span className="composer-spacer" />
-            {/* No mode picker in the composer (2026-08-19, product): the row
-                carried a 规划/设计/提问 chooser that every run defaulted past.
-                `sessionMode` still flows through this component — a
-                conversation keeps its stored mode and next-step actions still
-                switch it (ChatPane.handleNextStepPromptAction) — it just is
-                not chosen from here any more. */}
+            {/* The mode picker was removed from the composer on 2026-08-19
+                (product): its 规划/设计/提问 chooser was one every run
+                defaulted past. It comes back only where Build mode exists —
+                an agent CLI working on the user's own files — because Build
+                has no other entry point. API/BYOK hosts pass no
+                `onSessionModeChange` and keep the picker-free row. */}
+            {onSessionModeChange && buildModeAvailable ? (
+              <ComposerModePicker
+                mode={sessionMode}
+                onModeChange={onSessionModeChange}
+                buildAvailable={buildModeAvailable}
+                labelHidden={streaming}
+              />
+            ) : null}
             {footerAccessory}
             {showAdmissionPendingButton ? (
               <button

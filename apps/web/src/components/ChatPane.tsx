@@ -625,6 +625,8 @@ interface Props {
   projectId: string | null;
   sessionMode?: ChatSessionMode;
   onSessionModeChange?: (mode: ChatSessionMode) => void;
+  /** An agent CLI runs this chat, so the composer can offer Build mode. */
+  buildModeAvailable?: boolean;
   // Analytics-only — forwarded to AssistantMessage so the feedback
   // events know which project surface the rating applies to. Optional
   // (defaults to null/'prototype') so unit tests can mount ChatPane
@@ -1319,6 +1321,7 @@ export function ChatPane({
   projectId,
   sessionMode = 'design',
   onSessionModeChange,
+  buildModeAvailable = false,
   projectKindForTracking = null,
   projectFiles,
   activeProjectFileName = null,
@@ -4094,6 +4097,8 @@ export function ChatPane({
       projectFiles={projectFiles}
       activeProjectFileName={activeProjectFileName}
       sessionMode={sessionMode}
+      onSessionModeChange={onSessionModeChange}
+      buildModeAvailable={buildModeAvailable}
       skills={skills}
       streaming={streaming}
       sendDisabled={sendDisabled}

@@ -81,7 +81,21 @@ export interface RunTerminalLifecycleStatus {
 }
 
 export type ChatRole = 'user' | 'assistant';
-export type ChatSessionMode = 'design' | 'chat' | 'plan';
+/**
+ * Composer mode for a conversation. `design` builds design artifacts, `chat`
+ * is the bare Ask conversation, `plan` writes an editable plan first, and
+ * `build` is product development in the user's own code: a product-builder
+ * charter instead of the designer one, with OpenDesign's UX skills kept.
+ */
+export type ChatSessionMode = 'design' | 'chat' | 'plan' | 'build';
+
+/** Every `ChatSessionMode`, for parsers that accept one from the wire. */
+export const CHAT_SESSION_MODES: readonly ChatSessionMode[] = ['design', 'chat', 'plan', 'build'];
+
+/** True when `value` names a `ChatSessionMode`. */
+export function isChatSessionMode(value: unknown): value is ChatSessionMode {
+  return typeof value === 'string' && (CHAT_SESSION_MODES as readonly string[]).includes(value);
+}
 export type ChatCommentSelectionKind = PreviewCommentSelectionKind | 'visual';
 export type ByokChatProtocol =
   | 'anthropic'

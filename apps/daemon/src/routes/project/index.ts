@@ -1995,7 +1995,7 @@ export function daemonSanitizeTitleInDoc(html: string): string {
 }
 
 function normalizeChatSessionMode(value: unknown): ChatSessionMode {
-  return value === 'chat' || value === 'plan' ? value : 'design';
+  return value === 'chat' || value === 'plan' || value === 'build' ? value : 'design';
 }
 
 function isDesignSystemLikeProject(project: any): boolean {

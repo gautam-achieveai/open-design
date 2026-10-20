@@ -62,7 +62,7 @@ import { observeRead } from './services/daemon-health.js';
 type SqliteDb = Database.Database;
 type DbRow = Record<string, any>;
 type JsonObject = Record<string, unknown>;
-type ChatSessionMode = 'design' | 'chat' | 'plan';
+type ChatSessionMode = 'design' | 'chat' | 'plan' | 'build';
 
 let dbInstance: SqliteDb | null = null;
 let dbFile: string | null = null;
@@ -2369,7 +2369,7 @@ function normalizeConversation(r: DbRow) {
 }
 
 export function normalizeConversationSessionMode(value: unknown): ChatSessionMode {
-  return value === 'chat' || value === 'plan' ? value : 'design';
+  return value === 'chat' || value === 'plan' || value === 'build' ? value : 'design';
 }
 
 function numberProperty(key: string, value: unknown) {
@@ -5125,7 +5125,7 @@ function scrubDsmlToolProtocolTailFromEvents(events: readonly DbRow[]): DbRow[] 
 }
 
 function normalizeMessageSessionMode(value: unknown): ChatSessionMode | undefined {
-  return value === 'chat' || value === 'design' || value === 'plan' ? value : undefined;
+  return value === 'chat' || value === 'design' || value === 'plan' || value === 'build' ? value : undefined;
 }
 
 function normalizeResultDeliveryState(
@@ -5143,7 +5143,7 @@ function normalizeResultDeliveryStateForStorage(
 }
 
 function normalizeMessageSessionModeForStorage(value: unknown): ChatSessionMode | null {
-  return value === 'chat' || value === 'design' || value === 'plan' ? value : null;
+  return value === 'chat' || value === 'design' || value === 'plan' || value === 'build' ? value : null;
 }
 
 /**

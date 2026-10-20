@@ -44,6 +44,7 @@ import {
   recalledTodosFromTodoWriteInput,
   type RecalledTodo,
 } from '@open-design/contracts';
+import { renderUserSlashCommandNote } from './runtimes/user-slash-command.js';
 import type {
   CollabCloudMemberDirectoryEntry,
   TeamProject,
@@ -671,6 +672,7 @@ import { buildDocumentPreview } from './document-preview.js';
 import { lintArtifact, renderFindingsForAgent } from './lint-artifact.js';
 import { loadCraftSections, resolveCraftRequirements } from './craft.js';
 import { skillCwdAliasSegment, stageActiveSkill } from './cwd-aliases.js';
+import { ensureOdStagingGitExcluded } from './imported-repo-git.js';
 import { buildDesktopArtifactExportInput, buildDesktopPdfExportInput } from './pdf-export.js';
 import { generateMedia } from './media/index.js';
 import { resolveHyperFramesCliPath } from './media/hyperframes-runtime.js';
@@ -699,6 +701,7 @@ import {
   buildClaudeMcpJson,
   buildOpenCodeMcpConfigContent,
   isManagedProjectCwd,
+  prepareImportedProjectClaudeMcpConfig,
   readMcpConfig,
   writeMcpConfig,
 } from './mcp-config.js';
@@ -907,6 +910,8 @@ import { registerDesignSystemRoutes } from './routes/design-systems.js';
 import { registerHostToolsRoutes } from './routes/host-tools.js';
 import { registerPluginAssetRoutes } from './routes/plugins/assets.js';
 import { registerPluginMarketplaceRoutes } from './routes/plugins/marketplaces.js';
+import { registerClaudeCodePluginRoutes } from './routes/claude-code-plugins.js';
+import { resolveClaudeCodeConfigDir } from './claude-code-plugins.js';
 import { registerPluginEventRoutes, registerPluginRoutes, registerProjectPluginRoutes } from './routes/plugins/index.js';
 import { registerMcpRoutes } from './mcp-routes.js';
 import { registerXaiRoutes } from './routes/xai.js';
@@ -2272,9 +2277,16 @@ export function composeChatUserRequestForAgent(
   const continuationContext = renderResumeContinuationContext(
     options.resumeContinuationOriginalRequest,
   );
+  // The latest turn's own words decide it. Without `currentPrompt` (headless
+  // `od run start --message`), `message` is either that turn's raw text or a
+  // rendered transcript, and a transcript opens with a role header, never `/`.
+  const slashCommandNote = renderUserSlashCommandNote(
+    typeof currentPrompt === 'string' ? currentPrompt : message,
+  );
   const parts: string[] = [];
   if (continuationContext) parts.push(continuationContext);
   if (recall) parts.push(recall);
+  if (slashCommandNote) parts.push(slashCommandNote);
   if (!transition) {
     parts.push(body);
   } else if (skip) {
@@ -9864,6 +9876,9 @@ export async function startServer({
     createMarketplaceFetcher,
     marketplaceRegistryIdFromUrl,
   });
+  registerClaudeCodePluginRoutes(app, {
+    resolveConfigDir: () => resolveClaudeCodeConfigDir(RUNTIME_DATA_DIR),
+  });
   registerPluginAssetRoutes(app, {
     db,
     verifyWorkspaceRequestAuthority,
@@ -11182,7 +11197,7 @@ export async function startServer({
         ? getConversation(db, conversationId)
         : null;
     const runSessionMode =
-      sessionMode === 'chat' || sessionMode === 'design' || sessionMode === 'plan'
+      sessionMode === 'chat' || sessionMode === 'design' || sessionMode === 'plan' || sessionMode === 'build'
         ? normalizeConversationSessionMode(sessionMode)
         : normalizeConversationSessionMode(conversationSession?.sessionMode);
     // Single choke point for the codex transport switch. Every other
@@ -11699,6 +11714,13 @@ export async function startServer({
     // daemon and folded into the system prompt directly (see
     // `readDesignSystem`), so an agent never has to open them via the
     // filesystem.
+    //
+    // An imported folder (cwd outside PROJECTS_DIR) is the user's own tree,
+    // often a git repo they develop in: keep the staged `.od-*` directories
+    // out of its `git status` via the repo-local `info/exclude`. Fail-soft.
+    if (cwd && !isManagedProjectCwd(cwd, PROJECTS_DIR)) {
+      await ensureOdStagingGitExcluded(cwd, (msg) => console.warn(msg));
+    }
     if (cwd && strategyTaskAtStart?.frozenSkillPackage) {
       await materializeFrozenSkillPackage({
         frozen: strategyTaskAtStart.frozenSkillPackage,
@@ -13481,6 +13503,35 @@ export async function startServer({
         }
       }
     }
+    // Imported folder (cwd = the user's own tree, often a repo with its own
+    // `.mcp.json`): never write there. Keep the same JSON in a per-project
+    // file under the daemon data root and hand it to Claude Code through
+    // `--mcp-config` (additive — the user's own Claude MCP config still
+    // loads). Only the `claude` def reads `mcpConfigPath`; buildArgs also
+    // gates the flag on the `--help` capability probe. Fail-soft.
+    let claudeMcpConfigPath: string | undefined;
+    if (
+      def.id === 'claude' &&
+      def.externalMcpInjection === 'claude-mcp-json' &&
+      cwd &&
+      !isManagedProjectCwd(cwd, PROJECTS_DIR) &&
+      typeof projectId === 'string' &&
+      projectId
+    ) {
+      try {
+        claudeMcpConfigPath = (await prepareImportedProjectClaudeMcpConfig({
+          dataDir: RUNTIME_DATA_DIR,
+          projectId,
+          servers: enabledExternalMcp,
+          tokens: oauthTokensForSpawn,
+        })) ?? undefined;
+      } catch (err) {
+        console.warn(
+          '[mcp-config] failed to write imported-folder --mcp-config file:',
+          err && err.message ? err.message : err,
+        );
+      }
+    }
     if (
       enabledExternalMcp.length > 0 &&
       def.externalMcpInjection === 'acp-merge'
@@ -13905,6 +13956,7 @@ export async function startServer({
           hasPriorAssistantTurn,
           agentLogFilePath,
           promptFilePath: promptFile?.path,
+          ...(claudeMcpConfigPath ? { mcpConfigPath: claudeMcpConfigPath } : {}),
           resumeSessionId: agentResumePromptPolicy.resumeSessionId,
           newSessionId: agentResumeCtx.newSessionId,
           disablePlugins:

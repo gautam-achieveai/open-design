@@ -98,8 +98,9 @@ import {
   useWorkspaceInvalidation,
 } from '../collab/workspace-events';
 import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
+import { ClaudeCodePluginsPanel } from './ClaudeCodePluginsPanel';
 
-type PluginsTab = 'installed' | 'available' | 'sources' | 'team';
+type PluginsTab = 'installed' | 'available' | 'sources' | 'claude-code' | 'team';
 
 type PluginWorkspaceReadMode = 'scoped' | 'headerless' | 'pending' | 'blocked';
 
@@ -180,6 +181,7 @@ const PLUGINS_TABS: ReadonlyArray<{
   { id: 'installed' },
   { id: 'available' },
   { id: 'sources' },
+  { id: 'claude-code' },
   { id: 'team' },
 ];
 
@@ -579,11 +581,14 @@ export function PluginsView({
                 .filter(Boolean)
                 .join('')}
               onClick={() => {
-                trackPluginsTopClick(analytics.track, {
-                  page_name: 'plugins',
-                  area: 'plugins',
-                  element: `${tab.id}_tab` as const,
-                });
+                // The read-only Claude Code tab has no analytics element yet.
+                if (tab.id !== 'claude-code') {
+                  trackPluginsTopClick(analytics.track, {
+                    page_name: 'plugins',
+                    area: 'plugins',
+                    element: `${tab.id}_tab` as const,
+                  });
+                }
                 setActiveTab(tab.id);
               }}
               data-testid={`plugins-tab-${tab.id}`}
@@ -763,6 +768,8 @@ export function PluginsView({
             t={t}
           />
         ) : null}
+
+        {activeTab === 'claude-code' ? <ClaudeCodePluginsPanel /> : null}
 
         {activeTab === 'team' ? (
           <TeamPanel
@@ -2946,6 +2953,7 @@ function pluginTabLabel(id: PluginsTab, t: ReturnType<typeof useI18n>['t']): str
     case 'installed': return t('pluginsView.tab.installed');
     case 'available': return t('pluginsView.tab.available');
     case 'sources': return t('pluginsView.tab.sources');
+    case 'claude-code': return t('pluginsView.tab.claudeCode');
     case 'team': return t('pluginsView.tab.team');
   }
 }
@@ -2955,6 +2963,7 @@ function pluginTabHint(id: PluginsTab, t: ReturnType<typeof useI18n>['t']): stri
     case 'installed': return t('pluginsView.tabHint.installed');
     case 'available': return t('pluginsView.tabHint.available');
     case 'sources': return t('pluginsView.tabHint.sources');
+    case 'claude-code': return t('pluginsView.tabHint.claudeCode');
     case 'team': return t('pluginsView.tabHint.team');
   }
 }

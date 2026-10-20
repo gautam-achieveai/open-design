@@ -13871,6 +13871,7 @@ export function ProjectView({
               projectId={project.id}
               sessionMode={activeSessionMode}
               onSessionModeChange={handleActiveConversationSessionModeChange}
+              buildModeAvailable={config.mode === 'daemon' && !projectMutationReadOnly}
               projectKindForTracking={projectKindFromMetadataToTracking(currentProject.metadata)}
               projectFiles={projectFiles}
               activeProjectFileName={activeProjectFileName}

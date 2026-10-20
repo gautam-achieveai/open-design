@@ -57,6 +57,12 @@ export type RuntimeContext = {
   // the prompt via argv or stdin. The daemon creates the file before
   // buildArgs and removes it after the child exits.
   promptFilePath?: string;
+  // Daemon-owned MCP config file (under the daemon data root, never the
+  // project cwd) carrying the user's OD-configured external MCP servers.
+  // Set only for imported-folder Claude runs, where writing `.mcp.json` into
+  // the user's own tree is off-limits. Claude passes it as `--mcp-config`
+  // when the CLI advertises the flag; other adapters ignore it.
+  mcpConfigPath?: string;
   // Native-resume adapters read these to decide whether to continue the
   // external runtime's own session. `resumeSessionId` is the stored id for
   // this (conversation, agent) when a prior session exists; the adapter sends

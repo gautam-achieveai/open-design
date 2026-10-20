@@ -6,7 +6,7 @@ import {
 } from '@open-design/contracts';
 import nodePath from 'node:path';
 import os from 'node:os';
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, stat } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import { isBlocked as isBlockedSystemDir } from './linked-dirs.js';
 import type { RouteDeps } from './server-context.js';
@@ -487,6 +487,10 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
         );
       }
       const cid = randomId();
+      // A folder under git is the user's own codebase: its first conversation
+      // opens in Build mode, which follows the repo's agent configuration and
+      // edits in place. Any other folder keeps the Design default.
+      const initialSessionMode = (await isGitWorkingTree(normalizedPath)) ? 'build' : 'design';
       const project = db.transaction(() => {
         const createdProject = insertProject(db, {
           id,
@@ -511,6 +515,7 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
           id: cid,
           projectId: id,
           title: `Imported from ${projectName}`,
+          sessionMode: initialSessionMode,
           createdAt: now,
           updatedAt: now,
         });
@@ -534,6 +539,16 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
     }
   });
 
+}
+
+/** True when `dir` is the root of a git working tree (`.git` dir or file). */
+async function isGitWorkingTree(dir: string): Promise<boolean> {
+  try {
+    await stat(nodePath.join(dir, '.git'));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

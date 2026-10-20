@@ -998,7 +998,7 @@ export function createChatRunService({
       toolBundle: normalizeRunToolBundleForRun(meta.toolBundle),
       browserUse: meta.browserUse && typeof meta.browserUse === 'object' ? meta.browserUse : null,
       sessionMode:
-        meta.sessionMode === 'chat' || meta.sessionMode === 'design' || meta.sessionMode === 'plan'
+        meta.sessionMode === 'chat' || meta.sessionMode === 'design' || meta.sessionMode === 'plan' || meta.sessionMode === 'build'
           ? meta.sessionMode
           : null,
       context:

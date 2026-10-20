@@ -42,11 +42,11 @@ export interface RegisterProjectConversationRoutesDeps extends RouteDeps<'db' | 
 }
 
 function normalizeChatSessionMode(value: unknown): ChatSessionMode {
-  return value === 'chat' || value === 'plan' ? value : 'design';
+  return value === 'chat' || value === 'plan' || value === 'build' ? value : 'design';
 }
 
 function isChatSessionMode(value: unknown): value is ChatSessionMode {
-  return value === 'chat' || value === 'design' || value === 'plan';
+  return value === 'chat' || value === 'design' || value === 'plan' || value === 'build';
 }
 
 /**

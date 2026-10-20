@@ -29,6 +29,7 @@ import {
 } from './artifacts/publication-guard.js';
 import { normalizeArtifactRuntimeImports } from './artifacts/runtime-compat.js';
 import { isIgnoredProjectDirName } from './project-ignored-dirs.js';
+import { listGitIgnoredPaths } from './imported-repo-git.js';
 import {
   isSandboxImportedProjectRootAllowed,
   isSandboxModeEnabled,
@@ -146,6 +147,15 @@ export async function ensureProject(projectsRoot, projectId, metadata?) {
   return dir;
 }
 
+// Imported folders are the user's own tree; when that tree is a git work tree
+// the listing also honors git's ignore rules (see listGitIgnoredPaths). Managed
+// projects are daemon-owned and keep the plain walk. Null means "no git
+// filter" and the walk behaves exactly as it did before.
+async function gitIgnoredPathsForProject(dir, metadata?) {
+  if (!usesExternalProjectRoot(metadata)) return null;
+  return listGitIgnoredPaths(dir);
+}
+
 export async function listFiles(projectsRoot, projectId, opts = {}) {
   const metadata = opts?.metadata;
   const dir = resolveProjectDir(projectsRoot, projectId, metadata);
@@ -153,7 +163,8 @@ export async function listFiles(projectsRoot, projectId, opts = {}) {
   // Skip generated dependency/build trees for all project roots. Standard OD
   // projects can contain framework installs too; surfacing package HTML like
   // node_modules/tslib/*.html as artifacts produces blank previews.
-  await collectFiles(dir, '', out, isIgnoredProjectDirName, dir);
+  const gitIgnored = await gitIgnoredPathsForProject(dir, metadata);
+  await collectFiles(dir, '', out, isIgnoredProjectDirName, dir, gitIgnored);
   // Newest first — matches the visual order users expect after generating.
   out.sort((a, b) => b.mtime - a.mtime);
   const since = Number(opts.since);
@@ -167,12 +178,13 @@ export async function listProjectFolders(projectsRoot, projectId, opts = {}) {
   const metadata = opts?.metadata;
   const dir = resolveProjectDir(projectsRoot, projectId, metadata);
   const out = [];
-  await collectFolders(dir, '', out, isIgnoredProjectDirName);
+  const gitIgnored = await gitIgnoredPathsForProject(dir, metadata);
+  await collectFolders(dir, '', out, isIgnoredProjectDirName, gitIgnored);
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
 }
 
-async function collectFolders(dir, relDir, out, shouldSkipDir?: (name: string) => boolean) {
+async function collectFolders(dir, relDir, out, shouldSkipDir?: (name: string) => boolean, gitIgnored = null) {
   let entries = [];
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -185,6 +197,7 @@ async function collectFolders(dir, relDir, out, shouldSkipDir?: (name: string) =
     if (e.name.startsWith('.')) continue;
     if (shouldSkipDir?.(e.name)) continue;
     const rel = relDir ? `${relDir}/${e.name}` : e.name;
+    if (gitIgnored?.dirs.has(rel)) continue;
     const full = path.join(dir, e.name);
     let st;
     try {
@@ -200,7 +213,7 @@ async function collectFolders(dir, relDir, out, shouldSkipDir?: (name: string) =
       size: 0,
       mtime: st.mtimeMs,
     });
-    await collectFolders(full, rel, out, shouldSkipDir);
+    await collectFolders(full, rel, out, shouldSkipDir, gitIgnored);
   }
 }
 
@@ -280,7 +293,14 @@ export async function detectEntryFile(dir: string): Promise<string | null> {
   return null;
 }
 
-async function collectFiles(dir, relDir, out, shouldSkipDir?: (name: string) => boolean, projectRoot = dir) {
+async function collectFiles(
+  dir,
+  relDir,
+  out,
+  shouldSkipDir?: (name: string) => boolean,
+  projectRoot = dir,
+  gitIgnored = null,
+) {
   let entries = [];
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -294,11 +314,13 @@ async function collectFiles(dir, relDir, out, shouldSkipDir?: (name: string) => 
     const full = path.join(dir, e.name);
     if (e.isDirectory()) {
       if (shouldSkipDir?.(e.name)) continue;
-      await collectFiles(full, rel, out, shouldSkipDir, projectRoot);
+      if (gitIgnored?.dirs.has(rel)) continue;
+      await collectFiles(full, rel, out, shouldSkipDir, projectRoot, gitIgnored);
       continue;
     }
     if (!e.isFile()) continue;
     if (e.name.endsWith('.artifact.json')) continue;
+    if (gitIgnored?.files.has(rel)) continue;
     let st;
     let manifest;
     try {

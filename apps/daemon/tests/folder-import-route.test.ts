@@ -122,6 +122,23 @@ describe('POST /api/import/folder', () => {
     expect(typeof tabs.updatedAt).toBe('number');
   });
 
+  it('opens a git working tree in Build mode and any other folder in Design mode', async () => {
+    const sessionModeOf = async (folder: string) => {
+      const body = (await (await importFolder({ baseDir: folder })).json()) as {
+        project: { id: string };
+        conversationId: string;
+      };
+      const list = (await (
+        await fetch(`${baseUrl}/api/projects/${body.project.id}/conversations`)
+      ).json()) as { conversations: Array<{ id: string; sessionMode?: string }> };
+      return list.conversations.find((c) => c.id === body.conversationId)?.sessionMode;
+    };
+    const repo = makeFolder();
+    await mkdir(path.join(repo, '.git'));
+    expect(await sessionModeOf(repo)).toBe('build');
+    expect(await sessionModeOf(makeFolder())).toBe('design');
+  });
+
   it('atomically binds a folder import to the exact request workspace and not workspace B', async () => {
     const folder = makeFolder();
     await writeFile(path.join(folder, 'index.html'), '<!doctype html>');

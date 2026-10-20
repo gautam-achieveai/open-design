@@ -12,6 +12,7 @@ import {
   type StrategyTaskTypeV2,
 } from '../plugins/strategy-v2.js';
 import { renderChatTurnHostProtocolInstructions } from './chat-turn-host-protocol.js';
+import { AGENT_CONFIGURATION_DIRECTIVE } from './agent-configuration.js';
 import type { ChatSessionMode } from '../api/chat.js';
 import {
   renderDeckFrameworkDirective,
@@ -580,6 +581,14 @@ export function composeOdNextStrategyStableRequestContextV2(
   // sentence naming a tool has no such excuse, and a note that ever did
   // contain post-Build semantics should stop the run rather than ship.
   instructionText('runtime-plan-tool', context.planToolNote ?? undefined);
+  // The user's own agent configuration (CLAUDE.md / AGENTS.md, installed
+  // skills) reaches the model through the agent CLI as file contents and
+  // skill-tool results. The same host rule the legacy charters carry
+  // (agent-configuration.ts) keeps the input boundary above from reading it as
+  // untrusted. Filesystem runs only: a text-artifact run has no agent CLI.
+  if (executionProfile === 'filesystem') {
+    instructionText('agent-configuration', AGENT_CONFIGURATION_DIRECTIVE);
+  }
   const deckFrameworkMode = context.deckFrameworkMode
     ?? (context.deckIntent ? 'canonical' : undefined);
   if (deckFrameworkMode) {

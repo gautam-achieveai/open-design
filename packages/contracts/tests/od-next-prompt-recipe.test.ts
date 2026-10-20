@@ -284,6 +284,8 @@ describe('OD Next V2 prompt recipe', () => {
         "## Native filesystem execution",
         "## Versioned recipe identity",
         "## Discovery, planning, and Build surface",
+        "## Stable request planning and Build context",
+        "## The user's own agent configuration",
         "## OD Next core strategy",
         "# Core",
         "## OD Next general orchestration",
@@ -818,7 +820,9 @@ describe('handheld device shell in the stable request context', () => {
   it('omits both facts when no shell was resolved', () => {
     expect(composeOdNextStrategyStableRequestContextV2({ memoryBody: 'Remember the operator audience.' }))
       .not.toContain('device-frame');
-    expect(composeOdNextStrategyStableRequestContextV2({})).toBe('');
+    expect(composeOdNextStrategyStableRequestContextV2({})).not.toContain('device-');
+    // With no inputs, only filesystem runs carry anything (the agent-configuration rule).
+    expect(composeOdNextStrategyStableRequestContextV2({}, 'text_artifact')).toBe('');
   });
 });
 

@@ -46,6 +46,25 @@ describe('ComposerModePicker', () => {
     expect(screen.getByTestId('composer-mode-menu-design').getAttribute('aria-checked')).toBe('false');
   });
 
+  it('offers Build only when the host says an agent CLI runs the chat', () => {
+    const onModeChange = vi.fn();
+    const { unmount } = render(<ComposerModePicker mode="design" onModeChange={onModeChange} />);
+    fireEvent.click(screen.getByTestId('composer-mode-trigger'));
+    expect(screen.queryByTestId('composer-mode-menu-build')).toBeNull();
+    unmount();
+
+    render(<ComposerModePicker mode="design" onModeChange={onModeChange} buildAvailable />);
+    fireEvent.click(screen.getByTestId('composer-mode-trigger'));
+    expect(screen.getAllByRole('menuitemradio')).toHaveLength(4);
+    fireEvent.click(screen.getByTestId('composer-mode-menu-build'));
+    expect(onModeChange).toHaveBeenCalledWith('build');
+  });
+
+  it('keeps a stored Build mode visible even when Build is not offered', () => {
+    render(<ComposerModePicker mode="build" onModeChange={vi.fn()} />);
+    expect(screen.getByTestId('composer-mode-trigger').getAttribute('aria-label')).toBe('Mode: Build');
+  });
+
   it('switches into the lightweight Ask mode from the menu', () => {
     const onModeChange = vi.fn();
     render(<ComposerModePicker mode="design" onModeChange={onModeChange} />);

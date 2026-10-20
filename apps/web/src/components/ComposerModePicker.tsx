@@ -1,5 +1,5 @@
 // Composer footer "mode" picker — sits just left of the model selector.
-// Three modes (Plan / Design / Ask); the trigger shows a neutral grid+sparkle
+// Four modes (Plan / Design / Ask / Build); the trigger shows a neutral grid+sparkle
 // glyph until a mode is chosen, then flips to that mode's icon. The dropdown
 // mirrors the "+" menu surface: each row shows its name + an always-visible
 // description, and the selected row carries a check.
@@ -80,13 +80,22 @@ const ICON_ASK: ReactElement = (
   </svg>
 );
 
+// Build: a code bracket pair with a sparkle, matching the other mode glyphs.
+const ICON_BUILD: ReactElement = (
+  <svg {...iconProps}>
+    <path d="M8.29289 6.29289L9.70711 7.70711L5.41421 12L9.70711 16.2929L8.29289 17.7071L2.58579 12L8.29289 6.29289ZM15.7071 6.29289L21.4142 12L15.7071 17.7071L14.2929 16.2929L18.5858 12L14.2929 7.70711L15.7071 6.29289ZM12.5294 3.31933C12.7059 2.89329 13.2944 2.89329 13.4708 3.31933L13.7238 3.93066C14.1558 4.97348 14.9617 5.80619 15.9748 6.25683L16.6926 6.57617C17.1027 6.75908 17.1029 7.35627 16.6926 7.53906L15.9328 7.87695C14.945 8.31627 14.1535 9.11932 13.714 10.1279L13.4669 10.6934C13.2865 11.1075 12.7138 11.1075 12.5333 10.6934L12.2872 10.1279C11.8477 9.11929 11.0553 8.31628 10.0675 7.87695L9.30771 7.53906C8.89751 7.35629 8.89762 6.75906 9.30771 6.57617L10.0255 6.25683C11.0386 5.80619 11.8446 4.9735 12.2765 3.93066L12.5294 3.31933Z" />
+  </svg>
+);
+
 type ModeCopyKey =
   | 'chat.mode.plan.label'
   | 'chat.mode.plan.summary'
   | 'chat.mode.design.label'
   | 'chat.mode.design.summary'
   | 'chat.mode.chat.label'
-  | 'chat.mode.chat.summary';
+  | 'chat.mode.chat.summary'
+  | 'chat.mode.build.label'
+  | 'chat.mode.build.summary';
 
 interface ModeDef {
   id: ChatSessionMode;
@@ -116,14 +125,22 @@ const MODES: ModeDef[] = [
     descKey: 'chat.mode.chat.summary',
     icon: ICON_ASK,
   },
+  // Build drives the user's own repo through their agent CLI, so it is only
+  // offered when the host says an agent CLI runs the conversation.
+  {
+    id: 'build',
+    nameKey: 'chat.mode.build.label',
+    descKey: 'chat.mode.build.summary',
+    icon: ICON_BUILD,
+  },
 ];
 
 const MENU_WIDTH = 300;
 const MENU_MARGIN = 12;
 const MENU_GAP = 8;
-// Natural height of the 3-mode list; used to decide whether the menu fits
+// Natural height of the 4-mode list; used to decide whether the menu fits
 // below the trigger before flipping it above.
-const MENU_EST_HEIGHT = 290;
+const MENU_EST_HEIGHT = 380;
 
 export interface ComposerModePickerProps {
   /** The conversation's real session mode. `design` (the app default) renders
@@ -135,9 +152,17 @@ export interface ComposerModePickerProps {
    *  used when the composer row is space-constrained, e.g. while a run streams
    *  and the wide "思考中" button is showing. */
   labelHidden?: boolean;
+  /** Offer Build mode. Hosts pass true only when an agent CLI (not API/BYOK)
+   *  runs the conversation, since Build needs a filesystem agent. */
+  buildAvailable?: boolean;
 }
 
-export function ComposerModePicker({ mode, onModeChange, labelHidden = false }: ComposerModePickerProps) {
+export function ComposerModePicker({
+  mode,
+  onModeChange,
+  labelHidden = false,
+  buildAvailable = false,
+}: ComposerModePickerProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
   // 设计 is the default mode AND the default selection, so the pill is showing
@@ -214,6 +239,7 @@ export function ComposerModePicker({ mode, onModeChange, labelHidden = false }: 
     };
   }, [open]);
 
+  const modes = buildAvailable || mode === 'build' ? MODES : MODES.filter((m) => m.id !== 'build');
   const activeMode = selected ? MODES.find((m) => m.id === selected) ?? null : null;
   const triggerIcon = activeMode ? activeMode.icon : ICON_DEFAULT;
   const activeName = activeMode ? t(activeMode.nameKey) : null;
@@ -261,7 +287,7 @@ export function ComposerModePicker({ mode, onModeChange, labelHidden = false }: 
               style={pos ?? undefined}
               data-testid="composer-mode-menu"
             >
-              {MODES.map((m) => (
+              {modes.map((m) => (
                 <button
                   key={m.id}
                   type="button"

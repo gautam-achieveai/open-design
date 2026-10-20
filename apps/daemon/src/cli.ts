@@ -4175,12 +4175,61 @@ Lists installed plugins. Filters AND together: --task-kind=code-migration
   --trust       Match trust tier (trusted / restricted / bundled).
   --bundled     Restrict to bundled plugins (sourceKind='bundled' OR
                 trust='bundled').
-  --no-bundled  Exclude bundled plugins.`);
+  --no-bundled  Exclude bundled plugins.
+  --source claude-code
+                List the Claude Code plugins installed in the Claude config
+                dir instead (read-only; Claude Code loads them itself).`);
     process.exit(0);
+  }
+  if (flags.source !== undefined) {
+    if (flags.source !== 'claude-code') {
+      console.error(`unknown --source for od plugin list: ${flags.source} (supported: claude-code)`);
+      process.exit(2);
+    }
+    return runClaudeCodePluginList(flags);
   }
   const data = await fetchPluginList(flags);
   const filtered = await applyPluginFilters(data?.plugins ?? [], flags);
   emitPluginList({ entries: filtered, json: !!flags.json, emptyMessage: 'No plugins matched the filter.' });
+}
+
+// `od plugin list --source claude-code` — read-only view of the plugins
+// installed for Claude Code (GET /api/claude-code/plugins, same as the
+// Plugins → From Claude Code tab).
+async function runClaudeCodePluginList(flags) {
+  const url = `${(await pluginDaemonUrl(flags)).replace(/\/$/, '')}/api/claude-code/plugins`;
+  const resp = await pluginFetch(flags, url);
+  if (!resp.ok) {
+    console.error(`GET /api/claude-code/plugins failed: ${resp.status} ${await resp.text()}`);
+    process.exit(1);
+  }
+  const data = await resp.json();
+  if (flags.json) {
+    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    return;
+  }
+  const plugins = Array.isArray(data?.plugins) ? data.plugins : [];
+  const marketplaces = Array.isArray(data?.marketplaces) ? data.marketplaces : [];
+  const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+  if (!data?.available) {
+    console.log(`No Claude Code plugin registry found in ${data?.configDir ?? '(unknown)'}.`);
+  } else {
+    const enabledCount = plugins.filter((p) => p.enabled).length;
+    console.log(`# Claude Code plugins (${data.configDir})`);
+    console.log(`Marketplaces (${marketplaces.length}):`);
+    for (const m of marketplaces) {
+      console.log(`  ${String(m.name).padEnd(28)}  ${String(m.sourceKind).padEnd(9)}  ${m.sourceLabel}`);
+    }
+    console.log(`Plugins (${enabledCount}/${plugins.length} enabled):`);
+    for (const p of plugins) {
+      const counts = `skills ${p.skills?.length ?? 0} · commands ${p.commands?.length ?? 0} · agents ${p.agents?.length ?? 0}`;
+      console.log(`  [${p.enabled ? 'on ' : 'off'}] ${String(p.id).padEnd(48)}  ${String(p.version ?? '-').padEnd(12)}  ${counts}`);
+    }
+  }
+  if (warnings.length > 0) {
+    console.log('Warnings:');
+    for (const w of warnings) console.log(`  - ${w}`);
+  }
 }
 
 // Plan §3.Y1 — `od plugin search <query>`.
@@ -6630,6 +6679,7 @@ Common options:
 function printPluginHelp() {
   console.log(`Usage:
   od plugin list [--task-kind <kind>]     List installed plugins (filterable).
+  od plugin list --source claude-code     List Claude Code plugins (read-only).
   od plugin search <query> [--tag <t>]    Search installed plugins by id/title/desc/tag.
   od plugin stats [--json]                Inventory + snapshot health report.
   od plugin info <id>                     Print a plugin's manifest + trust state as JSON.
@@ -7369,8 +7419,8 @@ async function runBrandDelete(rest) {
 function normalizeChatSessionModeFlag(value) {
   if (value == null) return undefined;
   const mode = String(value).trim().toLowerCase();
-  if (mode === 'design' || mode === 'chat' || mode === 'plan') return mode;
-  console.error('--mode must be one of: design, chat, plan');
+  if (mode === 'design' || mode === 'chat' || mode === 'plan' || mode === 'build') return mode;
+  console.error('--mode must be one of: design, chat, plan, build');
   process.exit(2);
 }
 
@@ -7472,7 +7522,7 @@ async function runProject(args) {
     console.log(`Usage:
   od project create [--name "<title>"] [--skill <id>] [--design-system <id>]
                     [--plugin <id>] [--inputs <json>] [--metadata-json <path|->]
-                    [--mode design|chat|plan]
+                    [--mode design|chat|plan|build]
   od project create-design-system <id> [--name "<title>"]
                     [--prompt "<text>" | --prompt-file <path|->] [--json]
                     Duplicate a project as a design-system workspace and seed
@@ -9384,7 +9434,7 @@ Common options:
 async function runConversation(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage:
-  od conversation new  <projectId> [--title "<title>"] [--seed-from <cid>] [--fork-after <mid>] [--mode design|chat|plan]
+  od conversation new  <projectId> [--title "<title>"] [--seed-from <cid>] [--fork-after <mid>] [--mode design|chat|plan|build]
                                            Create a conversation in a project.
                                            --seed-from copies another
                                            conversation's messages in (Side Chat).
@@ -9494,7 +9544,7 @@ Common options:
 async function runChat(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage:
-  od chat new --project <id> [--seed-from <cid>] [--fork-after <mid>] [--title "<title>"] [--mode design|chat|plan] [--json]
+  od chat new --project <id> [--seed-from <cid>] [--fork-after <mid>] [--title "<title>"] [--mode design|chat|plan|build] [--json]
                                            Create a Side Chat — a new conversation
                                            that copies in another conversation's
                                            context (--seed-from). Use

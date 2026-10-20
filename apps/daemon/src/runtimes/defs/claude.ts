@@ -42,6 +42,7 @@ export const claudeAgentDef = {
       '--forward-subagent-text': 'forwardSubagentText',
       '--agents': 'customAgents',
       '--add-dir': 'addDir',
+      '--mcp-config': 'mcpConfig',
     },
     // `--thinking-display` is a real option but it is hidden from both
     // `claude --help` and `claude -p --help`, so the capabilityFlags scan
@@ -128,6 +129,18 @@ export const claudeAgentDef = {
       // builds may lack it.
       if (dirs.length > 0 && caps.addDir !== false) {
         args.push('--add-dir', ...dirs);
+      }
+      // Imported-folder runs get OD's external MCP servers through a
+      // daemon-data file instead of a cwd `.mcp.json` (the cwd is the user's
+      // own repo). Additive on purpose: no `--strict-mcp-config`, so the
+      // user's own Claude MCP config keeps loading. Gated on the probe so a
+      // build without the flag is not killed by "unknown option".
+      if (
+        caps.mcpConfig
+        && typeof runtimeContext.mcpConfigPath === 'string'
+        && runtimeContext.mcpConfigPath
+      ) {
+        args.push('--mcp-config', runtimeContext.mcpConfigPath);
       }
       // Continue Claude's own CLI session across turns so it keeps its
       // working memory (files read, edits made, tool history) instead of

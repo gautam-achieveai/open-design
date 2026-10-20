@@ -8,7 +8,7 @@ import type { TrackingArtifactKind, TrackingByokProviderId, TrackingCliProviderI
 import type { TrackingSessionMode, TrackingSettingsArea } from './ui-click.js';
 // ---- Enum mapping helpers (code ↔ CSV wire format) -----------------------
 
-// Map the wire `ChatSessionMode` ('design' | 'chat' | 'plan') to the analytics enum.
+// Map the wire `ChatSessionMode` ('design' | 'chat' | 'plan' | 'build') to the analytics enum.
 // The composer's "Ask" mode is `chat` on the wire; analytics uses `ask` so
 // the dashboards read in the product's own language. Anything unrecognized
 // buckets into `ask` (the lighter default).
@@ -17,6 +17,7 @@ export function sessionModeToTracking(
 ): TrackingSessionMode {
   if (mode === 'design') return 'design';
   if (mode === 'plan') return 'plan';
+  if (mode === 'build') return 'build';
   return 'ask';
 }
 
