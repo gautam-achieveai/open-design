@@ -22,6 +22,10 @@ const MAX_CONSOLE_ENTRIES = 200;
 const MAX_NETWORK_REQUESTS = 200;
 const MAX_NETWORK_BODY_BYTES = 64 * 1024;
 const MAX_DOM_NODES = 2_000;
+const DEFAULT_SNAPSHOT_DEPTH = 12;
+const MAX_SNAPSHOT_DEPTH = 64;
+const MAX_EVALUATE_EXPRESSION_LENGTH = 100_000;
+const MAX_EVALUATE_RESULT_LENGTH = 256 * 1024;
 const MAX_TYPE_TEXT_LENGTH = 100_000;
 const MAX_ID_LENGTH = 128;
 const MAX_SELECTOR_LENGTH = 4_096;
@@ -237,8 +241,21 @@ function parseTargetIdentity(value: unknown): OpenDesignHostBrowserTargetIdentit
 function parseOperation(value: unknown): OpenDesignHostBrowserOperation | null {
   if (!isRecord(value) || typeof value.kind !== "string") return null;
   switch (value.kind) {
-    case "snapshot":
-      return { kind: "snapshot", ...(safeInteger(value.depth) === undefined ? {} : { depth: safeInteger(value.depth) }) };
+    case "snapshot": {
+      const depth = safeInteger(value.depth);
+      const selector = stringValue(value.selector);
+      if (selector !== undefined && (!selector || selector.length > MAX_SELECTOR_LENGTH)) return null;
+      return {
+        kind: "snapshot",
+        ...(depth === undefined ? {} : { depth }),
+        ...(selector === undefined ? {} : { selector }),
+      };
+    }
+    case "evaluate": {
+      const expression = typeof value.expression === "string" ? value.expression : "";
+      if (!expression.trim() || expression.length > MAX_EVALUATE_EXPRESSION_LENGTH || value.approved !== true) return null;
+      return { approved: true, expression, kind: "evaluate" };
+    }
     case "inspect": {
       const selector = stringValue(value.selector);
       return selector && selector.length <= MAX_SELECTOR_LENGTH ? { kind: "inspect", selector } : null;
@@ -348,6 +365,18 @@ function guestHasApprovedIdentity(guest: WebContents, designBrowserSession: Sess
     && guest.getType() === "webview"
     && guest.session === designBrowserSession
   );
+}
+
+/** Maps a by-value `Runtime.RemoteObject` to JSON, cutting it at MAX_EVALUATE_RESULT_LENGTH. */
+function evaluateResultValue(raw: unknown): { truncated: boolean; type: string; value: unknown } {
+  const remote = isRecord(raw) ? raw : {};
+  const type = stringValue(remote.subtype) ?? stringValue(remote.type) ?? "undefined";
+  // NaN, Infinity, -0 and bigints arrive only as `unserializableValue`.
+  let value: unknown = "value" in remote ? remote.value : stringValue(remote.unserializableValue) ?? stringValue(remote.description) ?? null;
+  if (value === undefined) value = null;
+  const serialized = JSON.stringify(value) ?? "null";
+  if (serialized.length <= MAX_EVALUATE_RESULT_LENGTH) return { truncated: false, type, value };
+  return { truncated: true, type, value: serialized.slice(0, MAX_EVALUATE_RESULT_LENGTH) };
 }
 
 async function queryNodeId(guest: WebContents, selector: string): Promise<number | null> {
@@ -472,7 +501,7 @@ export async function executeDesignBrowserRequest(
   request: unknown,
 ): Promise<OpenDesignHostBrowserExecuteResult> {
   const kind = isRecord(request) && isRecord(request.operation) ? request.operation.kind : null;
-  if (kind === "click" || kind === "type" || kind === "scroll" || kind === "navigate") {
+  if (kind === "click" || kind === "type" || kind === "scroll" || kind === "navigate" || kind === "evaluate") {
     const expiresAt = isRecord(request) ? request.expiresAt : null;
     if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
       return { ok: false, reason: "browser command expired before execution" };
@@ -697,15 +726,37 @@ export function createDesignBrowserCdpController(
     try {
       switch (operation.kind) {
         case "snapshot": {
-          const depth = Math.max(1, Math.min(8, operation.depth ?? 4));
-          const result = await guest.debugger.sendCommand("DOM.getDocument", { depth, pierce: true }) as UnknownRecord;
+          const depth = Math.max(1, Math.min(MAX_SNAPSHOT_DEPTH, operation.depth ?? DEFAULT_SNAPSHOT_DEPTH));
+          let root: unknown;
+          if (operation.selector === undefined) {
+            root = (await guest.debugger.sendCommand("DOM.getDocument", { depth, pierce: true }) as UnknownRecord).root;
+          } else {
+            const nodeId = await queryNodeId(guest, operation.selector);
+            if (nodeId == null) return { ok: true, operation: "snapshot", tabId: request.tabId, value: null };
+            root = (await guest.debugger.sendCommand("DOM.describeNode", { depth, nodeId, pierce: true }) as UnknownRecord).node;
+          }
+          // The node budget, not the depth, bounds the payload.
           const budget = { remaining: MAX_DOM_NODES, truncated: false };
           return {
             ok: true,
             operation: "snapshot",
             tabId: request.tabId,
-            value: { document: mapDomNode(result.root, budget), truncated: budget.truncated },
+            value: { document: mapDomNode(root, budget), truncated: budget.truncated },
           };
+        }
+        case "evaluate": {
+          const evaluated = await guest.debugger.sendCommand("Runtime.evaluate", {
+            awaitPromise: true,
+            expression: operation.expression,
+            returnByValue: true,
+            userGesture: true,
+          }) as UnknownRecord;
+          if (isRecord(evaluated.exceptionDetails)) {
+            const details = evaluated.exceptionDetails;
+            const exception = isRecord(details.exception) ? details.exception : {};
+            return failure(stringValue(exception.description) ?? stringValue(details.text) ?? "script threw");
+          }
+          return { ok: true, operation: "evaluate", tabId: request.tabId, value: evaluateResultValue(evaluated.result) };
         }
         case "inspect": {
           const nodeId = await queryNodeId(guest, operation.selector);

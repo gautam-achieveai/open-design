@@ -560,7 +560,13 @@ async function executeBrowserCommand(
 function hostOperationFromCommand(request: Exclude<BrowserOperationRequest, { operation: 'viewport' | 'style' }>): OpenDesignHostBrowserOperation {
   switch (request.operation) {
     case 'snapshot':
-      return { kind: 'snapshot' };
+      return {
+        kind: 'snapshot',
+        ...(request.depth === undefined ? {} : { depth: request.depth }),
+        ...(request.target === undefined ? {} : { selector: selectorTarget(request.target) }),
+      };
+    case 'evaluate':
+      return { approved: request.approved, expression: request.expression, kind: 'evaluate' };
     case 'inspect':
       return { kind: 'inspect', selector: selectorTarget(request.target) };
     case 'screenshot':
@@ -634,6 +640,14 @@ function browserOperationResultFromHost(
     case 'snapshot':
       if (result.operation !== 'snapshot') throw mismatchedHostResult(request, result.operation);
       return { operation: 'snapshot', snapshot: result.value as never };
+    case 'evaluate':
+      if (result.operation !== 'evaluate') throw mismatchedHostResult(request, result.operation);
+      return {
+        operation: 'evaluate',
+        truncated: result.value.truncated,
+        type: result.value.type,
+        value: result.value.value as never,
+      };
     case 'inspect':
       if (result.operation !== 'inspect') throw mismatchedHostResult(request, result.operation);
       return { operation: 'inspect', inspection: result.value as never };

@@ -240,6 +240,14 @@ export type OpenDesignHostBrowserNetworkRequest = {
 export type OpenDesignHostBrowserSnapshotOperation = {
   depth?: number;
   kind: "snapshot";
+  /** Root the snapshot at this element instead of the document. */
+  selector?: string;
+};
+
+export type OpenDesignHostBrowserEvaluateOperation = {
+  approved: true;
+  expression: string;
+  kind: "evaluate";
 };
 
 export type OpenDesignHostBrowserInspectOperation = {
@@ -308,7 +316,8 @@ export type OpenDesignHostBrowserOperation =
   | OpenDesignHostBrowserScrollOperation
   | OpenDesignHostBrowserNavigateOperation
   | OpenDesignHostBrowserConsoleOperation
-  | OpenDesignHostBrowserNetworkOperation;
+  | OpenDesignHostBrowserNetworkOperation
+  | OpenDesignHostBrowserEvaluateOperation;
 
 export type OpenDesignHostBrowserExecuteRequest = {
   expiresAt?: number;
@@ -317,7 +326,7 @@ export type OpenDesignHostBrowserExecuteRequest = {
 };
 
 export type OpenDesignHostBrowserExecuteSuccess =
-  | { ok: true; operation: "snapshot"; tabId: string; value: { document: OpenDesignHostBrowserDomNode; truncated: boolean } }
+  | { ok: true; operation: "snapshot"; tabId: string; value: { document: OpenDesignHostBrowserDomNode; truncated: boolean } | null }
   | { ok: true; operation: "inspect"; tabId: string; value: OpenDesignHostBrowserInspectedElement | null }
   | { ok: true; operation: "screenshot"; tabId: string; value: { dataUrl: string; format: "jpeg" | "png" | "webp" } }
   | { ok: true; operation: "click"; tabId: string; value: { x: number; y: number } }
@@ -325,7 +334,8 @@ export type OpenDesignHostBrowserExecuteSuccess =
   | { ok: true; operation: "scroll"; tabId: string; value: { deltaX: number; deltaY: number } }
   | { ok: true; operation: "navigate"; tabId: string; value: { frameId?: string; url: string } }
   | { ok: true; operation: "console"; tabId: string; value: { entries: OpenDesignHostBrowserConsoleEntry[] } }
-  | { ok: true; operation: "network"; tabId: string; value: { requests: OpenDesignHostBrowserNetworkRequest[] } };
+  | { ok: true; operation: "network"; tabId: string; value: { requests: OpenDesignHostBrowserNetworkRequest[] } }
+  | { ok: true; operation: "evaluate"; tabId: string; value: { truncated: boolean; type: string; value: unknown } };
 
 export type OpenDesignHostBrowserExecuteResult =
   | OpenDesignHostBrowserExecuteSuccess

@@ -17,6 +17,7 @@ export const BROWSER_OPERATION_NAMES = [
   'network-list',
   'network-get',
   'network-failures',
+  'evaluate',
 ] as const;
 
 export type BrowserOperationName = (typeof BROWSER_OPERATION_NAMES)[number];
@@ -78,8 +79,15 @@ export interface SelectActiveBrowserTabResponse {
 
 export type BrowserElementTarget = { selector: string };
 
+/** Snapshot depth bound (the host defaults to 12). The host still caps the tree by node count. */
+export const BROWSER_SNAPSHOT_MAX_DEPTH = 64;
+
 export interface BrowserSnapshotOperation {
   operation: 'snapshot';
+  /** Levels below the root to include (1..BROWSER_SNAPSHOT_MAX_DEPTH). */
+  depth?: number;
+  /** Snapshot this element's subtree instead of the whole document. */
+  target?: BrowserElementTarget;
 }
 export type BrowserViewportId = 'desktop' | 'tablet' | 'mobile';
 export interface BrowserViewportOperation {
@@ -189,6 +197,20 @@ export interface BrowserNetworkFailuresOperation {
   limit?: number;
 }
 
+/** Upper bound on an evaluated script's source length. */
+export const BROWSER_EVALUATE_MAX_EXPRESSION_LENGTH = 100_000;
+
+/**
+ * Runs a script in the page, as DevTools' console would. Consequential: a
+ * script can change the page, so it carries the same approval as `click`.
+ */
+export interface BrowserEvaluateOperation {
+  operation: 'evaluate';
+  approved: true;
+  /** A JavaScript expression; a returned promise is awaited. */
+  expression: string;
+}
+
 export type BrowserOperationRequest =
   | BrowserViewportOperation
   | BrowserSnapshotOperation
@@ -202,7 +224,8 @@ export type BrowserOperationRequest =
   | BrowserConsoleOperation
   | BrowserNetworkListOperation
   | BrowserNetworkGetOperation
-  | BrowserNetworkFailuresOperation;
+  | BrowserNetworkFailuresOperation
+  | BrowserEvaluateOperation;
 
 export type BrowserOperationResult =
   | { operation: 'viewport'; preset: BrowserViewportId; width: number; height: number }
@@ -223,7 +246,16 @@ export type BrowserOperationResult =
   | { operation: 'console'; entries: JsonValue[] }
   | { operation: 'network-list'; entries: JsonValue[] }
   | { operation: 'network-get'; entry: JsonValue }
-  | { operation: 'network-failures'; entries: JsonValue[] };
+  | { operation: 'network-failures'; entries: JsonValue[] }
+  | {
+      operation: 'evaluate';
+      /** The script's return value, JSON-serialized by the page (null when not serializable). */
+      value: JsonValue;
+      /** The value's kind: its CDP subtype when it has one ('null', 'array', 'node'), else its `typeof`. */
+      type: string;
+      /** True when the serialized value exceeded the result size cap and was cut. */
+      truncated: boolean;
+    };
 
 export interface BrowserCommand {
   commandId: string;

@@ -22,6 +22,8 @@ class FakeDebugger extends EventEmitter {
   attached = false;
   commands: Array<{ method: string; params?: unknown }> = [];
   screenshotData = "";
+  evaluateResult: unknown = { result: { type: "string", value: "Example" } };
+  querySelectorNodeId = 0;
 
   attach = vi.fn(() => {
     this.attached = true;
@@ -45,6 +47,22 @@ class FakeDebugger extends EventEmitter {
           localName: "html",
           nodeId: 1,
           nodeName: "HTML",
+          nodeType: 1,
+          nodeValue: "",
+        },
+      };
+    }
+    if (method === "Runtime.evaluate") return this.evaluateResult;
+    if (method === "DOM.querySelector") return { nodeId: this.querySelectorNodeId };
+    if (method === "DOM.describeNode") {
+      return {
+        node: {
+          attributes: ["id", "app"],
+          backendNodeId: 7,
+          children: [{ backendNodeId: 8, localName: "span", nodeId: 8, nodeName: "SPAN", nodeType: 1, nodeValue: "" }],
+          localName: "main",
+          nodeId: 7,
+          nodeName: "MAIN",
           nodeType: 1,
           nodeValue: "",
         },
@@ -115,7 +133,7 @@ describe("Design Browser CDP controller", () => {
     controller.close();
   });
 
-  it.each(["click", "type", "scroll", "navigate"])("rejects missing, invalid and expired %s deadlines before execution", async (kind) => {
+  it.each(["click", "type", "scroll", "navigate", "evaluate"])("rejects missing, invalid and expired %s deadlines before execution", async (kind) => {
     const execute = vi.fn();
     for (const expiresAt of [undefined, NaN, Infinity, "tomorrow", Date.now() - 1]) {
       await expect(executeDesignBrowserRequest({ execute }, {
@@ -338,6 +356,80 @@ describe("Design Browser CDP controller", () => {
       ok: true,
       value: { requests: [{ requestId: "request-1", resourceType: "Fetch" }] },
     });
+  });
+
+  it("walks the DOM deeper than the old 8-level cap and roots a snapshot at a selector", async () => {
+    const guest = new FakeGuest();
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
+    await controller.attachGuest(guest as unknown as WebContents);
+    controller.registerTarget({ projectId: "p1", tabId: "tab-1", url: guest.getURL(), webContentsId: guest.id });
+    guest.debugger.commands.length = 0;
+
+    await controller.execute({ tabId: "tab-1", operation: { kind: "snapshot" } });
+    await controller.execute({ tabId: "tab-1", operation: { kind: "snapshot", depth: 40 } });
+    await controller.execute({ tabId: "tab-1", operation: { kind: "snapshot", depth: 999 } });
+    expect(guest.debugger.commands.map((command) => command.params)).toEqual([
+      { depth: 12, pierce: true },
+      { depth: 40, pierce: true },
+      { depth: 64, pierce: true },
+    ]);
+
+    await expect(controller.execute({ tabId: "tab-1", operation: { kind: "snapshot", selector: "#missing" } }))
+      .resolves.toEqual({ ok: true, operation: "snapshot", tabId: "tab-1", value: null });
+    guest.debugger.querySelectorNodeId = 7;
+    guest.debugger.commands.length = 0;
+    const subtree = await controller.execute({ tabId: "tab-1", operation: { kind: "snapshot", selector: "#app", depth: 20 } });
+    expect(guest.debugger.commands.at(-1)).toEqual({ method: "DOM.describeNode", params: { depth: 20, nodeId: 7, pierce: true } });
+    expect(subtree).toMatchObject({
+      ok: true,
+      value: { document: { nodeName: "MAIN", children: [{ nodeName: "SPAN" }] }, truncated: false },
+    });
+    controller.close();
+  });
+
+  it("runs approved scripts in the page and returns their JSON value or exception", async () => {
+    const guest = new FakeGuest();
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
+    await controller.attachGuest(guest as unknown as WebContents);
+    controller.registerTarget({ projectId: "p1", tabId: "tab-1", url: guest.getURL(), webContentsId: guest.id });
+    guest.debugger.commands.length = 0;
+    const run = (operation: Record<string, unknown>) =>
+      executeDesignBrowserRequest(controller, { tabId: "tab-1", expiresAt: Date.now() + 10_000, operation });
+
+    await expect(run({ kind: "evaluate", approved: true, expression: "document.title" })).resolves.toEqual({
+      ok: true, operation: "evaluate", tabId: "tab-1", value: { truncated: false, type: "string", value: "Example" },
+    });
+    expect(guest.debugger.commands).toEqual([{
+      method: "Runtime.evaluate",
+      params: { awaitPromise: true, expression: "document.title", returnByValue: true, userGesture: true },
+    }]);
+
+    guest.debugger.evaluateResult = { result: { type: "object", subtype: "null", value: null } };
+    await expect(run({ kind: "evaluate", approved: true, expression: "null" }))
+      .resolves.toMatchObject({ ok: true, value: { type: "null", value: null } });
+    guest.debugger.evaluateResult = { result: { type: "number", unserializableValue: "NaN", description: "NaN" } };
+    await expect(run({ kind: "evaluate", approved: true, expression: "NaN" }))
+      .resolves.toMatchObject({ ok: true, value: { type: "number", value: "NaN" } });
+    guest.debugger.evaluateResult = { result: { type: "string", value: "x".repeat(300 * 1024) } };
+    await expect(run({ kind: "evaluate", approved: true, expression: "big" }))
+      .resolves.toMatchObject({ ok: true, value: { truncated: true } });
+    guest.debugger.evaluateResult = {
+      result: { type: "object" },
+      exceptionDetails: { text: "Uncaught", exception: { description: "ReferenceError: nope is not defined" } },
+    };
+    await expect(run({ kind: "evaluate", approved: true, expression: "nope" }))
+      .resolves.toEqual({ ok: false, reason: "ReferenceError: nope is not defined" });
+
+    guest.debugger.commands.length = 0;
+    for (const operation of [
+      { kind: "evaluate", expression: "document.title" },
+      { kind: "evaluate", approved: true, expression: "   " },
+      { kind: "evaluate", approved: true, expression: "x".repeat(100_001) },
+    ]) {
+      await expect(run(operation)).resolves.toMatchObject({ ok: false, reason: "invalid or unapproved browser operation" });
+    }
+    expect(guest.debugger.commands).toEqual([]);
+    controller.close();
   });
 
   it("rejects screenshots that cannot fit through the bounded daemon JSON channel", async () => {

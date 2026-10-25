@@ -83,6 +83,40 @@ describe('embedded browser control relay', () => {
     expect(hostBridge.registerTarget).toHaveBeenCalledTimes(1);
     await session.stop();
   });
+  it.each([
+    {
+      request: { operation: 'evaluate' as const, approved: true as const, expression: 'document.title' },
+      host: { kind: 'evaluate', approved: true, expression: 'document.title' },
+      hostResult: { ok: true, operation: 'evaluate', tabId: 'browser-1', value: { truncated: false, type: 'string', value: 'Example' } },
+      result: { operation: 'evaluate', truncated: false, type: 'string', value: 'Example' },
+    },
+    {
+      request: { operation: 'snapshot' as const, depth: 30, target: { selector: '#app' } },
+      host: { kind: 'snapshot', depth: 30, selector: '#app' },
+      hostResult: { ok: true, operation: 'snapshot', tabId: 'browser-1', value: { document: { nodeName: 'MAIN' }, truncated: false } },
+      result: { operation: 'snapshot', snapshot: { document: { nodeName: 'MAIN' }, truncated: false } },
+    },
+  ])('relays $request.operation to the host and maps its result back', async ({ request, host, hostResult, result }) => {
+    let polls = 0;
+    const expiresAt = Date.now() + 10_000;
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      if (String(input).endsWith('/commands/next')) {
+        if (++polls === 1) return jsonResponse({ command: { commandId: 'cmd-1', expiresAt, request } });
+        return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+      }
+      return jsonResponse(String(input).endsWith('/register') ? { leaseId: 'lease-1' } : { accepted: true });
+    });
+    const hostBridge = { registerTarget: vi.fn(async () => ({ ok: true })), unregisterTarget: vi.fn(async () => ({ ok: true })),
+      execute: vi.fn(async () => hostResult) };
+    const session = createEmbeddedBrowserControlSession({ target, fetchImpl, hostBridge: hostBridge as never });
+    await session.ready;
+    const resultUrl = EMBEDDED_BROWSER_CONTROL_ROUTES.result(target.projectId, target.tabId, 'cmd-1');
+    await vi.waitFor(() => expect(requestBody(fetchImpl, resultUrl)).not.toBeNull());
+    expect(hostBridge.execute).toHaveBeenCalledWith({ expiresAt, operation: host, tabId: target.tabId });
+    expect(requestBody(fetchImpl, resultUrl)).toMatchObject({ ok: true, result });
+    await session.stop();
+  });
+
   it('executes a browser operation against the selected tab', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({
       commandId: 'command-direct',

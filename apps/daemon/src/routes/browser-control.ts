@@ -7,7 +7,11 @@ import type {
   RegisterBrowserTabRequest,
   SubmitBrowserCommandResultRequest,
 } from '@open-design/contracts';
-import { API_ERROR_CODES, isBrowserOperationName, isBrowserViewportId, isBrowserStylePatch, isBrowserStyleInspection } from '@open-design/contracts';
+import {
+  API_ERROR_CODES,
+  BROWSER_EVALUATE_MAX_EXPRESSION_LENGTH,
+  BROWSER_SNAPSHOT_MAX_DEPTH,
+  isBrowserOperationName, isBrowserViewportId, isBrowserStylePatch, isBrowserStyleInspection } from '@open-design/contracts';
 import type { AuthorizeProjectRequest } from '../collab/project-request-authority.js';
 import type { BrowserCommandBroker } from '../services/browser-command-broker.js';
 import { BrowserBrokerError } from '../services/browser-command-broker.js';
@@ -106,8 +110,23 @@ function parseOperation(raw: unknown): BrowserOperationRequest {
     case 'viewport':
       if (!isBrowserViewportId(body.preset)) throw new BrowserBrokerError('BAD_REQUEST', 'preset must be desktop, tablet, or mobile', 400);
       return { operation: 'viewport', preset: body.preset };
-    case 'snapshot':
-      return { operation: 'snapshot' };
+    case 'snapshot': {
+      const depth = optionalFiniteNumber(body, 'depth', { min: 1, max: BROWSER_SNAPSHOT_MAX_DEPTH });
+      if (depth !== undefined && !Number.isInteger(depth)) {
+        throw new BrowserBrokerError('BAD_REQUEST', 'depth must be an integer', 400);
+      }
+      return {
+        operation: 'snapshot',
+        ...(depth === undefined ? {} : { depth }),
+        ...(body.target === undefined ? {} : { target: parseTarget(body.target) }),
+      };
+    }
+    case 'evaluate': {
+      const approved = requireApproval(body);
+      const expression = requiredText(body, 'expression', BROWSER_EVALUATE_MAX_EXPRESSION_LENGTH);
+      if (!expression.trim()) throw new BrowserBrokerError('BAD_REQUEST', 'expression is required', 400);
+      return { operation: 'evaluate', approved, expression };
+    }
     case 'inspect':
       return {
         operation: 'inspect',
@@ -274,6 +293,11 @@ function parseResult(raw: unknown): BrowserOperationResult {
       break;
     case 'network-get':
       if (value.entry !== undefined) return value as unknown as BrowserOperationResult;
+      break;
+    case 'evaluate':
+      if ('value' in value && typeof value.type === 'string' && typeof value.truncated === 'boolean') {
+        return value as unknown as BrowserOperationResult;
+      }
       break;
   }
   throw new BrowserBrokerError(
@@ -501,7 +525,8 @@ export function registerBrowserControlRoutes(
         || command.operation === 'type'
         || command.operation === 'scroll'
         || command.operation === 'navigate'
-        || command.operation === 'style';
+        || command.operation === 'style'
+        || command.operation === 'evaluate';
       if (!await authorize(req, res, consequential ? 'write' : 'read')) return;
       const result = await broker.execute(
         requiredParam(req, 'projectId'),

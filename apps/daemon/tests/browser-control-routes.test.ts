@@ -18,6 +18,10 @@ describe('embedded browser control routes', () => {
 
   it.each([
     { command: { operation: 'snapshot' }, result: { operation: 'snapshot', snapshot: { role: 'document' } } },
+    { command: { operation: 'snapshot', depth: 30, target: { selector: '#app' } },
+      result: { operation: 'snapshot', snapshot: { document: { nodeName: 'MAIN' }, truncated: false } } },
+    { command: { operation: 'evaluate', approved: true, expression: 'document.title' },
+      result: { operation: 'evaluate', value: 'Example', type: 'string', truncated: false } },
     { command: { operation: 'viewport', preset: 'mobile' }, result: { operation: 'viewport', preset: 'mobile', width: 390, height: 600 } },
     { command: { operation: 'style', approved: true, target: { selector: 'h1' }, styles: { color: 'red' } },
       result: { operation: 'style', applied: true, inspection: { selector: 'h1', position: { x: 1, y: 2, width: 160, height: 30 }, style: { color: 'red' } } } },
@@ -176,6 +180,7 @@ describe('embedded browser control routes', () => {
       },
       { operation: 'scroll', deltaX: 0, deltaY: 500 },
       { operation: 'navigate', url: 'https://example.com/next' },
+      { operation: 'evaluate', expression: 'document.title' },
     ];
 
     for (const command of commands) {
@@ -254,6 +259,13 @@ describe('embedded browser control routes', () => {
     await fetch(`${base}/api/projects/p1/browser/commands`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ command: { operation: 'style', approved: true, target: { selector: 'h1' }, styles: { color: 'red' } } }),
+    });
+    expect(authorizeProjectRequest).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'p1',
+      { mode: 'write', capability: 'writeFiles' });
+
+    await fetch(`${base}/api/projects/p1/browser/commands`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: { operation: 'evaluate', approved: true, expression: 'document.title' } }),
     });
     expect(authorizeProjectRequest).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'p1',
       { mode: 'write', capability: 'writeFiles' });

@@ -18,7 +18,7 @@ import { splitResearchSubcommand } from './research/cli-args.js';
 import { resolveDaemonUrl } from './daemon-url.js';
 import { SidecarFactory } from '@open-design/sidecar';
 import { APP_KEYS, SIDECAR_MESSAGES } from '@open-design/sidecar-proto';
-import { EXPORT_FORMATS, EXPORT_IMAGE_FORMATS, isBrowserViewportId, isBrowserStylePatch, mediaFailureNextStep } from '@open-design/contracts';
+import { BROWSER_SNAPSHOT_MAX_DEPTH, EXPORT_FORMATS, EXPORT_IMAGE_FORMATS, isBrowserViewportId, isBrowserStylePatch, mediaFailureNextStep } from '@open-design/contracts';
 import type { ArtifactLintFinding, LintArtifactCliResultEnvelope, LintArtifactResponse, LintFailOn } from '@open-design/contracts';
 import { buildExportCliRequestBody, buildExportCliResultEnvelope, resolveExportCliDeckMode } from './export-cli-request.js';
 import { exportRoutePath } from './export-cli-routing.js';
@@ -358,6 +358,9 @@ const BROWSER_STRING_FLAGS = new Set([
   'project',
   'tab',
   'selector',
+  'depth',
+  'expression',
+  'script-file',
   'text',
   'text-file',
   'prompt-file',
@@ -501,7 +504,8 @@ function printBrowserHelp() {
   console.log(`Usage:
   od browser tabs --project <id> [--json]
   od browser active <tabId|clear> --project <id> [--json]
-  od browser snapshot --project <id> [--tab <id>] [--json]
+  od browser snapshot --project <id> [--tab <id>] [--depth <n>] [--selector <css>] [--json]
+  od browser eval --project <id> [--tab <id>] (--expression <js> | --script-file <path|->) --approve [--json]
   od browser viewport <desktop|tablet|mobile> --project <id> [--tab <id>] [--json]
   od browser inspect --project <id> [--tab <id>] --selector <css> [--json]
   od browser style --project <id> [--tab <id>] --selector <css> --styles-file <path|-> --approve [--json]
@@ -526,7 +530,12 @@ The first commands target the renderer-registered embedded tab. The Edge command
 pair a separately signed-in Edge/Chrome tab through the Open Design Clipper;
 that tab remains in the browser's managed work profile. No public CDP port is opened.
 When --tab is omitted, the project's active embedded tab is used. click, type,
-scroll, navigate, and style are consequential and are refused without --approve.
+scroll, navigate, style, and eval are consequential and are refused without --approve.
+snapshot returns the DOM tree (default depth 12, maximum 64, capped at 2000 nodes);
+--selector roots it at one element so a large page can be walked subtree by subtree.
+eval runs a JavaScript expression in the page, awaits a returned promise, and
+returns its JSON value; return plain data (strings, numbers, arrays, objects),
+not DOM nodes.
 Style patches accept only the bounded annotation style properties, as a JSON object.
 Viewport selection requires an active native tab and returns fitted frame CSS
 dimensions. Its finite preset argument does not accept prompt files.
@@ -728,7 +737,7 @@ async function runBrowser(args) {
       return;
     }
 
-    if (sub === 'click' || sub === 'type' || sub === 'scroll' || sub === 'navigate' || sub === 'style') {
+    if (sub === 'click' || sub === 'type' || sub === 'scroll' || sub === 'navigate' || sub === 'style' || sub === 'eval') {
       if (!flags.approve) {
         console.error(`od browser ${sub} is consequential; re-run with --approve`);
         process.exit(2);
@@ -765,9 +774,37 @@ async function runBrowser(args) {
         command = { operation: 'viewport', preset };
         break;
       }
-      case 'snapshot':
-        command = { operation: 'snapshot' };
+      case 'snapshot': {
+        const depth = browserNumberFlag(flags, 'depth', undefined);
+        if (depth !== undefined && (!Number.isInteger(depth) || depth < 1 || depth > BROWSER_SNAPSHOT_MAX_DEPTH)) {
+          console.error(`--depth must be an integer from 1 to ${BROWSER_SNAPSHOT_MAX_DEPTH}`);
+          process.exit(2);
+        }
+        const target = browserTarget(flags);
+        command = {
+          operation: 'snapshot',
+          ...(depth === undefined ? {} : { depth }),
+          ...(target ? { target } : {}),
+        };
         break;
+      }
+      case 'eval': {
+        const hasExpression = typeof flags.expression === 'string';
+        const hasFile = typeof flags['script-file'] === 'string' && flags['script-file'].length > 0;
+        if (hasExpression === hasFile) {
+          console.error('od browser eval requires exactly one of --expression <js> or --script-file <path|->');
+          process.exit(2);
+        }
+        const expression = hasExpression
+          ? flags.expression
+          : await readBrowserText({ 'text-file': flags['script-file'] });
+        if (!expression.trim()) {
+          console.error('od browser eval requires a nonempty script');
+          process.exit(2);
+        }
+        command = { operation: 'evaluate', approved: true, expression };
+        break;
+      }
       case 'inspect': {
         const target = browserTarget(flags);
         command = { operation: 'inspect', ...(target ? { target } : {}) };
