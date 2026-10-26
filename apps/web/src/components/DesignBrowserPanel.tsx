@@ -2098,8 +2098,11 @@ export function DesignBrowserPanel({
       ...Object.fromEntries(Object.entries(dimensions).filter(([, value]) => Number.isFinite(value))) }));
   }
 
+  // `onPixelsCaptured` fires once the page pixels are held, so the caller can
+  // reveal its hidden chrome before the slower masking and encoding run.
   async function captureBrowserElementAnnotation(
     target: BrowserElementSnapshot,
+    onPixelsCaptured?: () => void,
   ): Promise<File | null> {
     const started = performance.now();
     let phase = 'initial';
@@ -2195,6 +2198,7 @@ export function DesignBrowserPanel({
       }
       if (!snapshot) return reject('capture-crop-unavailable');
       diagnoseAnnotationCapture('captured', 'pixels-available', started, { imageWidth: snapshot.w, imageHeight: snapshot.h });
+      onPixelsCaptured?.();
       phase = 'verify-text';
       if (hideText && await node.executeJavaScript<boolean>(browserAnnotationTextPaintScript(true, true), true) !== true) return reject('text-hide-verification-failed');
       phase = 'measure-after';
@@ -2758,7 +2762,10 @@ export function DesignBrowserPanel({
         const deadline = new Promise<null>((resolve) => { captureTimeout = setTimeout(() => {
           diagnoseAnnotationCapture('timeout', 'capture-deadline', captureStarted); resolve(null);
         }, BROWSER_CAPTURE_DEADLINE_MS); });
-        const capture = captureBrowserElementAnnotation(snapshot).finally(() => {
+        // Unhide as soon as the pixels are taken; a superseded pick keeps its own hide.
+        const capture = captureBrowserElementAnnotation(snapshot, () => {
+          if (pickerRequestIdRef.current === requestId) setCaptureChromeHidden(false);
+        }).finally(() => {
           if (captureCleanupRef.current === capture) captureCleanupRef.current = null;
         });
         captureCleanupRef.current = capture;
