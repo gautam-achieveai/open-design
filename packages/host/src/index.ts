@@ -64,6 +64,7 @@ export type {
   OpenDesignHostBrowserNavigateOperation,
   OpenDesignHostBrowserConsoleOperation,
   OpenDesignHostBrowserNetworkOperation,
+  OpenDesignHostBrowserDevtoolsOperation,
   OpenDesignHostBrowserOperation,
   OpenDesignHostBrowserExecuteRequest,
   OpenDesignHostBrowserExecuteSuccess,

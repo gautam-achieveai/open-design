@@ -91,6 +91,18 @@ describe('embedded browser control relay', () => {
       result: { operation: 'evaluate', truncated: false, type: 'string', value: 'Example' },
     },
     {
+      request: { operation: 'devtools' as const, action: 'force-state' as const, approved: true as const, params: { selector: 'a', states: ['hover'] } },
+      host: { action: 'force-state', approved: true, kind: 'devtools', params: { selector: 'a', states: ['hover'] } },
+      hostResult: { ok: true, operation: 'devtools', tabId: 'browser-1', value: { action: 'force-state', result: { states: ['hover'] } } },
+      result: { action: 'force-state', operation: 'devtools', result: { states: ['hover'] } },
+    },
+    {
+      request: { operation: 'devtools' as const, action: 'a11y' as const },
+      host: { action: 'a11y', kind: 'devtools', params: {} },
+      hostResult: { ok: true, operation: 'devtools', tabId: 'browser-1', value: { action: 'a11y', result: { nodes: 3 } } },
+      result: { action: 'a11y', operation: 'devtools', result: { nodes: 3 } },
+    },
+    {
       request: { operation: 'snapshot' as const, depth: 30, target: { selector: '#app' } },
       host: { kind: 'snapshot', depth: 30, selector: '#app' },
       hostResult: { ok: true, operation: 'snapshot', tabId: 'browser-1', value: { document: { nodeName: 'MAIN' }, truncated: false } },

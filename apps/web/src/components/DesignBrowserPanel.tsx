@@ -272,7 +272,7 @@ type BrowserStyleDraft = Required<Pick<
 type WebviewElement = HTMLElement & {
   canGoBack(): boolean;
   canGoForward(): boolean;
-  capturePage(): Promise<{ toDataURL(): string }>;
+  capturePage(rect?: { x: number; y: number; width: number; height: number }): Promise<{ toDataURL(): string }>;
   executeJavaScript<T = unknown>(code: string, userGesture?: boolean): Promise<T>;
   getTitle(): string;
   getURL(): string;
@@ -2098,8 +2098,15 @@ export function DesignBrowserPanel({
       ...Object.fromEntries(Object.entries(dimensions).filter(([, value]) => Number.isFinite(value))) }));
   }
 
+  // The page's own frame is taken first: it never holds the panel's popover or
+  // pins, so nothing on screen changes. Only when it comes back blank is the
+  // window region photographed, after `hideChrome` has hidden the panel's
+  // chrome; `onPixelsCaptured` then fires as soon as the pixels are held, so
+  // the caller can reveal it before the slower masking and encoding run.
   async function captureBrowserElementAnnotation(
     target: BrowserElementSnapshot,
+    hideChrome?: () => void,
+    onPixelsCaptured?: () => void,
   ): Promise<File | null> {
     const started = performance.now();
     let phase = 'initial';
@@ -2168,7 +2175,15 @@ export function DesignBrowserPanel({
           (right - left) * size.w / frame.width,
           (bottom - top) * size.h / frame.height);
         actualCrop = framing.frame;
+      } else if ((snapshot = await guestRegionSnapshot(node, framing.frame))) {
+        actualCrop = framing.frame;
       } else {
+        phase = 'host-capture';
+        // The window region holds the panel's chrome; hide it and let that paint first.
+        hideChrome?.();
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
         snapshot = await captureHostRegionSnapshot({ left, top, width: right - left, height: bottom - top });
         if (snapshot?.capturedCssRect) {
           const captured = snapshot.capturedCssRect;
@@ -2195,6 +2210,7 @@ export function DesignBrowserPanel({
       }
       if (!snapshot) return reject('capture-crop-unavailable');
       diagnoseAnnotationCapture('captured', 'pixels-available', started, { imageWidth: snapshot.w, imageHeight: snapshot.h });
+      onPixelsCaptured?.();
       phase = 'verify-text';
       if (hideText && await node.executeJavaScript<boolean>(browserAnnotationTextPaintScript(true, true), true) !== true) return reject('text-hide-verification-failed');
       phase = 'measure-after';
@@ -2743,14 +2759,10 @@ export function DesignBrowserPanel({
         setActiveTool(null);
         return;
       }
-      // Commit the hidden chrome (popover, pin markers, status toast) together
-      // with the new target before capture starts: a hide that lands after the
-      // capture's paint wait lets the compositor grab the popover.
       flushSync(() => {
         setActiveCommentTarget(snapshot);
         setTextDraft(snapshot.text);
         setActiveTool(tool);
-        if (tool === 'comment') setCaptureChromeHidden(true);
       });
       if (tool === 'comment') {
         const captureStarted = performance.now();
@@ -2758,7 +2770,14 @@ export function DesignBrowserPanel({
         const deadline = new Promise<null>((resolve) => { captureTimeout = setTimeout(() => {
           diagnoseAnnotationCapture('timeout', 'capture-deadline', captureStarted); resolve(null);
         }, BROWSER_CAPTURE_DEADLINE_MS); });
-        const capture = captureBrowserElementAnnotation(snapshot).finally(() => {
+        // Chrome is hidden only for a window capture, and shown again as soon as
+        // the pixels are taken; a superseded pick keeps its own hide.
+        const capture = captureBrowserElementAnnotation(snapshot, () => {
+          // Commit the hide before the capture's paint wait, or the compositor grabs the popover.
+          if (pickerRequestIdRef.current === requestId) flushSync(() => setCaptureChromeHidden(true));
+        }, () => {
+          if (pickerRequestIdRef.current === requestId) setCaptureChromeHidden(false);
+        }).finally(() => {
           if (captureCleanupRef.current === capture) captureCleanupRef.current = null;
         });
         captureCleanupRef.current = capture;
@@ -4514,6 +4533,53 @@ function canUseNativeHistoryNavigation(node: WebviewElement, delta: -1 | 1): boo
     return typeof node.canGoForward === 'function' && node.canGoForward();
   } catch {
     return false;
+  }
+}
+
+/** A guest frame normally arrives within a few frames; past this it is not coming. */
+const GUEST_CAPTURE_TIMEOUT_MS = 400;
+
+/**
+ * The guest page's own pixels for `rect` (CSS px), or null. Some GPU setups
+ * hand the guest capture a blank frame, and a window that draws no frames
+ * never answers; both count as null so the caller can photograph the window
+ * region instead.
+ */
+async function guestRegionSnapshot(
+  node: WebviewElement,
+  rect: { x: number; y: number; width: number; height: number },
+): Promise<PreviewSnapshot | null> {
+  if (typeof node.capturePage !== 'function') return null;
+  try {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const image = await Promise.race([
+      node.capturePage({ x: Math.round(rect.x), y: Math.round(rect.y),
+        width: Math.max(1, Math.round(rect.width)), height: Math.max(1, Math.round(rect.height)) }),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), GUEST_CAPTURE_TIMEOUT_MS); }),
+    ]).finally(() => clearTimeout(timer));
+    if (!image) return null;
+    const dataUrl = image.toDataURL();
+    const img = await new Promise<HTMLImageElement | null>((resolve) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => resolve(null);
+      image.src = dataUrl;
+    });
+    if (!img || !img.naturalWidth || !img.naturalHeight) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(img, 0, 0);
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    let painted = false;
+    for (let index = 0; index < pixels.length && !painted; index += 4 * 7) {
+      painted = pixels[index + 3]! > 0 && pixels[index]! + pixels[index + 1]! + pixels[index + 2]! > 24;
+    }
+    return painted ? { dataUrl, w: img.naturalWidth, h: img.naturalHeight } : null;
+  } catch {
+    return null;
   }
 }
 

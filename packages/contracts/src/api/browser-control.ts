@@ -18,6 +18,7 @@ export const BROWSER_OPERATION_NAMES = [
   'network-get',
   'network-failures',
   'evaluate',
+  'devtools',
 ] as const;
 
 export type BrowserOperationName = (typeof BROWSER_OPERATION_NAMES)[number];
@@ -211,6 +212,57 @@ export interface BrowserEvaluateOperation {
   expression: string;
 }
 
+/**
+ * DevTools actions the agent may run against an in-app browser tab. Each is a
+ * named, bounded use of the Chrome DevTools Protocol, not a raw passthrough.
+ * `mutates` actions change what the page renders or stores, so they carry the
+ * same approval, deadline and write authority as `click`; the rest only read.
+ * The desktop host validates every action's params.
+ */
+export const BROWSER_DEVTOOLS_ACTIONS = {
+  status: { mutates: false, summary: 'List the DevTools overrides active on the tab.' },
+  reset: { mutates: true, summary: 'Turn off every override: emulation, overlays, forced states, throttling, cache, animation rate.' },
+  'perf-metrics': { mutates: false, summary: 'Chrome counters plus page timings and web vitals.' },
+  'render-start': { mutates: false, summary: 'Start recording rendering (frames, layout, paint, shifts, long tasks). params: { maxMs? }' },
+  'render-stop': { mutates: false, summary: 'Stop recording and return the rendering report with verdicts.' },
+  overlay: { mutates: true, summary: 'DevTools overlays that show in screenshots. params: { paint?, shifts?, fps?: boolean, grid?, flex?: css | null }' },
+  emulate: { mutates: true, summary: 'Emulate media features, print, vision deficiency, timezone, locale. params: { media?: {feature: value}, mediaType?: screen|print, vision?, timezone?, locale? } (null clears one)' },
+  'force-state': { mutates: true, summary: 'Force CSS states on an element. params: { selector, states: [hover|focus|focus-visible|focus-within|active|visited|target] }' },
+  a11y: { mutates: false, summary: 'Accessibility tree plus page issues such as low contrast. params: { selector?, depth? }' },
+  layout: { mutates: false, summary: 'Element boxes and key styles, plus overflow, clipping and small tap targets. params: { selector?, limit? }' },
+  'animation-rate': { mutates: true, summary: 'Slow down or speed up page animations, and list them. params: { rate }' },
+  'sw-list': { mutates: false, summary: 'List service worker registrations and versions.' },
+  'sw-restart': { mutates: true, summary: 'Stop and start the service worker for a scope. params: { scope? }' },
+  'sw-update': { mutates: true, summary: 'Check for a service worker update. params: { scope? }' },
+  'sw-unregister': { mutates: true, summary: 'Unregister a service worker. params: { scope? }' },
+  'storage-usage': { mutates: false, summary: "Storage use for the page's origin, by type." },
+  'storage-clear': { mutates: true, summary: "Clear the page origin's data by type. params: { types: [cookies|indexeddb|local-storage|session-storage|cache-storage|service-workers|all] }" },
+  'cache-clear': { mutates: true, summary: 'Clear the in-app browser HTTP cache (all sites; logins are kept).' },
+  'cache-disable': { mutates: true, summary: 'Bypass the HTTP cache. params: { disabled: boolean }' },
+  throttle: { mutates: true, summary: 'Throttle CPU and network. params: { cpu?: 1-20, network?: off|offline|slow-3g|fast-3g|{ latencyMs, downKbps, upKbps } }' },
+} as const satisfies Record<string, { mutates: boolean; summary: string }>;
+
+export type BrowserDevtoolsAction = keyof typeof BROWSER_DEVTOOLS_ACTIONS;
+
+/** Upper bound on a devtools action's serialized params. */
+export const BROWSER_DEVTOOLS_MAX_PARAMS_LENGTH = 16_384;
+
+export function isBrowserDevtoolsAction(value: unknown): value is BrowserDevtoolsAction {
+  return typeof value === 'string' && Object.hasOwn(BROWSER_DEVTOOLS_ACTIONS, value);
+}
+
+export function browserDevtoolsActionMutates(action: BrowserDevtoolsAction): boolean {
+  return BROWSER_DEVTOOLS_ACTIONS[action].mutates;
+}
+
+export interface BrowserDevtoolsOperation {
+  operation: 'devtools';
+  action: BrowserDevtoolsAction;
+  params?: { [key: string]: JsonValue };
+  /** Required when the action mutates. */
+  approved?: true;
+}
+
 export type BrowserOperationRequest =
   | BrowserViewportOperation
   | BrowserSnapshotOperation
@@ -225,7 +277,8 @@ export type BrowserOperationRequest =
   | BrowserNetworkListOperation
   | BrowserNetworkGetOperation
   | BrowserNetworkFailuresOperation
-  | BrowserEvaluateOperation;
+  | BrowserEvaluateOperation
+  | BrowserDevtoolsOperation;
 
 export type BrowserOperationResult =
   | { operation: 'viewport'; preset: BrowserViewportId; width: number; height: number }
@@ -255,7 +308,8 @@ export type BrowserOperationResult =
       type: string;
       /** True when the serialized value exceeded the result size cap and was cut. */
       truncated: boolean;
-    };
+    }
+  | { operation: 'devtools'; action: BrowserDevtoolsAction; result: JsonValue };
 
 export interface BrowserCommand {
   commandId: string;

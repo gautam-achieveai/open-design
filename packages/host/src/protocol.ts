@@ -244,6 +244,13 @@ export type OpenDesignHostBrowserSnapshotOperation = {
   selector?: string;
 };
 
+export type OpenDesignHostBrowserDevtoolsOperation = {
+  action: string;
+  approved?: true;
+  kind: "devtools";
+  params: Record<string, unknown>;
+};
+
 export type OpenDesignHostBrowserEvaluateOperation = {
   approved: true;
   expression: string;
@@ -317,7 +324,8 @@ export type OpenDesignHostBrowserOperation =
   | OpenDesignHostBrowserNavigateOperation
   | OpenDesignHostBrowserConsoleOperation
   | OpenDesignHostBrowserNetworkOperation
-  | OpenDesignHostBrowserEvaluateOperation;
+  | OpenDesignHostBrowserEvaluateOperation
+  | OpenDesignHostBrowserDevtoolsOperation;
 
 export type OpenDesignHostBrowserExecuteRequest = {
   expiresAt?: number;
@@ -335,7 +343,8 @@ export type OpenDesignHostBrowserExecuteSuccess =
   | { ok: true; operation: "navigate"; tabId: string; value: { frameId?: string; url: string } }
   | { ok: true; operation: "console"; tabId: string; value: { entries: OpenDesignHostBrowserConsoleEntry[] } }
   | { ok: true; operation: "network"; tabId: string; value: { requests: OpenDesignHostBrowserNetworkRequest[] } }
-  | { ok: true; operation: "evaluate"; tabId: string; value: { truncated: boolean; type: string; value: unknown } };
+  | { ok: true; operation: "evaluate"; tabId: string; value: { truncated: boolean; type: string; value: unknown } }
+  | { ok: true; operation: "devtools"; tabId: string; value: { action: string; result: unknown } };
 
 export type OpenDesignHostBrowserExecuteResult =
   | OpenDesignHostBrowserExecuteSuccess

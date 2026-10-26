@@ -22,6 +22,10 @@ describe('embedded browser control routes', () => {
       result: { operation: 'snapshot', snapshot: { document: { nodeName: 'MAIN' }, truncated: false } } },
     { command: { operation: 'evaluate', approved: true, expression: 'document.title' },
       result: { operation: 'evaluate', value: 'Example', type: 'string', truncated: false } },
+    { command: { operation: 'devtools', action: 'perf-metrics', params: {} },
+      result: { operation: 'devtools', action: 'perf-metrics', result: { chrome: { domNodes: 12 } } } },
+    { command: { operation: 'devtools', action: 'throttle', approved: true, params: { cpu: 4 } },
+      result: { operation: 'devtools', action: 'throttle', result: { throttle: { cpu: 4, network: 'off' } } } },
     { command: { operation: 'viewport', preset: 'mobile' }, result: { operation: 'viewport', preset: 'mobile', width: 390, height: 600 } },
     { command: { operation: 'style', approved: true, target: { selector: 'h1' }, styles: { color: 'red' } },
       result: { operation: 'style', applied: true, inspection: { selector: 'h1', position: { x: 1, y: 2, width: 160, height: 30 }, style: { color: 'red' } } } },
@@ -181,6 +185,7 @@ describe('embedded browser control routes', () => {
       { operation: 'scroll', deltaX: 0, deltaY: 500 },
       { operation: 'navigate', url: 'https://example.com/next' },
       { operation: 'evaluate', expression: 'document.title' },
+      { operation: 'devtools', action: 'storage-clear', params: { types: ['cookies'] } },
     ];
 
     for (const command of commands) {
@@ -269,6 +274,19 @@ describe('embedded browser control routes', () => {
     });
     expect(authorizeProjectRequest).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'p1',
       { mode: 'write', capability: 'writeFiles' });
+
+    await fetch(`${base}/api/projects/p1/browser/commands`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: { operation: 'devtools', action: 'sw-restart', approved: true } }),
+    });
+    expect(authorizeProjectRequest).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'p1',
+      { mode: 'write', capability: 'writeFiles' });
+
+    await fetch(`${base}/api/projects/p1/browser/commands`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: { operation: 'devtools', action: 'a11y' } }),
+    });
+    expect(authorizeProjectRequest).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), 'p1', { mode: 'read' });
 
     await fetch(`${base}/api/projects/p1/browser/commands`, {
       method: 'POST',

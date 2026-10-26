@@ -121,6 +121,42 @@ describe('DesignBrowserPanel <webview> navigation', () => {
     expect(screen.getByPlaceholderText('Comment on this element…')).toBeTruthy();
   });
 
+  it.each([['painted', 255], ['blank', 0], ['never answers', -1]] as const)(
+    'takes the page frame without hiding the popover, and the window only when that frame fails: %s', async (_kind, luma) => {
+      const hostCapture = vi.fn(async (options?: { clip?: { x: number; y: number; width: number; height: number } }) => ({
+        ok: true as const, dataUrl: 'data:image/png;base64,AAAA', w: 100, h: 30, capturedCssRect: options?.clip }));
+      restoreHost?.(); restoreHost = installMockOpenDesignHost({ host: { capture: { page: hostCapture } } });
+      vi.stubGlobal('Image', class {
+        naturalWidth = 100; naturalHeight = 30; onload?: () => void;
+        set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+      });
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn(), fillRect: vi.fn(),
+        getImageData: () => ({ data: new Uint8ClampedArray(100 * 30 * 4).fill(Math.max(0, luma)) }) } as unknown as CanvasRenderingContext2D);
+      const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1"
+        initialUrl="https://example.com" onOpenFile={() => {}} onRefreshFiles={() => {}} />);
+      const webview = container.querySelector('webview')! as HTMLElement & {
+        executeJavaScript: ReturnType<typeof vi.fn>; capturePage: ReturnType<typeof vi.fn> };
+      webview.getBoundingClientRect = () => ({ left: 0, top: 0, right: 300, bottom: 200, width: 300, height: 200, x: 0, y: 0, toJSON() {} } as DOMRect);
+      const target = { elementId: 'dom:#logo', selector: '#logo', label: 'img', text: '', htmlHint: 'img',
+        position: { x: 10, y: 10, width: 100, height: 30 }, maskRects: [], viewport: { width: 300, height: 200 } };
+      webview.executeJavaScript = vi.fn(async (script: string) => script.includes('function snapshotFor(el, ev)') ? target
+        : script.includes('const targets =') ? [{ ...target, key: 'capture' }] : null);
+      const popoverHidden: boolean[] = [];
+      webview.capturePage = vi.fn(async () => {
+        const popover = screen.getByTestId('comment-popover');
+        popoverHidden.push(popover.closest('[style*="visibility: hidden"]') !== null);
+        if (luma < 0) return new Promise(() => {});
+        return { toDataURL: () => 'data:image/png;base64,AAAA' };
+      });
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+      await waitFor(() => expect(webview.capturePage).toHaveBeenCalledTimes(1));
+      expect(popoverHidden).toEqual([false]);
+      if (luma > 0) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+        expect(hostCapture).not.toHaveBeenCalled();
+      } else await waitFor(() => expect(hostCapture).toHaveBeenCalledTimes(1));
+    });
+
   it.each(['valid', 'legacy', 'malformed', 'unavailable'] as const)(
     'uses exact ordinary host capture geometry before attaching masked evidence: %s', async (kind) => {
       const dataUrl = 'data:image/png;base64,cGl4ZWxz';
@@ -284,7 +320,8 @@ describe('DesignBrowserPanel <webview> navigation', () => {
         expect(fillRect).toHaveBeenCalledWith(50, 105, 20, 30);
         expect(strokeRect).toHaveBeenCalledWith(-6, 34, 212, 112);
         expect(hiddenAtCapture.length).toBeGreaterThan(0);
-        expect(hiddenAtCapture.every((state) => state.popover && state.status)).toBe(true);
+        // The popup's own pixels never hold the panel chrome, so nothing is hidden.
+        expect(hiddenAtCapture.every((state) => !state.popover && !state.status)).toBe(true);
         expect(savedImages.map((file) => file.name)).toEqual([expect.stringMatching(/^browser-annotation-/)]);
       } else expect(savedImages).toEqual([]);
       // Only a pin without a picture is called out after Save.
@@ -635,6 +672,54 @@ describe('DesignBrowserPanel <webview> navigation', () => {
     // The upsert replaces metadata wholesale: dropping these here would strip
     // the Clipper pin of the scope that makes its selector resolvable.
     expect(target.metadata).toMatchObject({ source: 'clipper', scope });
+  });
+
+  it('shows the popover again as soon as the pixels are taken, not after the image is processed', async () => {
+    const dataUrl = 'data:image/png;base64,cGl4ZWxz';
+    const capturePage = vi.fn(async (options?: { clip?: { x: number; y: number; width: number; height: number } }) => ({
+      ok: true as const, dataUrl, w: 287, h: 191, capturedCssRect: options?.clip }));
+    restoreHost?.(); restoreHost = installMockOpenDesignHost({ host: { capture: { page: capturePage } } });
+    vi.stubGlobal('Image', class {
+      naturalWidth = 287; naturalHeight = 191; onload?: () => void;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn(), fillRect: vi.fn() } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue(dataUrl);
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.startsWith('data:')
+      ? { blob: async () => new Blob(['crop'], { type: 'image/png' }) } : { ok: true }));
+    const { container } = render(<DesignBrowserPanel projectId="p1" conversationId="c1" initialUrl="https://example.com"
+      onOpenFile={() => {}} onRefreshFiles={() => {}} onSavePreviewComment={savePreviewCommentMock()} />);
+    const node = container.querySelector('webview')! as HTMLElement & { executeJavaScript: ReturnType<typeof vi.fn> };
+    node.getBoundingClientRect = () => ({ left: 30, top: 40, right: 1030, bottom: 840,
+      width: 1000, height: 800, x: 30, y: 40, toJSON() {} } as DOMRect);
+    const target = { elementId: 'dom:#field', selector: '#field', label: 'input', text: '', htmlHint: 'input',
+      position: { x: 201, y: 201, width: 240, height: 160 }, viewport: { width: 1000, height: 800 }, maskRects: [] };
+    // The check after the pixels are taken stays pending, standing in for the
+    // slower masking and encoding that follow the capture.
+    let captureMeasures = 0;
+    let finishAfterCheck: (() => void) | null = null;
+    node.executeJavaScript = vi.fn(async (script: string) => {
+      if (script.includes('function snapshotFor(el, ev)')) return target;
+      if (script.includes('"key":"capture"') && ++captureMeasures === 2) {
+        await new Promise<void>((resolve) => { finishAfterCheck = resolve; });
+      }
+      if (script.includes('const targets =')) return [{ ...target, key: 'capture' }];
+      if (script.includes('data-od-annotation-text')) return true;
+      return null;
+    });
+    const hidden = (selector: string) => {
+      for (let el = container.querySelector(selector) as HTMLElement | null; el; el = el.parentElement) {
+        if (el.style?.visibility === 'hidden') return true;
+      }
+      return false;
+    };
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Annotate' })); });
+    await waitFor(() => expect(finishAfterCheck).not.toBeNull());
+    expect(capturePage).toHaveBeenCalledTimes(1);
+    expect(hidden('[data-testid="comment-popover-save"]')).toBe(false);
+    expect(hidden('.db-status')).toBe(false);
+    await act(async () => { finishAfterCheck!(); });
+    await screen.findByRole('button', { name: /^Attach image \(1\)/ });
   });
 
   it('saves without the screenshot when the element capture never settles, after the capture deadline', async () => {

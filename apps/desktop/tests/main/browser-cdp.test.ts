@@ -24,6 +24,7 @@ class FakeDebugger extends EventEmitter {
   screenshotData = "";
   evaluateResult: unknown = { result: { type: "string", value: "Example" } };
   querySelectorNodeId = 0;
+  responses: Record<string, unknown> = {};
 
   attach = vi.fn(() => {
     this.attached = true;
@@ -38,6 +39,7 @@ class FakeDebugger extends EventEmitter {
 
   sendCommand = vi.fn(async (method: string, params?: unknown): Promise<unknown> => {
     this.commands.push({ method, ...(params === undefined ? {} : { params }) });
+    if (method in this.responses) return this.responses[method];
     if (method === "DOM.getDocument") {
       return {
         root: {
@@ -429,6 +431,75 @@ describe("Design Browser CDP controller", () => {
       await expect(run(operation)).resolves.toMatchObject({ ok: false, reason: "invalid or unapproved browser operation" });
     }
     expect(guest.debugger.commands).toEqual([]);
+    controller.close();
+  });
+
+  it("runs devtools actions: reads freely, mutations need approval, a deadline, and valid params", async () => {
+    const guest = new FakeGuest();
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
+    await controller.attachGuest(guest as unknown as WebContents);
+    controller.registerTarget({ projectId: "p1", tabId: "tab-1", url: guest.getURL(), webContentsId: guest.id });
+    guest.debugger.commands.length = 0;
+    const run = (operation: Record<string, unknown>, expiresAt: number | undefined = Date.now() + 10_000) =>
+      executeDesignBrowserRequest(controller, { tabId: "tab-1", ...(expiresAt === undefined ? {} : { expiresAt }), operation });
+
+    // A read needs neither approval nor a deadline.
+    await expect(run({ kind: "devtools", action: "status", params: {} }, undefined)).resolves.toMatchObject({
+      ok: true, operation: "devtools", value: { action: "status", result: { throttle: null, emulation: null } },
+    });
+
+    // A mutation without approval, past its deadline, with bad params, or unknown never reaches CDP.
+    await expect(run({ kind: "devtools", action: "throttle", params: { cpu: 4 } }))
+      .resolves.toMatchObject({ ok: false, reason: "invalid or unapproved browser operation" });
+    await expect(run({ kind: "devtools", action: "throttle", approved: true, params: { cpu: 4 } }, Date.now() - 1))
+      .resolves.toEqual({ ok: false, reason: "browser command expired before execution" });
+    await expect(run({ kind: "devtools", action: "throttle", approved: true, params: { cpu: 99 } }))
+      .resolves.toMatchObject({ ok: false, reason: expect.stringContaining("cpu must be") });
+    await expect(run({ kind: "devtools", action: "raw-cdp", approved: true, params: {} }))
+      .resolves.toMatchObject({ ok: false, reason: "invalid or unapproved browser operation" });
+    expect(guest.debugger.commands).toEqual([]);
+
+    await expect(run({ kind: "devtools", action: "throttle", approved: true, params: { cpu: 4, network: "slow-3g" } }))
+      .resolves.toMatchObject({ ok: true, value: { result: { throttle: { cpu: 4, network: "slow-3g" } } } });
+    expect(guest.debugger.commands).toEqual([
+      { method: "Emulation.setCPUThrottlingRate", params: { rate: 4 } },
+      { method: "Network.emulateNetworkConditions", params: { downloadThroughput: 50_000, latency: 2_000, offline: false, uploadThroughput: 50_000 } },
+    ]);
+
+    // Reset turns off exactly what is on, and status reflects it.
+    guest.debugger.commands.length = 0;
+    await expect(run({ kind: "devtools", action: "reset", approved: true, params: {} }))
+      .resolves.toMatchObject({ ok: true, value: { result: { status: { throttle: null } } } });
+    expect(guest.debugger.commands.map((command) => command.method)).toEqual([
+      "Emulation.setCPUThrottlingRate", "Network.emulateNetworkConditions",
+    ]);
+    controller.close();
+  });
+
+  it("clears only the current page's cookies and origin data, never the whole partition", async () => {
+    const guest = new FakeGuest();
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
+    await controller.attachGuest(guest as unknown as WebContents);
+    controller.registerTarget({ projectId: "p1", tabId: "tab-1", url: guest.getURL(), webContentsId: guest.id });
+    guest.debugger.responses["Network.getCookies"] = { cookies: [{ name: "sid", value: "secret", domain: ".example.com", path: "/" }] };
+    guest.debugger.evaluateResult = { result: { type: "boolean", value: true } };
+    guest.debugger.commands.length = 0;
+    const result = await executeDesignBrowserRequest(controller, {
+      tabId: "tab-1", expiresAt: Date.now() + 10_000,
+      operation: { kind: "devtools", action: "storage-clear", approved: true, params: { types: ["cookies", "indexeddb", "local-storage"] } },
+    });
+    expect(result).toMatchObject({ ok: true, value: { result: { cleared: ["cookies", "indexeddb", "local-storage"], origin: "https://example.com" } } });
+    const methods = guest.debugger.commands.map((command) => command.method);
+    expect(guest.debugger.commands).toContainEqual({
+      method: "Network.deleteCookies", params: { domain: ".example.com", name: "sid", path: "/" },
+    });
+    expect(guest.debugger.commands).toContainEqual({
+      method: "Storage.clearDataForOrigin", params: { origin: "https://example.com", storageTypes: "indexeddb,local_storage" },
+    });
+    expect(methods).not.toContain("Network.clearBrowserCookies");
+    expect(methods).not.toContain("Storage.clearCookies");
+    // Cookie values are credentials: the usage report lists names only.
+    expect(JSON.stringify(result)).not.toContain("secret");
     controller.close();
   });
 

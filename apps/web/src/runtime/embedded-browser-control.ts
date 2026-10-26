@@ -567,6 +567,13 @@ function hostOperationFromCommand(request: Exclude<BrowserOperationRequest, { op
       };
     case 'evaluate':
       return { approved: request.approved, expression: request.expression, kind: 'evaluate' };
+    case 'devtools':
+      return {
+        action: request.action,
+        ...(request.approved === true ? { approved: true } : {}),
+        kind: 'devtools',
+        params: request.params ?? {},
+      };
     case 'inspect':
       return { kind: 'inspect', selector: selectorTarget(request.target) };
     case 'screenshot':
@@ -648,6 +655,10 @@ function browserOperationResultFromHost(
         type: result.value.type,
         value: result.value.value as never,
       };
+    case 'devtools':
+      if (result.operation !== 'devtools') throw mismatchedHostResult(request, result.operation);
+      if (result.value.action !== request.action) throw mismatchedHostResult(request, `devtools ${result.value.action}`);
+      return { action: request.action, operation: 'devtools', result: result.value.result as never };
     case 'inspect':
       if (result.operation !== 'inspect') throw mismatchedHostResult(request, result.operation);
       return { operation: 'inspect', inspection: result.value as never };
