@@ -18,7 +18,7 @@ import { splitResearchSubcommand } from './research/cli-args.js';
 import { resolveDaemonUrl } from './daemon-url.js';
 import { SidecarFactory } from '@open-design/sidecar';
 import { APP_KEYS, SIDECAR_MESSAGES } from '@open-design/sidecar-proto';
-import { BROWSER_SNAPSHOT_MAX_DEPTH, EXPORT_FORMATS, EXPORT_IMAGE_FORMATS, isBrowserViewportId, isBrowserStylePatch, mediaFailureNextStep } from '@open-design/contracts';
+import { BROWSER_DEVTOOLS_ACTIONS, BROWSER_SNAPSHOT_MAX_DEPTH, browserDevtoolsActionMutates, EXPORT_FORMATS, isBrowserDevtoolsAction, EXPORT_IMAGE_FORMATS, isBrowserViewportId, isBrowserStylePatch, mediaFailureNextStep } from '@open-design/contracts';
 import type { ArtifactLintFinding, LintArtifactCliResultEnvelope, LintArtifactResponse, LintFailOn } from '@open-design/contracts';
 import { buildExportCliRequestBody, buildExportCliResultEnvelope, resolveExportCliDeckMode } from './export-cli-request.js';
 import { exportRoutePath } from './export-cli-routing.js';
@@ -361,6 +361,8 @@ const BROWSER_STRING_FLAGS = new Set([
   'depth',
   'expression',
   'script-file',
+  'params',
+  'params-file',
   'text',
   'text-file',
   'prompt-file',
@@ -506,6 +508,7 @@ function printBrowserHelp() {
   od browser active <tabId|clear> --project <id> [--json]
   od browser snapshot --project <id> [--tab <id>] [--depth <n>] [--selector <css>] [--json]
   od browser eval --project <id> [--tab <id>] (--expression <js> | --script-file <path|->) --approve [--json]
+  od browser devtools <action> --project <id> [--tab <id>] [--params <json> | --params-file <path|->] [--selector <css>] [--approve] [--json]
   od browser viewport <desktop|tablet|mobile> --project <id> [--tab <id>] [--json]
   od browser inspect --project <id> [--tab <id>] --selector <css> [--json]
   od browser style --project <id> [--tab <id>] --selector <css> --styles-file <path|-> --approve [--json]
@@ -536,6 +539,10 @@ snapshot returns the DOM tree (default depth 12, maximum 64, capped at 2000 node
 eval runs a JavaScript expression in the page, awaits a returned promise, and
 returns its JSON value; return plain data (strings, numbers, arrays, objects),
 not DOM nodes.
+devtools runs one named DevTools action on the tab; actions marked * change the
+page and need --approve. --selector fills params.selector. Overrides stay on
+until "devtools reset". Actions:
+${Object.entries(BROWSER_DEVTOOLS_ACTIONS).map(([name, spec]) => `  ${spec.mutates ? '*' : ' '} ${name.padEnd(15)} ${spec.summary}`).join('\n')}
 Style patches accept only the bounded annotation style properties, as a JSON object.
 Viewport selection requires an active native tab and returns fitted frame CSS
 dimensions. Its finite preset argument does not accept prompt files.
@@ -746,6 +753,40 @@ async function runBrowser(args) {
 
     let command;
     switch (sub) {
+      case 'devtools': {
+        const action = positional[1];
+        if (!isBrowserDevtoolsAction(action)) {
+          console.error(`Usage: od browser devtools <${Object.keys(BROWSER_DEVTOOLS_ACTIONS).join('|')}> --project <id>`);
+          process.exit(2);
+        }
+        if (typeof flags.params === 'string' && typeof flags['params-file'] === 'string') {
+          console.error('od browser devtools takes --params or --params-file, not both');
+          process.exit(2);
+        }
+        let params = {};
+        const rawParams = typeof flags['params-file'] === 'string'
+          ? await readBrowserText({ 'text-file': flags['params-file'] })
+          : flags.params;
+        if (typeof rawParams === 'string' && rawParams.trim()) {
+          try {
+            params = JSON.parse(rawParams);
+          } catch {
+            params = null;
+          }
+          if (params === null || typeof params !== 'object' || Array.isArray(params)) {
+            console.error('od browser devtools params must be a JSON object');
+            process.exit(2);
+          }
+        }
+        if (typeof flags.selector === 'string' && flags.selector.trim()) params.selector = flags.selector.trim();
+        const mutates = browserDevtoolsActionMutates(action);
+        if (mutates && !flags.approve) {
+          console.error(`od browser devtools ${action} changes the page; re-run with --approve`);
+          process.exit(2);
+        }
+        command = { operation: 'devtools', action, params, ...(mutates ? { approved: true } : {}) };
+        break;
+      }
       case 'style': {
         if (typeof flags['styles-file'] !== 'string' || !flags['styles-file'].trim()) {
           console.error('od browser style requires --styles-file <path|->');

@@ -9,7 +9,11 @@ import type {
 } from '@open-design/contracts';
 import {
   API_ERROR_CODES,
+  BROWSER_DEVTOOLS_ACTIONS,
+  BROWSER_DEVTOOLS_MAX_PARAMS_LENGTH,
   BROWSER_EVALUATE_MAX_EXPRESSION_LENGTH,
+  browserDevtoolsActionMutates,
+  isBrowserDevtoolsAction,
   BROWSER_SNAPSHOT_MAX_DEPTH,
   isBrowserOperationName, isBrowserViewportId, isBrowserStylePatch, isBrowserStyleInspection } from '@open-design/contracts';
 import type { AuthorizeProjectRequest } from '../collab/project-request-authority.js';
@@ -126,6 +130,24 @@ function parseOperation(raw: unknown): BrowserOperationRequest {
       const expression = requiredText(body, 'expression', BROWSER_EVALUATE_MAX_EXPRESSION_LENGTH);
       if (!expression.trim()) throw new BrowserBrokerError('BAD_REQUEST', 'expression is required', 400);
       return { operation: 'evaluate', approved, expression };
+    }
+    case 'devtools': {
+      if (!isBrowserDevtoolsAction(body.action)) {
+        throw new BrowserBrokerError('BAD_REQUEST', `action must be one of ${Object.keys(BROWSER_DEVTOOLS_ACTIONS).join(', ')}`, 400);
+      }
+      const params = body.params === undefined ? {} : objectValue(body.params);
+      if (!params) throw new BrowserBrokerError('BAD_REQUEST', 'params must be an object', 400);
+      if (JSON.stringify(params).length > BROWSER_DEVTOOLS_MAX_PARAMS_LENGTH) {
+        throw new BrowserBrokerError('BAD_REQUEST', 'params is too long', 400);
+      }
+      // The desktop validates each action's params; the daemon owns approval.
+      const approved = browserDevtoolsActionMutates(body.action) ? requireApproval(body) : undefined;
+      return {
+        operation: 'devtools',
+        action: body.action,
+        params: params as never,
+        ...(approved ? { approved } : {}),
+      };
     }
     case 'inspect':
       return {
@@ -298,6 +320,9 @@ function parseResult(raw: unknown): BrowserOperationResult {
       if ('value' in value && typeof value.type === 'string' && typeof value.truncated === 'boolean') {
         return value as unknown as BrowserOperationResult;
       }
+      break;
+    case 'devtools':
+      if (isBrowserDevtoolsAction(value.action) && 'result' in value) return value as unknown as BrowserOperationResult;
       break;
   }
   throw new BrowserBrokerError(
@@ -526,7 +551,8 @@ export function registerBrowserControlRoutes(
         || command.operation === 'scroll'
         || command.operation === 'navigate'
         || command.operation === 'style'
-        || command.operation === 'evaluate';
+        || command.operation === 'evaluate'
+        || (command.operation === 'devtools' && browserDevtoolsActionMutates(command.action));
       if (!await authorize(req, res, consequential ? 'write' : 'read')) return;
       const result = await broker.execute(
         requiredParam(req, 'projectId'),

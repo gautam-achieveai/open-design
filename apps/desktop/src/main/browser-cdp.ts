@@ -15,6 +15,15 @@ import type {
   OpenDesignHostBrowserTargetIdentity,
   OpenDesignHostBrowserTargetRegistration,
 } from "@open-design/host";
+import {
+  createDevtoolsState,
+  devtoolsOperationMutates,
+  disposeDevtoolsState,
+  executeDevtoolsAction,
+  onDevtoolsEvent,
+  parseDevtoolsOperation,
+  type DevtoolsState,
+} from "./browser-devtools.js";
 
 export const DESIGN_BROWSER_PARTITION = "persist:open-design-design-browser";
 
@@ -26,6 +35,7 @@ const DEFAULT_SNAPSHOT_DEPTH = 12;
 const MAX_SNAPSHOT_DEPTH = 64;
 const MAX_EVALUATE_EXPRESSION_LENGTH = 100_000;
 const MAX_EVALUATE_RESULT_LENGTH = 256 * 1024;
+const MAX_DEVTOOLS_RESULT_LENGTH = 2 * 1024 * 1024;
 const MAX_TYPE_TEXT_LENGTH = 100_000;
 const MAX_ID_LENGTH = 128;
 const MAX_SELECTOR_LENGTH = 4_096;
@@ -39,6 +49,7 @@ type UnknownRecord = Record<string, unknown>;
 
 type AttachedGuest = {
   consoleEntries: OpenDesignHostBrowserConsoleEntry[];
+  devtools: DevtoolsState;
   guest: WebContents;
   networkById: Map<string, OpenDesignHostBrowserNetworkRequest>;
   networkOrder: string[];
@@ -328,6 +339,8 @@ function parseOperation(value: unknown): OpenDesignHostBrowserOperation | null {
         limit: boundedLimit(value.limit),
       };
     }
+    case "devtools":
+      return parseDevtoolsOperation(value);
     case "network":
       return {
         kind: "network",
@@ -501,7 +514,10 @@ export async function executeDesignBrowserRequest(
   request: unknown,
 ): Promise<OpenDesignHostBrowserExecuteResult> {
   const kind = isRecord(request) && isRecord(request.operation) ? request.operation.kind : null;
-  if (kind === "click" || kind === "type" || kind === "scroll" || kind === "navigate" || kind === "evaluate") {
+  if (
+    kind === "click" || kind === "type" || kind === "scroll" || kind === "navigate" || kind === "evaluate"
+    || (kind === "devtools" && isRecord(request) && devtoolsOperationMutates(request.operation))
+  ) {
     const expiresAt = isRecord(request) ? request.expiresAt : null;
     if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
       return { ok: false, reason: "browser command expired before execution" };
@@ -523,7 +539,10 @@ export function createDesignBrowserCdpController(
   const removeGuest = (webContentsId: number): void => {
     const state = attached.get(webContentsId);
     attached.delete(webContentsId);
-    if (state) trustedPopups.delete(state.guest);
+    if (state) {
+      trustedPopups.delete(state.guest);
+      disposeDevtoolsState(state.devtools);
+    }
     for (const [tabId, registration] of registrations) {
       if (registration.webContentsId === webContentsId) registrations.delete(tabId);
     }
@@ -546,6 +565,7 @@ export function createDesignBrowserCdpController(
     if (attached.has(guest.id)) return;
     const state: AttachedGuest = {
       consoleEntries: [],
+      devtools: createDevtoolsState(),
       guest,
       networkById: new Map(),
       networkOrder: [],
@@ -555,6 +575,7 @@ export function createDesignBrowserCdpController(
     guest.debugger.on("detach", () => removeGuest(guest.id));
     guest.debugger.on("message", (_event, method, params) => {
       const payload = isRecord(params) ? params : {};
+      onDevtoolsEvent(state.devtools, method, payload);
       if (method === "Runtime.consoleAPICalled") {
         const args = Array.isArray(payload.args) ? payload.args.map(remoteObjectText) : [];
         pushBounded(state.consoleEntries, {
@@ -725,6 +746,15 @@ export function createDesignBrowserCdpController(
     const { operation } = request;
     try {
       switch (operation.kind) {
+        case "devtools": {
+          const outcome = await executeDevtoolsAction(guest, state.devtools, operation);
+          if (!outcome.ok) return failure(outcome.reason);
+          const value = { action: operation.action, result: outcome.value };
+          if (JSON.stringify(value).length > MAX_DEVTOOLS_RESULT_LENGTH) {
+            return failure(`devtools ${operation.action} result is too large; narrow it with a selector or limit`);
+          }
+          return { ok: true, operation: "devtools", tabId: request.tabId, value };
+        }
         case "snapshot": {
           const depth = Math.max(1, Math.min(MAX_SNAPSHOT_DEPTH, operation.depth ?? DEFAULT_SNAPSHOT_DEPTH));
           let root: unknown;
