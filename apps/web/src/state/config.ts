@@ -1021,6 +1021,7 @@ const DAEMON_OWNED_KEYS = new Set<keyof AppConfig>([
   'telemetry',
   'privacyDecisionAt',
   'allowSilentUpdates',
+  'cloudFeatures',
 ]);
 
 const AGENT_CLI_SECRET_ENV_KEYS = new Set([
@@ -1169,6 +1170,11 @@ export function mergeDaemonConfig(
     next.allowSilentUpdates = daemonConfig.allowSilentUpdates;
   } else {
     delete next.allowSilentUpdates;
+  }
+  if (daemonConfig.cloudFeatures !== undefined) {
+    next.cloudFeatures = daemonConfig.cloudFeatures;
+  } else {
+    delete next.cloudFeatures;
   }
   if (daemonConfig.customInstructions !== undefined) {
     next.customInstructions = daemonConfig.customInstructions ?? undefined;

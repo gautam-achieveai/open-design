@@ -493,6 +493,7 @@ OD Next runs by default; this installation opts out of it here:
 
   od config set odNextStrategyMode off       Opt out; takes effect next run.
   od config set odNextStrategyMode active    Opt back in.
+  od config set cloudFeatures true           Offer OpenDesign Cloud (sign-in, invites, billing).
 
 Status names the authority in effect (env / app_config / default), which the
 mode alone does not: leaving it unset and saving 'off' produce opposite routes.

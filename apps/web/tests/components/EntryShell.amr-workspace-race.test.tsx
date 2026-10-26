@@ -99,6 +99,7 @@ function amrAgent(): AgentInfo {
 
 function amrConfig(): AppConfig {
   return {
+    cloudFeatures: true,
     mode: 'daemon',
     agentId: 'amr',
     agentModels: { amr: { model: 'glm-5' } },

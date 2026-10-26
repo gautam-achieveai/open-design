@@ -31,6 +31,8 @@ import {
   PLUGIN_SHARE_ACTION_PLUGIN_IDS,
   renderChatTurnHostProtocolInstructions,
   resolveOdNextDeckFrameworkMode,
+  CLOUD_AGENT_ID,
+  cloudFeaturesEnabled,
 } from '@open-design/contracts';
 import {
   advanceAuthenticatedDoneCapture,
@@ -937,6 +939,7 @@ import { chatArtifactCaptureResultProps } from './chat-artifacts/telemetry.js';
 import { freezeAndRenderChatArtifactCovers } from './chat-artifacts/cover.js';
 import { setMessageArtifactHtmlVersionIds } from './chat-artifacts/store.js';
 import { registerVelaRoutes } from './routes/vela.js';
+import { CLOUD_FEATURES_DISABLED_MESSAGE, cloudFeaturesGate } from './cloud-features.js';
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
 import { registerHandoffRoutes } from './routes/handoff.js';
 import { EmptyTranscriptError, synthesizeHandoffPrompt } from './design/index.js';
@@ -3425,6 +3428,9 @@ export async function startServer({
   const _NULL_ORIGIN_SAFE_GET_RE =
     /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/codex-pets\/[^/]+\/spritesheet$|^\/asset-cache$/;
   const _POWERED_PREVIEW_SAFE_RE = /^\/projects\/[^/]+\/powered\/.+$/u;
+
+  // OpenDesign Cloud calls are refused while the user has it turned off.
+  app.use('/api', cloudFeaturesGate(() => readAppConfig(RUNTIME_DATA_DIR)));
 
   // Reject cross-origin requests to API endpoints.
   // Health/version remain open for monitoring probes.
@@ -11213,6 +11219,8 @@ export async function startServer({
       );
     if (!def.bin)
       return failRun('AGENT_UNAVAILABLE', 'agent has no binary');
+    if (def.id === CLOUD_AGENT_ID && !cloudFeaturesEnabled(readAppConfigSync(RUNTIME_DATA_DIR)))
+      return failRun('CLOUD_FEATURES_DISABLED', CLOUD_FEATURES_DISABLED_MESSAGE);
     const byokOpenCodeProvider = def.id === 'byok-opencode'
       ? buildOpenCodeByokProviderConfig(
           byokProvider,

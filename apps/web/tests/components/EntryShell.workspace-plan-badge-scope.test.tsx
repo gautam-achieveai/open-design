@@ -155,6 +155,7 @@ function agent(): AgentInfo {
 
 function config(): AppConfig {
   return {
+    cloudFeatures: true,
     mode: 'daemon',
     agentId: 'amr',
     agentModels: { amr: { model: 'glm-5' } },

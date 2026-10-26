@@ -1,5 +1,6 @@
 import type { Express, Response } from 'express';
 import type Database from 'better-sqlite3';
+import { offeredAgents } from '../cloud-features.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import type {
@@ -456,7 +457,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     if (!wantsStream) {
       try {
         const list = await detectAgents(agentCliEnv);
-        res.json({ agents: list });
+        res.json({ agents: offeredAgents(list, config) });
       } catch (err: any) {
         res.status(500).json({ error: String(err) });
       }
@@ -480,6 +481,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     try {
       for await (const agent of detectAgentsStream(agentCliEnv)) {
         if (aborted) break;
+        if (offeredAgents([agent], config).length === 0) continue;
         res.write(`event: agent\ndata: ${JSON.stringify(agent)}\n\n`);
       }
       if (!aborted) {

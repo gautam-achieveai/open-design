@@ -137,6 +137,7 @@ function cliAgent(overrides: Partial<AgentInfo> = {}): AgentInfo {
 
 function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
+    cloudFeatures: true,
     mode: 'daemon',
     agentId: 'claude-code',
     agentModels: { 'claude-code': { model: 'sonnet' } },

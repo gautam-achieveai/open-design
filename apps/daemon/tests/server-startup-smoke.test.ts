@@ -124,9 +124,10 @@ describe('daemon startup route smoke', () => {
         assert: (body) => expect(body).toHaveProperty('agents'),
       },
       {
+        // OpenDesign Cloud is off by default, so the route is mounted but refused.
         path: '/api/amr/models',
-        statuses: [200, 500],
-        assert: (body) => expect(body).toEqual(expect.any(Object)),
+        statuses: [403],
+        assert: (body) => expect(body).toMatchObject({ error: { code: 'CLOUD_FEATURES_DISABLED' } }),
       },
     ];
 

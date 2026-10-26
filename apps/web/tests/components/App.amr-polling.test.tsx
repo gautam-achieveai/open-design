@@ -205,6 +205,8 @@ const mockedFetchDaemonConfig = vi.mocked(fetchDaemonConfig);
 const mockedNavigate = vi.mocked(navigate);
 
 const baseConfig: AppConfig = {
+  // These cases cover OpenDesign Cloud, so Cloud is turned on.
+  cloudFeatures: true,
   mode: 'api',
   apiKey: '',
   apiProtocol: 'anthropic',
@@ -263,7 +265,7 @@ describe('App AMR polling', () => {
     mockedListTemplates.mockResolvedValue([]);
     mockedLoadConfig.mockReturnValue({ ...baseConfig });
     mockedMergeDaemonConfig.mockImplementation((local) => local);
-    mockedFetchDaemonConfig.mockResolvedValue({});
+    mockedFetchDaemonConfig.mockResolvedValue({ cloudFeatures: true });
     mockedFetchAmrModels
       .mockResolvedValueOnce({
         source: 'preset',
@@ -310,6 +312,16 @@ describe('App AMR polling', () => {
 
     expect(screen.getByTestId('amr-model').textContent).toBe('remote-a');
     expect(mockedFetchAmrModels).toHaveBeenCalledTimes(3);
+  });
+
+  it('never asks for the cloud model catalog while Cloud is off', async () => {
+    vi.useFakeTimers();
+    mockedLoadConfig.mockReturnValue({ ...baseConfig, cloudFeatures: false });
+    mockedFetchDaemonConfig.mockResolvedValue({ cloudFeatures: false });
+    render(<App />);
+
+    await advanceTestClock(5_000);
+    expect(mockedFetchAmrModels).not.toHaveBeenCalled();
   });
 
   it('refreshes AMR status and model catalog when returning from an external upgrade flow', async () => {

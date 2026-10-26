@@ -86,6 +86,13 @@ export interface AppConfigPrefs {
    */
   odNextStrategyMode?: OdNextRolloutMode | null;
   /**
+   * Whether OpenDesign Cloud is offered: account sign-in, the cloud runtime,
+   * team invites, share links and billing. Absent means off; only `true`
+   * turns it on (Settings → Labs, or `od config set cloudFeatures true`).
+   * Local agents, projects and connectors do not depend on it.
+   */
+  cloudFeatures?: boolean;
+  /**
    * Most-recently-used local working directories the user granted the agent
    * read access to (via the Home composer's working-directory picker). These
    * become a new project's `metadata.linkedDirs` — the agent perceives them
@@ -105,4 +112,12 @@ export type UpdateAppConfigRequest = Partial<AppConfigPrefs>;
  *  pruned to those that still exist on disk, most-recent-first. */
 export interface RecentLinkedDirsResponse {
   dirs: string[];
+}
+
+/** The runtime id of the OpenDesign Cloud agent. */
+export const CLOUD_AGENT_ID = 'amr';
+
+/** True only when the user turned OpenDesign Cloud on; see `AppConfigPrefs.cloudFeatures`. */
+export function cloudFeaturesEnabled(config: Pick<AppConfigPrefs, 'cloudFeatures'> | null | undefined): boolean {
+  return config?.cloudFeatures === true;
 }

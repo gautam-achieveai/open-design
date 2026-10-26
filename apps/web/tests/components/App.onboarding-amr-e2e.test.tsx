@@ -161,6 +161,7 @@ const amrAgent = {
 
 function firstRunConfig(): AppConfig {
   return {
+    cloudFeatures: true,
     mode: 'daemon',
     apiKey: '',
     apiProtocol: 'anthropic',
@@ -232,7 +233,7 @@ beforeEach(() => {
     models: [{ id: 'amr-model', label: 'AMR Model' }],
   });
   mockedLoadConfig.mockReturnValue(firstRunConfig());
-  mockedFetchDaemonConfig.mockResolvedValue({});
+  mockedFetchDaemonConfig.mockResolvedValue({ cloudFeatures: true });
 
   // The onboarding + inline switcher poll the vela login status; report a
   // signed-in account so the AMR runtime is fully selectable.

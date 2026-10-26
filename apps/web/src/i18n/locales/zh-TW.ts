@@ -344,6 +344,7 @@ export const zhTW: Dict = {
   "settings.onboardingExecutionTitle": "選擇模型來源",
   "settings.onboardingExecutionBody":
     "使用 OpenDesign 託管服務、連接本機 Agent，或使用你自己的模型 Key。",
+  "settings.onboardingExecutionBodyLocal": "Connect a local coding agent, or bring your own model key.",
   "settings.onboardingAmrCloudBenefitOfficial": "官方推薦",
   "settings.onboardingAmrCloudBenefitReady": "免部署即用",
   "settings.onboardingAmrCloudBenefitModels":
@@ -5896,6 +5897,8 @@ export const zhTW: Dict = {
   'labs.harnessHint': "開啟後，下次生成將使用 OpenDesign 最新生成策略，生成效果更精緻（內測中）",
   'labs.harnessTooltip': "開啟後改用 Open Design 為設計場景打造的 agent harness，產物在版面、結構與完成度上會明顯更好。",
   'labs.harnessScope': "目前涵蓋原型、簡報、行銷素材與 Hyperframes；部分 agent 尚未支援。",
+  'labs.cloudName': 'OpenDesign Cloud',
+  'labs.cloudHint': 'Show cloud sign-in, the cloud runtime, invites, share links and billing. Off keeps OpenDesign fully local.',
   'labs.envOverrideNotice': "目前由環境變數接管，無法在此修改。",
   'labs.loadFailedNotice': "讀取不到這項設定，請確認本機 daemon 正在執行。",
   'labs.optOutPrompt': "已切回原本的生成方式。哪裡不合適？",

@@ -81,6 +81,7 @@ const agents: AgentInfo[] = [
 
 function baseConfig(): AppConfig {
   return {
+    cloudFeatures: true,
     mode: 'daemon',
     agentId: 'claude-code',
     agentModels: { 'claude-code': { model: 'sonnet' } },

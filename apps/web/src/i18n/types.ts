@@ -300,6 +300,7 @@ export interface Dict {
   'settings.onboardingSystemsBody': string;
   'settings.onboardingExecutionTitle': string;
   'settings.onboardingExecutionBody': string;
+  'settings.onboardingExecutionBodyLocal': string;
   'settings.onboardingAmrCloudBenefitOfficial': string;
   'settings.onboardingAmrCloudBenefitReady': string;
   'settings.onboardingAmrCloudBenefitModels': string;
@@ -5742,6 +5743,8 @@ export interface Dict {
   'labs.harnessHint': string;
   'labs.harnessTooltip': string;
   'labs.harnessScope': string;
+  'labs.cloudName': string;
+  'labs.cloudHint': string;
   'labs.envOverrideNotice': string;
   'labs.loadFailedNotice': string;
   'labs.optOutPrompt': string;
