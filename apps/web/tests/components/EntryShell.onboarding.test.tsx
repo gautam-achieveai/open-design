@@ -99,6 +99,8 @@ function dshSetupRequiredAgent(overrides: Partial<AgentInfo> = {}): AgentInfo {
 
 function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
+    // These cases cover the Cloud onboarding, so Cloud is turned on.
+    cloudFeatures: true,
     mode: 'daemon',
     agentId: null,
     agentModels: {},
@@ -361,6 +363,16 @@ describe('EntryShell settings menu', () => {
 
     expect(props.onOpenSettings).toHaveBeenCalledWith();
     expect(screen.getAllByTestId('entry-settings-button')).toHaveLength(1);
+  });
+  it('shows the Cloud sign-in card on the signed-out rail only while Cloud is on', async () => {
+    globalThis.fetch = vi.fn(async () => jsonResponse({})) as typeof fetch;
+    renderHome();
+    expect(await screen.findByTestId('entry-cloud-signin-tip')).toBeTruthy();
+    cleanup();
+
+    renderHome({ config: baseConfig({ cloudFeatures: false }) });
+    await screen.findByTestId('entry-settings-button');
+    expect(screen.queryByTestId('entry-cloud-signin-tip')).toBeNull();
   });
 });
 
@@ -1521,6 +1533,29 @@ describe('EntryShell onboarding OpenDesign AMR runtime', () => {
       (screen.getByRole('button', { name: /API Key/i }) as HTMLButtonElement).disabled,
     ).toBe(false);
     expect(screen.queryByText('Sign in to continue')).toBeNull();
+  });
+
+  it('skips the Cloud landing and offers only local sources while Cloud is off', async () => {
+    globalThis.fetch = vi.fn(async () =>
+      jsonResponse({ loggedIn: false, profile: 'prod', user: null, configPath: '/x' }),
+    ) as typeof fetch;
+    renderOnboarding({ config: baseConfig({ cloudFeatures: false }) });
+
+    expect(
+      await screen.findByRole('heading', { name: 'Choose your model source' }),
+    ).toBeTruthy();
+    expect(screen.queryByRole('radio', { name: /OpenDesign Hosted/i })).toBeNull();
+    expect(screen.queryByText(/hosted service/i)).toBeNull();
+    const local = screen.getByRole('radio', { name: /Local Agent/i });
+    expect(local.getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('radio', { name: /Bring Your Own Key/i })).toBeTruthy();
+    // Arrow keys cycle between the two local sources only.
+    fireEvent.keyDown(local, { key: 'ArrowDown' });
+    expect(
+      screen.getByRole('radio', { name: /Bring Your Own Key/i }).getAttribute('aria-checked'),
+    ).toBe('true');
+    fireEvent.keyDown(screen.getByRole('radio', { name: /Bring Your Own Key/i }), { key: 'ArrowDown' });
+    expect(local.getAttribute('aria-checked')).toBe('true');
   });
 
   it('shows OpenDesign Cloud as the default connect surface when AMR is available', async () => {

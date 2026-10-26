@@ -227,9 +227,76 @@ export interface LabsAutosaveController {
 
 export interface LabsSectionProps {
   autosave?: LabsAutosaveController;
+  /** Whether OpenDesign Cloud is offered (app config `cloudFeatures`). */
+  cloudFeatures?: boolean;
+  /** Called once the daemon has saved a new `cloudFeatures` value. */
+  onCloudFeaturesChange?: (on: boolean) => void;
 }
 
-export function LabsSection({ autosave }: LabsSectionProps) {
+/** Same single-field PUT as the harness switch; the daemon owns this key. */
+async function writeCloudFeatures(on: boolean): Promise<void> {
+  const response = await fetch('/api/app-config', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ cloudFeatures: on }),
+  });
+  if (!response.ok) throw new Error(`app-config write failed (${response.status})`);
+}
+
+function CloudFeaturesRow({
+  on,
+  autosave,
+  onChange,
+}: {
+  on: boolean;
+  autosave?: LabsAutosaveController;
+  onChange?: (on: boolean) => void;
+}) {
+  const t = useT();
+  const [busy, setBusy] = useState(false);
+  const toggle = useCallback(() => {
+    if (busy) return;
+    const next = !on;
+    setBusy(true);
+    const claim = autosave?.claim() ?? null;
+    void writeCloudFeatures(next).then(
+      () => {
+        onChange?.(next);
+        if (claim == null) return;
+        autosave?.settle(claim, 'saved');
+        // The pill has no timer of its own; whoever sets it clears it.
+        window.setTimeout(() => autosave?.settle(claim, 'idle'), SAVED_PILL_TTL_MS);
+      },
+      () => {
+        if (claim != null) autosave?.settle(claim, 'error');
+      },
+    ).finally(() => setBusy(false));
+  }, [autosave, busy, on, onChange]);
+  return (
+    <div className={styles.row}>
+      <div className={styles.rowText}>
+        <span className={styles.rowTitle}>
+          <span className={styles.rowName}>{t('labs.cloudName')}</span>
+        </span>
+        <span className={styles.rowHint}>{t('labs.cloudHint')}</span>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={t('labs.cloudName')}
+        aria-disabled={busy}
+        className={`${styles.switch}${on ? ` ${styles.switchOn}` : ''}`}
+        onClick={toggle}
+        data-testid="labs-cloud-switch"
+      >
+        <span className={styles.switchKnob} aria-hidden />
+      </button>
+    </div>
+  );
+}
+
+export function LabsSection({ autosave, cloudFeatures = false, onCloudFeaturesChange }: LabsSectionProps) {
   const t = useT();
   const analytics = useAnalytics();
   const [state, setState] = useState<LabsHarnessState | null>(LOADING);
@@ -478,6 +545,7 @@ export function LabsSection({ autosave }: LabsSectionProps) {
           <span className={styles.switchKnob} aria-hidden />
         </button>
       </div>
+      <CloudFeaturesRow on={cloudFeatures} autosave={autosave} onChange={onCloudFeaturesChange} />
     </section>
   );
 }

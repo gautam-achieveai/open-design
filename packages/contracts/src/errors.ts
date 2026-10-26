@@ -196,6 +196,10 @@ export const API_ERROR_CODES = [
   // composer instead of waiting on a stalled create. Retryable: the same
   // client-minted project id may be resubmitted.
   'PROJECT_CREATE_PREPARATION_TIMEOUT',
+  // OpenDesign Cloud (sign-in, the cloud runtime, team invites, billing) is
+  // turned off on this installation (app config `cloudFeatures` is not true).
+  // Not retryable until the user turns it on.
+  'CLOUD_FEATURES_DISABLED',
   'INTERNAL_ERROR',
 ] as const;
 

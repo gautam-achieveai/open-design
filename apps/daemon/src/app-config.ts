@@ -131,6 +131,9 @@ export interface AppConfigPrefs {
   // `OD_NEXT_STRATEGY_ROLLOUT` outranks this when set; see
   // readOdNextRolloutPolicy.
   odNextStrategyMode?: OdNextRolloutMode | null;
+  // Whether OpenDesign Cloud (sign-in, cloud runtime, invites, billing) is
+  // offered. Absent means off; see cloud-features.ts.
+  cloudFeatures?: boolean;
   // Most-recently-used local working directories the user granted the agent
   // read access to from the Home composer. Become a project's
   // `metadata.linkedDirs` (read-only `--add-dir` awareness, no Design Files
@@ -161,6 +164,7 @@ const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
   'projectLocations',
   'defaultProjectLocationId',
   'odNextStrategyMode',
+  'cloudFeatures',
   'recentLinkedDirs',
 ] as const);
 
@@ -599,7 +603,7 @@ function applyConfigValue(
     }
     return;
   }
-  if (key === 'allowSilentUpdates') {
+  if (key === 'allowSilentUpdates' || key === 'cloudFeatures') {
     if (typeof value === 'boolean') {
       target[key] = value;
     } else {

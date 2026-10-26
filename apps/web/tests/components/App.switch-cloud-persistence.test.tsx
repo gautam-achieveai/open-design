@@ -168,6 +168,8 @@ vi.mock('../../src/state/config', async () => {
 });
 
 const baseConfig: AppConfig = {
+  // These cases cover OpenDesign Cloud, so Cloud is turned on.
+  cloudFeatures: true,
   mode: 'api',
   apiKey: '',
   apiProtocol: 'anthropic',
@@ -324,7 +326,7 @@ describe('App OPEND-3205 Cloud persistence receipt', () => {
     vi.mocked(fetchAppVersionInfo).mockResolvedValue(null);
     vi.mocked(listProjects).mockResolvedValue([project]);
     vi.mocked(listTemplates).mockResolvedValue([]);
-    vi.mocked(fetchDaemonConfig).mockResolvedValue({});
+    vi.mocked(fetchDaemonConfig).mockResolvedValue({ cloudFeatures: true });
     vi.mocked(fetchComposioConfigFromDaemon).mockResolvedValue(null);
     vi.mocked(fetchMediaProvidersFromDaemon).mockResolvedValue({ status: 'ok', providers: {} });
     vi.mocked(mergeDaemonConfig).mockImplementation((local) => local);

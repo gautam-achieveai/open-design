@@ -23,7 +23,9 @@ import {
   type SetStateAction,
 } from 'react';
 import {
+  CLOUD_AGENT_ID,
   automaticStrategyTaskProfileForProjectMetadata,
+  cloudFeaturesEnabled,
   defaultScenarioPluginIdForProjectMetadata,
   type ChatSessionMode,
   type ConnectorDetail,
@@ -703,17 +705,22 @@ export function EntryShell({
     amrLoggedIn,
     amrSessionState,
   );
-  const railWorkspaceContext = accountFooterState === 'sign-in'
+  // With OpenDesign Cloud turned off the rail shows only the local account:
+  // no cloud team, invite, sign-in card or reauth gate.
+  const cloudOffered = cloudFeaturesEnabled(config);
+  const railWorkspaceContext = accountFooterState === 'sign-in' || !cloudOffered
     ? null
     : workspaceContext;
-  const usesOpenDesignCloud = config.mode === 'daemon' && config.agentId === 'amr';
+  const usesOpenDesignCloud =
+    cloudOffered && config.mode === 'daemon' && config.agentId === CLOUD_AGENT_ID;
   const amrProfile = config.agentCliEnv?.amr?.OPEN_DESIGN_AMR_PROFILE ?? null;
-  const amrAuthRequired =
+  const amrAuthRequired = cloudOffered && (
     workspaceContextState.failure === 'reauth-required'
     || (
       usesOpenDesignCloud
       && requiresAmrReauthentication(amrSessionState, workspaceContextState.failure)
-    );
+    )
+  );
   useEffect(() => {
     // The entry shell is an authenticated surface. Both an explicit signed-out
     // status and a definitive credential rejection return to the existing
@@ -724,7 +731,9 @@ export function EntryShell({
     navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
   }, [amrAuthRequired, amrLoggedIn, usesOpenDesignCloud, view]);
   let accountFooterNotice: ReactNode = null;
-  if (accountFooterState === 'syncing') {
+  if (!cloudOffered) {
+    // Cloud is off: none of the cloud account notices apply.
+  } else if (accountFooterState === 'syncing') {
     accountFooterNotice = <RailAccountSyncTip />;
   } else if (accountFooterState === 'recovering') {
     accountFooterNotice = <RailAccountRecoveryTip />;
@@ -1830,7 +1839,7 @@ export function EntryShell({
           balanceUsd={workspaceBalanceUsd}
           onOpenSettings={onOpenSettings}
           onInvite={() => changeView('members')}
-          onSignInCloud={() => navigate({ kind: 'home', view: 'onboarding' })}
+          onSignInCloud={cloudOffered ? () => navigate({ kind: 'home', view: 'onboarding' }) : undefined}
           onSignedOut={onSignedOut}
           updaterSlot={updaterSlot}
           // A loading or unavailable workspace read is not proof of sign-out.
@@ -2211,10 +2220,15 @@ function OnboardingView({
 }) {
   const t = useT();
   const analytics = useAnalytics();
-  const [step, setStep] = useState(0);
+  // With OpenDesign Cloud off, onboarding skips the cloud landing (step 0) and
+  // the model-source chooser offers only local agents and BYOK.
+  const cloudOffered = cloudFeaturesEnabled(config);
+  const [step, setStep] = useState(cloudOffered ? 0 : 1);
   const [runtime, setRuntime] = useState<'amr' | 'local' | 'byok' | null>(null);
   const [runtimeSetupEntry, setRuntimeSetupEntry] = useState<'cloud' | 'chooser'>('chooser');
-  const [modelSource, setModelSource] = useState<'amr' | 'local' | 'byok'>('amr');
+  const [modelSource, setModelSource] = useState<'amr' | 'local' | 'byok'>(
+    cloudOffered ? 'amr' : 'local',
+  );
   const modelSourceOptionRefs = useRef<
     Record<'amr' | 'local' | 'byok', HTMLButtonElement | null>
   >({ amr: null, local: null, byok: null });
@@ -2889,8 +2903,10 @@ function OnboardingView({
     event: ReactKeyboardEvent<HTMLButtonElement>,
     currentSource: 'amr' | 'local' | 'byok',
   ): void {
-    const sources = ['amr', 'local', 'byok'] as const;
-    const currentIndex = sources.indexOf(currentSource);
+    const sources = cloudOffered
+      ? (['amr', 'local', 'byok'] as const)
+      : (['local', 'byok'] as const);
+    const currentIndex = (sources as readonly string[]).indexOf(currentSource);
     let nextIndex: number | null = null;
 
     if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
@@ -3807,14 +3823,14 @@ function OnboardingView({
               {t('settings.onboardingExecutionTitle')}
             </h1>
             <p className="onboarding-cloud__body">
-              {t('settings.onboardingExecutionBody')}
+              {t(cloudOffered ? 'settings.onboardingExecutionBody' : 'settings.onboardingExecutionBodyLocal')}
             </p>
             <div
               className={onboardingSourceStyles.options}
               role="radiogroup"
               aria-label={t('settings.onboardingExecutionTitle')}
             >
-              <Button
+              {cloudOffered ? <Button
                 ref={(node) => {
                   modelSourceOptionRefs.current.amr = node;
                 }}
@@ -3845,7 +3861,7 @@ function OnboardingView({
                   </span>
                 </span>
                 <span className={onboardingSourceStyles.radio} aria-hidden="true" />
-              </Button>
+              </Button> : null}
               <Button
                 ref={(node) => {
                   modelSourceOptionRefs.current.local = node;

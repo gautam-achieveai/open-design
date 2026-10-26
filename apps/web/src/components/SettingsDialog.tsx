@@ -5,6 +5,7 @@ import type {
   AmrWalletSnapshot,
   WorkspaceCollabContext,
 } from '@open-design/contracts';
+import { cloudFeaturesEnabled } from '@open-design/contracts';
 import { validateBaseUrl } from '@open-design/contracts/api/connectionTest';
 import {
   agentIdToTracking,
@@ -470,6 +471,8 @@ interface Props {
    * incremental save, not a final commit.
    */
   onPersist: (cfg: AppConfig, options?: { forceMediaProviderSync?: boolean }) => Promise<void> | void;
+  /** The Labs cloud switch saved `cloudFeatures` on the daemon. */
+  onCloudFeaturesChange?: (on: boolean) => void;
   /**
    * Non-optimistic write for the daemon-owned silent-update preference.
    * Settings → About uses this instead of the generic autosave path so a
@@ -1508,6 +1511,7 @@ export function SettingsDialog({
   initialHighlight = null,
   persistedProjectWorkspaceId = null,
   onPersist,
+  onCloudFeaturesChange,
   onSilentUpdatePreferenceChange,
   onPersistComposioKey,
   composioConfigLoading = false,
@@ -4512,7 +4516,7 @@ export function SettingsDialog({
                 </button>
               </div>
               </div>
-              {cfg.mode === 'daemon' && !amrCardSignedIn ? (
+              {cloudFeaturesEnabled(cfg) && cfg.mode === 'daemon' && !amrCardSignedIn ? (
                 // Only prompt to sign into OpenDesign Cloud when NOT already
                 // signed in — the AMR/vela session IS the cloud identity (one
                 // session drives both), so a logged-in user has nothing to do
@@ -6007,7 +6011,14 @@ export function SettingsDialog({
           ) : null}
 
           {activeSection === 'labs' ? (
-            <LabsSection autosave={labsAutosave} />
+            <LabsSection
+              autosave={labsAutosave}
+              cloudFeatures={cloudFeaturesEnabled(cfg)}
+              onCloudFeaturesChange={(on) => {
+                setCfg((curr) => ({ ...curr, cloudFeatures: on }));
+                onCloudFeaturesChange?.(on);
+              }}
+            />
           ) : null}
 
           {activeSection === 'designSystems' ? (

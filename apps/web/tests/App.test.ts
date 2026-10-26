@@ -304,6 +304,21 @@ describe('shouldSyncMediaProvidersOnSave', () => {
 });
 
 describe('buildPersistedConfig', () => {
+  it('keeps the daemon-owned cloud switch when a Settings snapshot predates it', () => {
+    expect(
+      buildPersistedConfig(
+        { ...baseConfig },
+        { ...baseConfig, cloudFeatures: true },
+      ).cloudFeatures,
+    ).toBe(true);
+    expect(
+      buildPersistedConfig(
+        { ...baseConfig, cloudFeatures: true },
+        { ...baseConfig, cloudFeatures: false },
+      ).cloudFeatures,
+    ).toBe(false);
+  });
+
   it('preserves onboarding completion when a stale autosave snapshot says false', () => {
     expect(
       buildPersistedConfig(

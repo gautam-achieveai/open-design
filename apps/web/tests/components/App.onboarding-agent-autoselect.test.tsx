@@ -250,4 +250,30 @@ describe('App first-run agent auto-select', () => {
       expect(screen.getByTestId('agent-id').textContent).toBe('claude');
     });
   });
+  it.each([
+    [undefined, 'claude'],
+    [true, 'amr'],
+  ])('with cloudFeatures=%s a saved OpenDesign Cloud pick becomes %s', async (cloudFeatures, expected) => {
+    mockedLoadConfig.mockReturnValue({
+      ...firstRunConfig(),
+      onboardingCompleted: true,
+      agentId: 'amr',
+    });
+    mockedFetchDaemonConfig.mockResolvedValue({
+      onboardingCompleted: true,
+      agentId: 'amr',
+      ...(cloudFeatures === undefined ? {} : { cloudFeatures }),
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('onboarding-completed').textContent).toBe('true');
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-id').textContent).toBe(expected);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByTestId('agent-id').textContent).toBe(expected);
+  });
 });

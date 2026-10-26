@@ -458,6 +458,10 @@ export interface AppConfig {
   // rotate or clear the anonymous id without re-opening the consent banner.
   privacyDecisionAt?: number | null;
   allowSilentUpdates?: boolean;
+  // Daemon-owned: whether OpenDesign Cloud (sign-in, cloud runtime, invites,
+  // billing) is offered. Written only by the Labs switch; see
+  // `cloudFeaturesEnabled` in @open-design/contracts.
+  cloudFeatures?: boolean;
   // Privacy preferences governing what (if anything) is shipped to the
   // PostHog / Langfuse telemetry endpoints. `metrics` and `content`
   // default ON (set by `DEFAULT_CONFIG.telemetry` in state/config.ts) so

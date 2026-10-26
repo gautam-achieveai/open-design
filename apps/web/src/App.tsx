@@ -36,7 +36,11 @@ import type {
   ProjectScenarioTaskProfile,
   WorkspaceProjectSummary,
 } from '@open-design/contracts';
-import { DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID } from '@open-design/contracts';
+import {
+  CLOUD_AGENT_ID,
+  cloudFeaturesEnabled,
+  DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID,
+} from '@open-design/contracts';
 import { EntryView } from './components/EntryView';
 import type {
   OptimisticProjectCreationHandoff,
@@ -534,6 +538,9 @@ export function buildPersistedConfig(next: AppConfig, current: AppConfig): AppCo
     current.privacyDecisionAt != null && next.privacyDecisionAt == null;
   return {
     ...next,
+    // Daemon-owned: only the Labs switch changes it (onCloudFeaturesChange), so
+    // a Settings snapshot taken before that write must not roll it back.
+    cloudFeatures: current.cloudFeatures,
     onboardingCompleted: current.onboardingCompleted ? true : next.onboardingCompleted,
     ...(stalePrivacySnapshot
       ? {
@@ -578,6 +585,11 @@ export function resolveSettingsCloseConfig(
 ): AppConfig {
   const base = latestPersisted === rendered ? rendered : latestPersisted;
   return base.onboardingCompleted ? base : { ...base, onboardingCompleted: true };
+}
+
+/** A saved OpenDesign Cloud agent while cloud is turned off. */
+function cloudAgentHidden(config: Pick<AppConfig, 'agentId' | 'cloudFeatures'>): boolean {
+  return config.agentId === CLOUD_AGENT_ID && !cloudFeaturesEnabled(config);
 }
 
 function mergeAmrModelsIntoAgents(
@@ -1950,8 +1962,10 @@ function AppInner() {
     });
   }, [activeProjectId, activeFileName]);
 
+  const cloudOffered = cloudFeaturesEnabled(config);
+
   useEffect(() => {
-    if (!daemonLive) return;
+    if (!daemonLive || !cloudOffered) return;
     let cancelled = false;
     let timer: number | null = null;
     const pollGeneration = amrPollGenerationRef.current + 1;
@@ -1990,7 +2004,7 @@ function AppInner() {
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [amrPollRestartToken, daemonLive]);
+  }, [amrPollRestartToken, cloudOffered, daemonLive]);
 
   // App-level AMR sign-in state. Feeds two analytics globals: the
   // `amr` configure_type bucket (deriveConfigureGlobals below) and the
@@ -2374,14 +2388,17 @@ function AppInner() {
   // persists it to the daemon, which then races and clobbers the user's AMR
   // selection on the next launch. Gate on onboardingCompleted so this only
   // backfills an empty slot for returning users.
+  //
+  // A saved OpenDesign Cloud pick counts as empty while cloud is turned off:
+  // the daemon no longer offers that runtime.
   useEffect(() => {
     if (!daemonConfigLoaded || agentsLoading) return;
     if (config.onboardingCompleted !== true) return;
-    if (config.agentId) return;
+    if (config.agentId && !cloudAgentHidden(config)) return;
     const firstAvailable = agents.find((a) => a.available);
     if (!firstAvailable) return;
     setConfig((prev) => {
-      if (prev.agentId) return prev;
+      if (prev.agentId && !cloudAgentHidden(prev)) return prev;
       const next: AppConfig = { ...prev, agentId: firstAvailable.id };
       saveConfig(next);
       void syncConfigToDaemon(next);
@@ -2392,6 +2409,7 @@ function AppInner() {
     agentsLoading,
     agents,
     config.agentId,
+    config.cloudFeatures,
     config.onboardingCompleted,
   ]);
 
@@ -2768,6 +2786,14 @@ function AppInner() {
       setConfig((curr) => ({ ...curr, allowSilentUpdates: nextSilent }));
     }
   }, [daemonMediaProviders, daemonMediaProvidersFetchState]);
+
+  // The Labs switch has already written the daemon; this only mirrors it.
+  const handleCloudFeaturesChange = useCallback((on: boolean) => {
+    const next: AppConfig = { ...latestPersistedConfigRef.current, cloudFeatures: on };
+    latestPersistedConfigRef.current = next;
+    saveConfig(next);
+    setConfig((curr) => ({ ...curr, cloudFeatures: on }));
+  }, []);
 
   const handleSettingsDraftChange = useCallback((draft: AppConfig) => {
     settingsDraftConfigRef.current = draft;
@@ -5223,6 +5249,7 @@ function AppInner() {
       }
       composioConfigLoading={composioConfigLoading}
       onPersist={handleConfigPersist}
+      onCloudFeaturesChange={handleCloudFeaturesChange}
       onSilentUpdatePreferenceChange={handleSilentUpdatePreferenceChange}
       onDraftChange={handleSettingsDraftChange}
       onPersistComposioKey={handleConfigPersistComposioKey}
@@ -5558,7 +5585,7 @@ function AppInner() {
           daemonLive={daemonLive}
           onModeChange={handleModeChange}
           onAgentChange={handleAgentChange}
-          onSwitchToCloud={handleSwitchToCloud}
+          onSwitchToCloud={cloudOffered ? handleSwitchToCloud : undefined}
           onAgentModelChange={handleAgentModelChange}
           onApiModelChange={handleApiModelChange}
           onRefreshAgents={refreshAgents}
@@ -5810,7 +5837,7 @@ function AppInner() {
         onSubmit={(answers) => trackExperienceSurveySent(analytics.track, answers)}
       />
       <AmrArtifactUpgradeGate
-        cloudModelSelected={config.mode === 'daemon' && config.agentId === 'amr'}
+        cloudModelSelected={cloudOffered && config.mode === 'daemon' && config.agentId === CLOUD_AGENT_ID}
         homeVisible={route.kind === 'home' && route.view === 'home'}
         activeProjectId={route.kind === 'project' ? route.projectId : null}
         activeConversationId={
