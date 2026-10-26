@@ -163,6 +163,22 @@ describe('BoardComposerPopover keyboard submit', () => {
     expect(Number.parseInt(popover.style.maxHeight, 10)).toBeLessThanOrEqual(252);
   });
 
+  it('does not push the composer to the far edge of a tall element clicked near its top', () => {
+    renderPopover({
+      targetOverride: {
+        hoverPoint: { x: 120, y: 200 },
+        position: { x: 0, y: 0, width: 687, height: 688 },
+      },
+      bounds: { width: 702, height: 1046 },
+    });
+
+    const popover = screen.getByTestId('comment-popover');
+    const top = Number.parseInt(popover.style.top, 10);
+    // Below the whole element would be top 702, 500px under the click.
+    expect(top - 200).toBeLessThanOrEqual(128);
+    expect(top).toBeGreaterThan(200);
+  });
+
   it('drags the composer and clamps it inside the preview bounds', () => {
     renderPopover({
       targetOverride: {

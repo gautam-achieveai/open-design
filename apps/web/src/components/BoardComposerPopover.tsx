@@ -156,6 +156,30 @@ function numericStyleValue(style: CSSProperties, key: 'left' | 'top'): number | 
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** How far from the click the card may sit before it moves to the click. */
+const POPOVER_CLICK_REACH = 64;
+
+/** A box of 2 x POPOVER_CLICK_REACH around the click, kept inside the element. */
+function clickBox(position: PreviewCommentSnapshot['position'], click: { x: number; y: number }) {
+  const span = (start: number, size: number, at: number): [number, number] => {
+    if (size <= POPOVER_CLICK_REACH * 2) return [start, size];
+    const from = clampPopoverRange(at - POPOVER_CLICK_REACH, start, start + size - POPOVER_CLICK_REACH * 2);
+    return [from, POPOVER_CLICK_REACH * 2];
+  };
+  const [x, width] = span(position.x, position.width, click.x);
+  const [y, height] = span(position.y, position.height, click.y);
+  return { x, y, width, height };
+}
+
+/** Distance from a point to the nearest edge of the placed card; 0 when inside. */
+function cardDistanceTo(style: CSSProperties, size: PopoverSize, x: number, y: number): number {
+  const left = numericStyleValue(style, 'left') ?? x;
+  const top = numericStyleValue(style, 'top') ?? y;
+  const dx = Math.max(left - x, 0, x - (left + size.width));
+  const dy = Math.max(top - y, 0, y - (top + size.height));
+  return Math.hypot(dx, dy);
+}
+
 function popoverAnchorStyle(
   target: PreviewCommentSnapshot,
   scale: number,
@@ -178,86 +202,100 @@ function popoverAnchorStyle(
     const viewportTop = Math.max(0, bounds.scrollTop ?? 0);
     const viewportRight = viewportLeft + bounds.width;
     const viewportBottom = bounds.height ? viewportTop + bounds.height : Number.POSITIVE_INFINITY;
-    const position = target.position;
-    const rect = {
-      left: offset.x + position.x * safeScale,
-      top: offset.y + position.y * safeScale,
-      width: Math.max(1, position.width * safeScale),
-      height: Math.max(1, position.height * safeScale),
-    };
-    const rectRight = rect.left + rect.width;
-    const rectBottom = rect.top + rect.height;
     const measured = popoverSizeForPositioning(expanded, measuredSize);
-    const verticalCenterLeft = rect.left + rect.width / 2 - measured.width / 2;
-    const horizontalCenterTop = rect.top + rect.height / 2 - measured.height / 2;
-    const spaces = [
-      {
-        side: 'top' as const,
-        space: rect.top - viewportTop - POPOVER_PAD,
-        fits: rect.top - viewportTop - POPOVER_PAD >= measured.height,
-      },
-      {
-        side: 'bottom' as const,
-        space: viewportBottom - rectBottom - POPOVER_PAD,
-        fits: viewportBottom - rectBottom - POPOVER_PAD >= measured.height,
-      },
-      {
-        side: 'left' as const,
-        space: rect.left - viewportLeft - POPOVER_PAD,
-        fits: rect.left - viewportLeft - POPOVER_PAD >= measured.width,
-      },
-      {
-        side: 'right' as const,
-        space: viewportRight - rectRight - POPOVER_PAD,
-        fits: viewportRight - rectRight - POPOVER_PAD >= measured.width,
-      },
-    ];
-    const sorted = spaces
-      .filter((item) => Number.isFinite(item.space))
-      .sort((a, b) => Number(b.fits) - Number(a.fits) || b.space - a.space);
-    const sidePosition = (side: PopoverSide): { left: number; top: number; maxHeightLimit?: number } => {
-      if (side === 'top') {
-        const topLimit = rect.top - POPOVER_PAD;
-        const top = Number.isFinite(topLimit)
-          ? Math.max(viewportTop + POPOVER_PAD, topLimit - measured.height)
-          : rect.top - measured.height - POPOVER_PAD;
+    // The sides of `position` ranked by fit then room, and the card placed on one.
+    const besideBox = (position: PreviewCommentSnapshot['position'], sides: readonly PopoverSide[]) => {
+      const rect = {
+        left: offset.x + position.x * safeScale,
+        top: offset.y + position.y * safeScale,
+        width: Math.max(1, position.width * safeScale),
+        height: Math.max(1, position.height * safeScale),
+      };
+      const rectRight = rect.left + rect.width;
+      const rectBottom = rect.top + rect.height;
+      const verticalCenterLeft = rect.left + rect.width / 2 - measured.width / 2;
+      const horizontalCenterTop = rect.top + rect.height / 2 - measured.height / 2;
+      const spaces = [
+        {
+          side: 'top' as const,
+          space: rect.top - viewportTop - POPOVER_PAD,
+          fits: rect.top - viewportTop - POPOVER_PAD >= measured.height,
+        },
+        {
+          side: 'bottom' as const,
+          space: viewportBottom - rectBottom - POPOVER_PAD,
+          fits: viewportBottom - rectBottom - POPOVER_PAD >= measured.height,
+        },
+        {
+          side: 'left' as const,
+          space: rect.left - viewportLeft - POPOVER_PAD,
+          fits: rect.left - viewportLeft - POPOVER_PAD >= measured.width,
+        },
+        {
+          side: 'right' as const,
+          space: viewportRight - rectRight - POPOVER_PAD,
+          fits: viewportRight - rectRight - POPOVER_PAD >= measured.width,
+        },
+      ];
+      const sorted = spaces
+        .filter((item) => sides.includes(item.side) && Number.isFinite(item.space))
+        .sort((a, b) => Number(b.fits) - Number(a.fits) || b.space - a.space);
+      const sidePosition = (side: PopoverSide): { left: number; top: number; maxHeightLimit?: number } => {
+        if (side === 'top') {
+          const topLimit = rect.top - POPOVER_PAD;
+          const top = Number.isFinite(topLimit)
+            ? Math.max(viewportTop + POPOVER_PAD, topLimit - measured.height)
+            : rect.top - measured.height - POPOVER_PAD;
+          return {
+            left: verticalCenterLeft,
+            top,
+            maxHeightLimit: Number.isFinite(topLimit) ? topLimit - top : undefined,
+          };
+        }
+        if (side === 'bottom') {
+          const top = rectBottom + POPOVER_PAD;
+          return {
+            left: verticalCenterLeft,
+            top,
+            maxHeightLimit: Number.isFinite(viewportBottom) ? viewportBottom - top - POPOVER_PAD : undefined,
+          };
+        }
+        if (side === 'left') {
+          return {
+            left: rect.left - measured.width - POPOVER_PAD,
+            top: horizontalCenterTop,
+          };
+        }
         return {
-          left: verticalCenterLeft,
-          top,
-          maxHeightLimit: Number.isFinite(topLimit) ? topLimit - top : undefined,
-        };
-      }
-      if (side === 'bottom') {
-        const top = rectBottom + POPOVER_PAD;
-        return {
-          left: verticalCenterLeft,
-          top,
-          maxHeightLimit: Number.isFinite(viewportBottom) ? viewportBottom - top - POPOVER_PAD : undefined,
-        };
-      }
-      if (side === 'left') {
-        return {
-          left: rect.left - measured.width - POPOVER_PAD,
+          left: rectRight + POPOVER_PAD,
           top: horizontalCenterTop,
         };
-      }
-      return {
-        left: rectRight + POPOVER_PAD,
-        top: horizontalCenterTop,
       };
+      const place = (side: PopoverSide) => {
+        const next = sidePosition(side);
+        return clampPopoverPositionStyle(next.left, next.top, bounds, measured, next.maxHeightLimit);
+      };
+      return { sorted, place };
     };
-    const fullyFittingSide = sorted.find((item) => item.fits)?.side;
+    const element = besideBox(target.position, ['top', 'bottom', 'left', 'right']);
+    const fullyFittingSide = element.sorted.find((item) => item.fits)?.side;
+    const click = target.hoverPoint;
     if (fullyFittingSide) {
-      const next = sidePosition(fullyFittingSide);
-      return clampPopoverPositionStyle(next.left, next.top, bounds, measured, next.maxHeightLimit);
+      const style = element.place(fullyFittingSide);
+      if (!click || cardDistanceTo(style, measured, anchorX, anchorY) <= POPOVER_CLICK_REACH * 2) return style;
     }
-    const partialVerticalSide = sorted.find((item) =>
+    if (click) {
+      // A large element would push the card far from the click; sit above or
+      // below a small box around the click instead.
+      const near = besideBox(clickBox(target.position, click), ['top', 'bottom']);
+      const nearSide = near.sorted.find((item) => item.fits)?.side;
+      if (nearSide) return near.place(nearSide);
+    }
+    if (fullyFittingSide) return element.place(fullyFittingSide);
+    const partialVerticalSide = element.sorted.find((item) =>
       (item.side === 'bottom' || item.side === 'top') && item.space >= POPOVER_MIN_VISIBLE_HEIGHT
     )?.side;
-    if (partialVerticalSide) {
-      const next = sidePosition(partialVerticalSide);
-      return clampPopoverPositionStyle(next.left, next.top, bounds, measured, next.maxHeightLimit);
-    }
+    if (partialVerticalSide) return element.place(partialVerticalSide);
     const fallbackLeft = anchorX + POPOVER_PAD + measured.width <= viewportRight - POPOVER_PAD
       ? anchorX + POPOVER_PAD
       : anchorX - measured.width - POPOVER_PAD;
