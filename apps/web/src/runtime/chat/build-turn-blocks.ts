@@ -2216,6 +2216,12 @@ function buildToolRow(
   event: Extract<PersistedAgentEvent, { kind: 'tool_use' }>,
   result: Extract<PersistedAgentEvent, { kind: 'tool_result' }> | undefined,
 ): ToolRow | null {
+  // Some ACP runtimes emit internal `plan` calls with no todo payload. They
+  // carry no user-readable action or result, so repeated calls must not become
+  // a stack of rows whose entire title is just "plan" (D53).
+  if (event.name.trim().toLowerCase() === 'plan' && readTodoList(event.input).length === 0) {
+    return null;
+  }
   const kind = toolKind(event.name, event.input);
   const command = isCommandTool(event.name) ? commandOf(event.input) : '';
   const file = fileOf(event.input) ?? (command ? commandFile(command) : null);

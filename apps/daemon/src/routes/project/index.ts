@@ -4258,13 +4258,23 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
             >[0]
           : null,
       );
-      const automaticDefaultRouting = initialSessionMode === 'design'
+      // Active UI development starts in Build mode, but it is still a
+      // product-owned automatic scenario rather than an explicit plugin pin.
+      // Keep that one source-editing route eligible outside Design mode; all
+      // other automatic scenario and OD Next routes retain their Design gate.
+      const automaticScenarioRouting = initialSessionMode === 'design'
+        || (
+          initialSessionMode === 'build'
+          && (projectMetadata as ProjectMetadata | null)?.intent === 'active-ui-development'
+          && defaultScenarioPluginId === 'od-active-ui-development'
+        );
+      const automaticDefaultRouting = automaticScenarioRouting
         && Boolean(defaultScenarioPluginId)
         && !explicitPlugin
         && !automaticStrategyBinding;
       let resolveBody =
         explicitPlugin ? (req.body as Record<string, unknown>) : null;
-      if (!resolveBody && initialSessionMode === 'design' && !automaticStrategyBinding) {
+      if (!resolveBody && automaticScenarioRouting && !automaticStrategyBinding) {
         if (defaultScenarioPluginId && getInstalledPlugin(db, defaultScenarioPluginId)) {
           resolveBody = { ...(req.body || {}), pluginId: defaultScenarioPluginId };
         }

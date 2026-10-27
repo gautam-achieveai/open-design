@@ -622,9 +622,12 @@ export function HomeView({
     chipId: string | null;
   } | null>(null);
   // The Home composer no longer exposes a mode picker (the 「设计」 pill was
-  // removed), so every Home create runs in the default design mode; the
-  // per-conversation picker still lives in the project chat composer.
-  const sessionMode: ChatSessionMode = 'design';
+  // removed). The selected scenario owns the initial mode: Active UI development
+  // edits an existing product, so it starts in Build; every other Home create
+  // keeps the default Design mode. The per-conversation picker still lives in
+  // the project chat composer.
+  const sessionMode: ChatSessionMode =
+    active?.chipId === 'active-ui-development' ? 'build' : 'design';
   const [activeSkill, setActiveSkill] = useState<SkillSummary | null>(null);
   const [activeSkillCatalogScope, setActiveSkillCatalogScope] =
     useState<LocalCatalogScope | null>(null);
@@ -2961,13 +2964,15 @@ export function HomeView({
       const productAutomaticScenario = submittedChip?.action.kind === 'apply-scenario'
         && submittedChip.action.automaticDefault === true
         && !pinsPluginOverAutomaticRoute(submittedActive, submittedRouteChipId);
+      const automaticScenarioMode = sessionMode === 'design'
+        || (sessionMode === 'build' && submittedRouteChipId === 'active-ui-development');
       const routedPluginId =
         automaticStrategyTaskProfile
           ? null
           : sessionMode === 'design'
           ? submittedActive?.record.id ?? DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID
           : submittedActive?.record.id ?? null;
-      const pluginSelectionProvenance = sessionMode === 'design'
+      const pluginSelectionProvenance = automaticScenarioMode
         && (!submittedActive || productAutomaticScenario)
         ? 'automatic-default' as const
         : null;
