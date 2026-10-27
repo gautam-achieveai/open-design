@@ -15674,6 +15674,10 @@ export function createBufferedTextUpdates({
    * **哪怕 delta 为空**也要进入思考中。所以帧数要单独记。
    */
   let pendingThinkingEventFrames = 0;
+  // Text paints do not need 60 full transcript renders per second. Keep the
+  // stream fluid at 30 fps while non-delta events and explicit flushes stay immediate.
+  const minTextFlushIntervalMs = 1_000 / 30;
+  let lastFlushAt = Number.NEGATIVE_INFINITY;
   let flushFrame: number | null = null;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
@@ -15825,12 +15829,35 @@ export function createBufferedTextUpdates({
 
   const scheduleFlush = () => {
     if (disposed || flushFrame !== null || flushTimer !== null) return;
-    flushFrame = requestAnimationFrame(() => {
+    let callbackRan = false;
+    const frame = requestAnimationFrame(() => {
+      callbackRan = true;
       flushFrame = null;
+      if (flushTimer !== null) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      const remainingMs = minTextFlushIntervalMs - (performance.now() - lastFlushAt);
+      if (remainingMs > 0) {
+        // Keep a trailing update so the newest text always arrives, just not
+        // more than once per 33 ms paint budget.
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          lastFlushAt = performance.now();
+          flushPending();
+        }, remainingMs);
+        return;
+      }
+      lastFlushAt = performance.now();
       flushPending();
     });
+    // Some test hosts invoke rAF synchronously. Do not leave a stale frame or
+    // fallback timer behind in that case.
+    if (callbackRan) return;
+    flushFrame = frame;
     flushTimer = setTimeout(() => {
       flushTimer = null;
+      lastFlushAt = performance.now();
       flushPending();
     }, 250);
   };
@@ -15898,6 +15925,9 @@ export function createBufferedTextUpdates({
     // 攒住的历史不能跟着 buffer 一起消失:重挂开始时这条消息已经被清空了,
     // 丢掉队列等于把正文留在空白上。先交出去再拆。
     clearReplayTimers();
+    // Move any not-yet-painted delta into the replay queue before draining it;
+    // otherwise cancelling inside the 30 fps budget loses the newest text.
+    flushPending();
     replayOpen = false;
     drainReplayQueue();
     disposed = true;

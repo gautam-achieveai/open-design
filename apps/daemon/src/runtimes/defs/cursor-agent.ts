@@ -58,9 +58,6 @@ export const cursorAgentDef = {
     fallbackModels: [
       DEFAULT_MODEL_OPTION,
       { id: 'auto', label: 'auto' },
-      { id: 'sonnet-4', label: 'sonnet-4' },
-      { id: 'sonnet-4-thinking', label: 'sonnet-4-thinking' },
-      { id: 'gpt-5', label: 'gpt-5' },
     ],
     // Cursor Agent does not use `-` as a "read prompt from stdin" sentinel.
     // Passing it makes the CLI treat the dash as the literal user prompt,

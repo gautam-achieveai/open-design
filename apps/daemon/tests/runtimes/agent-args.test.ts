@@ -716,24 +716,10 @@ test('antigravity passes prompt via -p argument (print mode)', () => {
 
   assert.equal(antigravity.maxPromptArgBytes, undefined);
 
-  // Picker exposes the synthetic Default + the 8 labels agy's TUI
-  // Switch-Model surfaces for consumer-tier accounts. The set is small
-  // enough to ship statically; revisit when upstream adds an `agy
-  // models` subcommand (also tracked under issue #35).
-  assert.deepEqual(
-    antigravity.fallbackModels.map((m) => m.id),
-    [
-      'default',
-      'Gemini 3.1 Pro (High)',
-      'Gemini 3.1 Pro (Low)',
-      'Gemini 3.5 Flash (High)',
-      'Gemini 3.5 Flash (Medium)',
-      'Gemini 3.5 Flash (Low)',
-      'Claude Sonnet 4.6 (Thinking)',
-      'Claude Opus 4.6 (Thinking)',
-      'GPT-OSS 120B (Medium)',
-    ],
-  );
+  // The account-specific `agy models` catalog is authoritative. A failed
+  // probe must not resurrect model labels from an older CLI release.
+  assert.deepEqual(antigravity.fallbackModels.map((m) => m.id), ['default']);
+  assert.deepEqual(antigravity.listModels?.args, ['models']);
 
   // `agy` v1.0.3 has no `--model` flag (upstream #35), no `models`
   // subcommand, and no `/model` slash command — a user-typed model id
@@ -1045,7 +1031,7 @@ test('grok-build uses --prompt-file and never embeds the prompt in argv or stdin
     prompt,
     [],
     [],
-    { model: 'grok-4.3', reasoning: 'high' },
+    { model: 'grok-4.7', reasoning: 'high' },
     { cwd: '/tmp/od-project', promptFilePath },
   );
 
@@ -1057,7 +1043,9 @@ test('grok-build uses --prompt-file and never embeds the prompt in argv or stdin
     '--no-plan',
     '--always-approve',
     '--model',
-    'grok-4.3',
+    'grok-4.7',
+    '--effort',
+    'high',
   ]);
   assert.equal(args.includes(prompt), false);
   assert.equal(args.includes('-'), false);
@@ -1081,14 +1069,14 @@ test('grok-build omits effort for default/build models but keeps it for reasonin
   const buildArgs = grokBuild.buildArgs('', [], [], { model: 'grok-build', reasoning: 'high' }, { promptFilePath });
   assert.equal(buildArgs.includes('--effort'), false);
 
-  const reasoningArgs = grokBuild.buildArgs('', [], [], { model: 'grok-4.20-reasoning', reasoning: 'high' }, { promptFilePath });
+  const reasoningArgs = grokBuild.buildArgs('', [], [], { model: 'grok-4.7', reasoning: 'high' }, { promptFilePath });
   assert.deepEqual(reasoningArgs, [
     '--prompt-file',
     promptFilePath,
     '--no-plan',
     '--always-approve',
     '--model',
-    'grok-4.20-reasoning',
+    'grok-4.7',
     '--effort',
     'high',
   ]);

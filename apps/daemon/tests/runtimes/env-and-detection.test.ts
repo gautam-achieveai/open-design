@@ -5,7 +5,7 @@ import { delimiter, dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as platform from '@open-design/platform';
 import {
-  antigravity, assert, chmodSync, detectAgents, detectAgentsStream, inspectAgentExecutableResolution, join, minimalAgentDef, mkdirSync, mkdtempSync, opencode, resolveAgentExecutable, rmSync, spawnEnvForAgent, tmpdir, withEnvSnapshot, withPlatform, writeFileSync,
+  antigravity, assert, chmodSync, detectAgents, detectAgentsStream, inspectAgentExecutableResolution, join, minimalAgentDef, mkdirSync, mkdtempSync, opencode, resolveAgentExecutable, rmSync, spawnEnvForAgent, tmpdir, withEnvSnapshot, withPlatform, writeFakeCli, writeFileSync,
 } from './helpers/test-helpers.js';
 import { isCursorAuthFailureText } from '../../src/runtimes/auth.js';
 import { agentCapabilities } from '../../src/runtimes/capabilities.js';
@@ -432,9 +432,7 @@ test('resolveAgentExecutable prefers a configured CODEX_BIN override over PATH r
   const dir = mkdtempSync(join(tmpdir(), 'od-codex-bin-'));
   try {
     return withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], () => {
-      const configured = join(dir, 'codex-custom');
-      writeFileSync(configured, '#!/bin/sh\nexit 0\n');
-      chmodSync(configured, 0o755);
+      const configured = writeFakeCli(dir, 'codex-custom', '#!/bin/sh\nexit 0\n');
       process.env.PATH = '';
       process.env.OD_AGENT_HOME = dir;
 
@@ -454,12 +452,8 @@ test('inspectAgentExecutableResolution reports configured and PATH Codex binarie
   const dir = mkdtempSync(join(tmpdir(), 'od-codex-bin-inspect-'));
   try {
     return withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], () => {
-      const configured = join(dir, 'codex-custom');
-      const fallback = join(dir, 'codex');
-      writeFileSync(configured, '#!/bin/sh\nexit 0\n');
-      writeFileSync(fallback, '#!/bin/sh\nexit 0\n');
-      chmodSync(configured, 0o755);
-      chmodSync(fallback, 0o755);
+      const configured = writeFakeCli(dir, 'codex-custom', '#!/bin/sh\nexit 0\n');
+      const fallback = writeFakeCli(dir, 'codex', '#!/bin/sh\nexit 0\n');
       process.env.PATH = dir;
       process.env.OD_AGENT_HOME = dir;
 
@@ -498,9 +492,7 @@ test('resolveAgentExecutable supports configured binary overrides for non-Codex 
       process.env.OD_AGENT_HOME = dir;
 
       for (const [id, binName, envKey] of cases) {
-        const configured = join(dir, `${binName}-custom`);
-        writeFileSync(configured, '#!/bin/sh\nexit 0\n');
-        chmodSync(configured, 0o755);
+        const configured = writeFakeCli(dir, `${binName}-custom`, '#!/bin/sh\nexit 0\n');
 
         const resolved = resolveAgentExecutable(
           minimalAgentDef({ id, bin: binName }),
@@ -562,12 +554,8 @@ test('resolveAgentExecutable prefers opencode-cli before desktop opencode fallba
   const dir = mkdtempSync(join(tmpdir(), 'od-opencode-cli-'));
   try {
     return withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], () => {
-      const cli = join(dir, 'opencode-cli');
-      const desktop = join(dir, 'opencode');
-      writeFileSync(cli, '#!/bin/sh\nexit 0\n');
-      writeFileSync(desktop, '#!/bin/sh\nexit 0\n');
-      chmodSync(cli, 0o755);
-      chmodSync(desktop, 0o755);
+      const cli = writeFakeCli(dir, 'opencode-cli', '#!/bin/sh\nexit 0\n');
+      const desktop = writeFakeCli(dir, 'opencode', '#!/bin/sh\nexit 0\n');
       process.env.PATH = dir;
       process.env.OD_AGENT_HOME = dir;
 
@@ -653,10 +641,15 @@ fsTest('detectAgents keeps Kimi available when ACP model discovery fails', async
       assert.ok(kimi);
       assert.equal(kimi.available, true);
       assert.equal(kimi.version, 'kimi 0.6.0');
-      assert.equal(kimi.models[0]?.id, 'default');
-      assert.equal(kimi.models[1]?.id, 'kimi-k2-turbo-preview');
-      assert.equal(kimi.models[2]?.id, 'moonshot-v1-8k');
-      assert.equal(kimi.models[3]?.id, 'moonshot-v1-32k');
+      assert.deepEqual(kimi.models.map((model) => model.id), [
+        'default',
+        'k3.1-pro',
+        'k3.1-pro-highspeed',
+        'k3',
+        'k3-256k',
+        'kimi-for-coding',
+        'kimi-for-coding-highspeed',
+      ]);
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -1047,15 +1040,24 @@ test('detectAgents records Antigravity permission capability from stderr help ou
   const dir = mkdtempSync(join(tmpdir(), 'od-antigravity-capability-'));
   try {
     await withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], async () => {
-      const bin = join(dir, 'agy');
-      writeFileSync(
-        bin,
+      const bin = writeFakeCli(
+        dir,
+        'agy',
         '#!/bin/sh\n' +
           'if [ "$1" = "--version" ]; then echo "agy 1.0.3"; exit 0; fi\n' +
           'if [ "$1" = "--help" ]; then echo "--dangerously-skip-permissions" >&2; exit 0; fi\n' +
           'exit 0\n',
+        '@echo off\n' +
+          'if "%~1"=="--version" (\n' +
+          '  echo agy 1.0.3\n' +
+          '  exit /b 0\n' +
+          ')\n' +
+          'if "%~1"=="--help" (\n' +
+          '  >&2 echo --dangerously-skip-permissions\n' +
+          '  exit /b 0\n' +
+          ')\n' +
+          'exit /b 0\n',
       );
-      chmodSync(bin, 0o755);
       process.env.PATH = dir;
       process.env.OD_AGENT_HOME = dir;
       agentCapabilities.delete('antigravity');
@@ -1159,7 +1161,7 @@ test('detectAgents surfaces Cursor Agent model labels without putting labels in 
       if (process.platform === 'win32') {
         writeFileSync(
           bin,
-          '@echo off\r\nif "%~1"=="--version" echo 2026.05.16-test& exit /b 0\r\nif "%~1"=="models" (\r\n  echo Available models\r\n  echo auto - Auto\r\n  echo composer-2.5 - Composer 2.5 (current)\r\n  exit /b 0\r\n)\r\nif "%~1"=="status" echo Authenticated& exit /b 0\r\nexit /b 0\r\n',
+          '@echo off\r\nif "%~1"=="--version" echo 2026.05.16-test& exit /b 0\r\nif "%~1"=="models" (\r\n  echo Available models\r\n  echo auto - Auto\r\n  echo composer-2.5 - Composer 2.5 (current^)\r\n  exit /b 0\r\n)\r\nif "%~1"=="status" echo Authenticated& exit /b 0\r\nexit /b 0\r\n',
         );
       } else {
         writeFileSync(
@@ -1215,7 +1217,7 @@ test('detectAgents keeps Cursor Agent available when auth is missing', async () 
       assert.match(detected?.authMessage ?? '', /cursor-agent login/);
       assert.deepEqual(
         detected?.models.map((model) => model.id),
-        ['default', 'auto', 'sonnet-4', 'sonnet-4-thinking', 'gpt-5'],
+        ['default', 'auto'],
       );
     });
   } finally {

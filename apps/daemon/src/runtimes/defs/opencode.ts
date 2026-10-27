@@ -17,27 +17,7 @@ function reasoningOptions(ids: readonly string[]): RuntimeModelOption[] {
   ];
 }
 
-const OPENCODE_FALLBACK_MODELS: RuntimeModelOption[] = [
-  DEFAULT_MODEL_OPTION,
-  {
-    id: 'anthropic/claude-sonnet-4-5',
-    label: 'anthropic/claude-sonnet-4-5',
-  },
-  {
-    id: 'openai/gpt-5.6-sol',
-    label: 'openai/gpt-5.6-sol',
-  },
-  {
-    id: 'openai/gpt-5.6-terra',
-    label: 'openai/gpt-5.6-terra',
-  },
-  {
-    id: 'openai/gpt-5.6-luna',
-    label: 'openai/gpt-5.6-luna',
-  },
-  { id: 'openai/gpt-5', label: 'openai/gpt-5' },
-  { id: 'google/gemini-2.5-pro', label: 'google/gemini-2.5-pro' },
-];
+const OPENCODE_FALLBACK_MODELS: RuntimeModelOption[] = [DEFAULT_MODEL_OPTION];
 
 function parseVerboseModelMetadata(
   lines: string[],
@@ -125,11 +105,10 @@ export const opencodeAgentDef = {
     },
     fallbackModels: OPENCODE_FALLBACK_MODELS,
     // OpenCode 1.18.x exposes provider/model-specific variants. Detection
-    // reads the exact live variant keys from `models --verbose`. The fallback
-    // keeps Sol/Terra/Luna model ids usable during a catalog outage but does
-    // not guess their variants. Unknown model/variant pairs omit `--variant`
-    // rather than inventing a provider capability or preventing the base
-    // model from running.
+    // reads the exact live variant keys from `models --verbose`; no variants
+    // are guessed when discovery fails. Unknown model/variant pairs omit
+    // `--variant` rather than inventing a provider capability or preventing
+    // the base model from running.
     //
     // Prompt delivered via stdin (`opencode run` with no message argv) to
     // avoid Windows `spawn ENAMETOOLONG` while preserving OpenCode's

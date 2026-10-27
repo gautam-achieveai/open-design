@@ -128,7 +128,16 @@ function shellWords(input: string): string[] {
   for (let i = 0; i < input.length; i += 1) {
     const ch = input[i] ?? '';
     if (escaped) { word += ch; started = true; escaped = false; continue; }
-    if (ch === '\\' && quote !== "'") { escaped = true; started = true; continue; }
+    if (ch === '\\' && quote !== "'") {
+      const next = input[i + 1] ?? '';
+      // Inside POSIX double quotes, backslash only escapes $, `, ", \\, or a
+      // newline. Preserve it before every other character so Windows paths and
+      // regexes reach the tool row exactly as the shell receives them.
+      if (quote === '"' && next && !'\\"$`\n'.includes(next)) word += ch;
+      else escaped = true;
+      started = true;
+      continue;
+    }
     if (quote) {
       if (ch === quote) quote = '';
       else word += ch;

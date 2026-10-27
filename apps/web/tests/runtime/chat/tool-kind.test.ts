@@ -189,6 +189,15 @@ describe('searchPattern · 搜索行要显示搜的是什么', () => {
     expect(searchPattern('Bash', bash('grep "foo|bar" a.ts | wc -l'))).toBe('foo|bar');
   });
 
+  it('double-quoted Windows paths preserve every backslash', () => {
+    const windowsPath = String.raw`D:\projects\dictate\target\debug\controller.exe`;
+    expect(searchPattern('Bash', bash(`rg -n "${windowsPath}"`))).toBe(windowsPath);
+    expect(commandFile(`cat "${windowsPath}"`)).toEqual({
+      path: windowsPath,
+      label: 'controller.exe',
+    });
+  });
+
   it('find 只有带 -name 才算搜了什么', () => {
     expect(searchPattern('Bash', bash('find . -name "*.html"'))).toBe('*.html');
     expect(searchPattern('Bash', bash('find . -type f'))).toBeNull();

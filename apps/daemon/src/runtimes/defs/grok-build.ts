@@ -19,7 +19,7 @@ export function parseGrokBuildModels(stdout: string): RuntimeModelOption[] {
 
 function grokModelSupportsReasoningEffort(model: string | null | undefined): boolean {
   if (!model || model === DEFAULT_MODEL_OPTION.id || model === 'grok-build') return false;
-  return /reasoning/i.test(model);
+  return model === 'grok-4.7' || /reasoning/i.test(model);
 }
 
 // xAI's first-party CLI agent — https://x.ai/cli — distributed as the
@@ -61,16 +61,7 @@ export const grokBuildAgentDef = {
   fallbackModels: [
     DEFAULT_MODEL_OPTION,
     { id: 'grok-build', label: 'grok-build (xAI · default)' },
-    { id: 'grok-4.3', label: 'grok-4.3 (xAI)' },
-    { id: 'grok-4.20-reasoning', label: 'grok-4.20-reasoning (xAI · deep)' },
-    {
-      id: 'grok-4.20-non-reasoning',
-      label: 'grok-4.20-non-reasoning (xAI · fast)',
-    },
-    {
-      id: 'grok-4.20-multi-agent',
-      label: 'grok-4.20-multi-agent (xAI · orchestration)',
-    },
+    { id: 'grok-4.7', label: 'grok-4.7 (xAI)' },
   ],
   // Grok Build CLI v0.1.212+ enforces `-p, --single <PROMPT>` as value-
   // required, while normal OD composed prompts exceed safe argv budgets.

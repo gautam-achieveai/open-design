@@ -6,19 +6,10 @@ export const aiderAgentDef = {
     name: 'Aider',
     bin: 'aider',
     versionArgs: ['--version'],
-    // Aider proxies to whatever LLM the user configures via `--model` and
-    // routes through LiteLLM, so any concrete fallback list is necessarily
-    // partial. These are the commonly recommended starting points from
-    // aider.chat/docs; users can paste anything else through the custom-
-    // model input. The id strings follow LiteLLM provider/model spelling
-    // so Aider parses them without an extra `--provider` flag.
-    fallbackModels: [
-      DEFAULT_MODEL_OPTION,
-      { id: 'sonnet', label: 'sonnet' },
-      { id: 'gpt-4o', label: 'gpt-4o' },
-      { id: 'deepseek/deepseek-chat', label: 'deepseek/deepseek-chat' },
-      { id: 'gemini/gemini-2.0-flash', label: 'gemini/gemini-2.0-flash' },
-    ],
+    // Aider proxies to whatever LLM the user configures through LiteLLM.
+    // Keep the CLI default and let users enter their provider/model explicitly
+    // rather than advertising a stale, necessarily partial provider catalog.
+    fallbackModels: [DEFAULT_MODEL_OPTION],
     // Aider's one-shot mode requires the prompt as `--message <text>` on
     // argv; neither `--message` nor `--message-file` accept `-` as a stdin
     // sentinel (it is treated as a literal filename), so we cannot pipe

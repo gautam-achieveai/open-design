@@ -211,6 +211,14 @@ const nextConfig: NextConfig = {
   // to inject chunk IDs, upload to PostHog, and ALWAYS delete the .map files
   // before packaging so source never ships inside an installer.
   productionBrowserSourceMaps: true,
+  webpack(config, { dev }) {
+    // Next's filesystem cache continuously serializes this large application
+    // after compilation, consuming CPU and gigabytes of external memory while
+    // the sidecar is idle. Keep the development cache in memory instead; the
+    // production build retains Next's persistent cache and source maps.
+    if (dev) config.cache = { type: 'memory' };
+    return config;
+  },
   transpilePackages: ['@open-design/components'],
   turbopack: {
     root: WORKSPACE_ROOT,

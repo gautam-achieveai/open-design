@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "next build",
+    "build": "next build --webpack",
     "build:sidecar": "tsc -p tsconfig.sidecar.json",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run -c vitest.config.ts --maxWorkers=2"

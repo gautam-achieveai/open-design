@@ -39,8 +39,8 @@
 import { memo, type ReactElement, type ReactNode } from 'react';
 import { useT } from '../../../i18n';
 import type { ToolRow as ToolRowData } from '../../../runtime/chat/contract';
-import { formatElapsed } from '../../../runtime/chat/format';
 import { openableRecordFilePath, type RecordFileScope } from '../../../runtime/chat/record-file-open';
+import { LiveElapsed } from '../StreamClock';
 import { FileButton } from './FileButton';
 import { Foldable } from './Foldable';
 import { StatusMark } from './StatusMark';
@@ -50,9 +50,9 @@ import styles from './record.module.css';
 
 /**
  * 终端输出的记忆化边界**落在这一层**,不在 `TerminalOutput` 自己身上 ——
- * 要挡的正是这一层的重渲:轮次跑着的时候 `AssistantMessage` 每秒 tick 一次
- * (`useTickingNow`),整棵树跟着重渲一遍。装依赖的输出能有几百行、一行一个节点,
- * 一个跟输出无关的秒数跳动不该把它们全部重算。`text` 没变就整块跳过。
+ * 要挡的正是这一层的重渲:轮次跑着的时候流式事件会更新 `AssistantMessage`。
+ * 装依赖的输出能有几百行、一行一个节点,跟输出无关的更新不该把它们全部重算。
+ * `text` 没变就整块跳过。
  * 数字钉在 `tests/components/chat/terminal-render-cost.test.tsx`。
  */
 const Terminal = memo(TerminalOutput);
@@ -85,7 +85,9 @@ export function ToolRow({
   running = false,
 }: ToolRowProps): ReactElement {
   const t = useT();
-  const elapsed = formatElapsed(row.elapsedMs);
+  const elapsed = row.elapsedMs != null || row.liveElapsed != null
+    ? <LiveElapsed elapsedMs={row.elapsedMs} live={row.liveElapsed} />
+    : null;
   /*
    * 行首那一格。没回来的调用换成状态标记 —— 轮次还在跑是转着的球,轮次停了退成
    * 中性灰(和 `markFor` 的「中断时正在跑的:中性灰,红要留给真的错误」同一条规矩;

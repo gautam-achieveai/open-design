@@ -1163,7 +1163,13 @@ export function buildTurnBlocks(input: BuildTurnInput): TurnBlock[] {
        *
        * ⚠️ 只在 `pending` 时覆盖 —— 已经出完的那一行归结算值管,秒表不许再跟着 tick 跳。
        */
-      if (target.pending) target.elapsedMs = spanElapsed(imageRowStartedAt.get(target) ?? null, liveEndMs);
+      if (target.pending) {
+        const startedAt = imageRowStartedAt.get(target) ?? null;
+        target.elapsedMs = spanElapsed(startedAt, liveEndMs);
+        if (startedAt != null && liveEndMs != null) {
+          target.liveElapsed = Math.max(0, liveEndMs - startedAt);
+        }
+      }
       openText = null;
       continue;
     }
@@ -1181,7 +1187,12 @@ export function buildTurnBlocks(input: BuildTurnInput): TurnBlock[] {
      *
      * **必须排在 `stamp()` 之后**:实时值不许进跨度记账(见 `buildToolRow` 的注释)。
      */
-    if (row.pending) row.elapsedMs = spanElapsed(event.startedAt, liveEndMs);
+    if (row.pending) {
+      row.elapsedMs = spanElapsed(event.startedAt, liveEndMs);
+      if (event.startedAt != null && liveEndMs != null) {
+        row.liveElapsed = Math.max(0, liveEndMs - event.startedAt);
+      }
+    }
     openText = null;
     sink().push(row);
   }
@@ -1509,8 +1520,13 @@ export function buildTurnBlocks(input: BuildTurnInput): TurnBlock[] {
      * 所以轮次一停、`liveEndMs` 从 `nowMs` 换成 `endedAtMs`,这一格的数字只换
      * 终点、不换算法,不会塌一下。
      */
+    const liveThink = running ? (openThink as OpenThink | null)?.item ?? null : null;
     if (liveEndMs != null) closeThink(liveEndMs);
     settleThink();
+    const liveThinkMs = liveThink ? thinkMs.get(liveThink) : null;
+    if (liveThink && liveThinkMs != null) {
+      liveThink.liveElapsed = Math.max(0, liveThinkMs);
+    }
 
     /*
      * 把「想了多少」挂到**还在想的那张壳**上。
@@ -1522,9 +1538,11 @@ export function buildTurnBlocks(input: BuildTurnInput): TurnBlock[] {
     if (thinkingTokenCount != null) {
       for (const block of blocks) {
         if (block.kind !== 'shell' || !block.thinking) continue;
+        const changedAtMs = thinkingTokenAts[thinkingTokenAts.length - 1];
         block.thinkingTokens = {
           count: thinkingTokenCount,
           stale: thinkingTokenReadingIsStale(thinkingTokenAts, liveEndMs),
+          ...(changedAtMs != null ? { changedAtMs } : {}),
         };
       }
     }
@@ -1544,6 +1562,7 @@ export function buildTurnBlocks(input: BuildTurnInput): TurnBlock[] {
     for (const [seg, span] of segSpan) {
       const ms = span.to - span.from;
       seg.elapsedMs = ms > 0 ? ms : null;
+      if (running && seg === current && liveEndMs != null) seg.liveElapsed = Math.max(0, ms);
     }
 
     /*
@@ -1573,11 +1592,19 @@ export function buildTurnBlocks(input: BuildTurnInput): TurnBlock[] {
        * 最后一个 run 的 `endedAt`),所以这里兜一手 `input.endedAtMs`。
        */
       const closeTo = live ? (input.nowMs ?? null) : (runEndedAt ?? input.endedAtMs ?? null);
+      const openFrom = shell === firstShell ? runStartedAt : null;
       shell.elapsedMs = shellElapsed(
         shell,
-        shell === firstShell ? runStartedAt : null,
+        openFrom,
         shell === lastShell ? closeTo : null,
       );
+      const spanFrom = shellSpan.get(shell)?.from ?? null;
+      const liveFrom = openFrom == null
+        ? spanFrom
+        : spanFrom == null ? openFrom : Math.min(openFrom, spanFrom);
+      if (live && closeTo != null && liveFrom != null) {
+        shell.liveElapsed = Math.max(0, closeTo - liveFrom);
+      }
       shell.quietMs = shellQuiet(live, shell);
     }
 
@@ -1924,6 +1951,7 @@ function pendingMediaBatchRow(group: ProjectMediaTask[], liveEndMs: number | nul
     const slot = slots[i];
     if (slot != null && slot < total) cells[slot] = { taskId: task.taskId, status: 'pending' };
   });
+  const startedAt = mediaBatchStartedAt(group);
   return {
     kind: 'image',
     id: head.batchId != null ? `media-batch:${head.batchId}` : `media-task:${head.taskId}`,
@@ -1934,7 +1962,10 @@ function pendingMediaBatchRow(group: ProjectMediaTask[], liveEndMs: number | nul
     thumbs: [],
     cells,
     pending: true,
-    elapsedMs: spanElapsed(mediaBatchStartedAt(group), liveEndMs),
+    elapsedMs: spanElapsed(startedAt, liveEndMs),
+    ...(liveEndMs != null && startedAt != null
+      ? { liveElapsed: Math.max(0, liveEndMs - startedAt) }
+      : {}),
   };
 }
 

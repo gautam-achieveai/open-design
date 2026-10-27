@@ -15,13 +15,15 @@
  *    这一档沿用「进行中」,而下方那行「已手动停止」在历史回合上是 hover 才揭示的,
  *    于是一轮停掉的活在屏幕上常驻的唯一说法是「进行中」。判据见 `head` 里的注释。)
  */
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { useT } from '../../i18n';
 import { Icon } from '../Icon';
 import type { ExecutionShell as ShellData, ImageRow as ImageRowData, ShellItem, ThinkingTokens, TodoSegment } from '../../runtime/chat/contract';
 import { isExpandable, isStruck } from '../../runtime/chat/contract';
-import { formatElapsed, formatShellElapsed, formatThinkingTokens } from '../../runtime/chat/format';
+import { formatElapsed, formatThinkingTokens } from '../../runtime/chat/format';
+import { THINKING_TOKENS_STALL_ENTER_MS } from '../../runtime/chat/thinking-slot';
 import { CountingNumber } from './CountingNumber';
+import { LiveElapsed, useLiveStreamClock, useStreamClockAtLeast } from './StreamClock';
 import { groupThinking, isThinking, type GroupedShellItem } from '../../runtime/chat/group-thinking';
 import type { RecordFileScope } from '../../runtime/chat/record-file-open';
 import { Foldable } from './primitives/Foldable';
@@ -124,7 +126,14 @@ export function ExecutionShell({
 }: ExecutionShellProps): ReactElement {
   const t = useT();
   const running = shell.status === 'running' && !shell.stopped;
-  const elapsed = formatShellElapsed(shell.elapsedMs);
+  const elapsed = shell.elapsedMs != null || shell.liveElapsed != null
+    ? <LiveElapsed elapsedMs={shell.elapsedMs} live={shell.liveElapsed} shell />
+    : null;
+  const firstOutputThresholdReached = useStreamClockAtLeast(
+    shell.elapsedMs,
+    shell.liveElapsed,
+    WAITING_FIRST_OUTPUT_AFTER_MS,
+  );
   /**
    * 模型此刻在想 —— **只用来挑出哪一格是「还在写的那一格」**,不再改变壳的形态。
    *
@@ -234,7 +243,7 @@ export function ExecutionShell({
        * **撤的只有这一行取值。** 探测整条链一行没删,而且还在跑:
        *   `providers/daemon.ts` 的 `markUpstreamActivity`(每收到一条真运行帧)
        *     → `runtime/chat/upstream-activity.ts`(按 run 记的到达时刻表)
-       *     → `AssistantMessage` 的 `useTickingNow` 每秒喂给 `buildTurnBlocks`
+       *     → `AssistantMessage` 在真实事件更新时经 `StreamClock` 取样
        *     → `build-turn-blocks.ts` 的 `shellQuiet` 算出静默
        *     → `contract.ts` 的 `quietMs` 挂在每张运行中的壳上。
        * 这里只是**暂时不读** `shell.quietMs`;它照旧被算出来、照旧送到这个组件手上,
@@ -314,7 +323,7 @@ export function ExecutionShell({
   const waitingForFirstOutput =
     running
     && shell.items.length === 0
-    && (shell.elapsedMs ?? 0) >= WAITING_FIRST_OUTPUT_AFTER_MS;
+    && firstOutputThresholdReached;
   /**
    * 连续的推理收成「思考过程」那一格(用户裁决,见 `groupThinking` 的注释)。
    * 壳里有进行中的 todo 时,还在写的那一格在**那条 todo 里**,不在这一层。
@@ -484,6 +493,7 @@ function renderItem(item: GroupedShellItem, index: number, ctx: RenderCtx): Reac
         key={`thoughts-${item.live ? 'live' : 'done'}-${index}`}
         texts={item.texts}
         elapsedMs={item.elapsedMs}
+        liveElapsed={item.liveElapsed}
         tokens={item.tokens ?? null}
         /* 整轮头一格:数照旧算得出,只是**在它想完之前**不写出来
            (理由在 `stackOwningFirstThoughts`,到期判据在 `ThoughtsRow` 的 `elapsed`) */
@@ -593,15 +603,44 @@ function renderItem(item: GroupedShellItem, index: number, ctx: RenderCtx): Reac
  * 用户的实感是「跑了 40 分钟什么都没出来」,而那 40 分钟里执行记录上一个数字都没有。
  * 产品原话:「为啥思考中不会有计时?我感觉**进行中的 toolrow 都得有计时**吧?」
  *
- * 秒数**不是这里算的**,也没有新起定时器:`build-turn-blocks` 用轮次共用的实时终点
- * (`liveEndMs`,由 `AssistantMessage` 那一个既有 interval 每秒喂进来)把它算好,
- * 这一层只负责画。判据钉在 `tests/components/chat/live-row-elapsed.test.tsx`。
+ * 秒数**不是这里算的**:`build-turn-blocks` 在真实事件更新时记下实时样本,
+ * `StreamClock` 只让这枚文字标签前进,不再重算整轮。判据钉在
+ * `tests/components/chat/live-row-elapsed.test.tsx`。
  *
  * ⚠️ 这个 span **不许挂 `aria-live`** —— 挂了读屏会每秒念一遍秒数。
  */
-function ThoughtsRow({ texts, elapsedMs, tokens, muted, live, t, deferBody }: {
+function ThinkingSlot({ tokens, elapsedMs, liveElapsed, muted, t }: {
+  tokens: ThinkingTokens;
+  elapsedMs: number | null;
+  liveElapsed?: boolean | number;
+  muted: boolean;
+  t: RenderCtx['t'];
+}): ReactNode {
+  const clock = useLiveStreamClock();
+  const currentElapsed = clock.elapsedMs(elapsedMs, liveElapsed);
+  const elapsed = muted ? '' : formatElapsed(currentElapsed);
+  const tokenText = formatThinkingTokens(tokens.count);
+  const stale = tokens.stale || (
+    tokens.changedAtMs != null
+    && clock.nowMs != null
+    && clock.nowMs - tokens.changedAtMs > THINKING_TOKENS_STALL_ENTER_MS
+  );
+  return tokenText != null && !(stale && elapsed)
+    ? (
+      <CountingNumber
+        value={tokens.count}
+        render={(shown) => t('chat.record.thinkingTokens', {
+          count: formatThinkingTokens(shown) ?? tokenText,
+        })}
+      />
+    )
+    : elapsed;
+}
+
+function ThoughtsRow({ texts, elapsedMs, liveElapsed, tokens, muted, live, t, deferBody }: {
   texts: string[];
   elapsedMs: number | null;
+  liveElapsed?: boolean | number;
   /** 还在想的那一格想了多少;别的档一律 `null`(见 `ThinkingTokens`) */
   tokens: ThinkingTokens | null;
   /**
@@ -659,7 +698,11 @@ function ThoughtsRow({ texts, elapsedMs, tokens, muted, live, t, deferBody }: {
    * 判据:进行中仍然空白钉在 `first-thoughts-no-elapsed.test.tsx` 第一节,
    * 想完之后要有数钉在 `amr-thinking-slot-blank.test.tsx`。
    */
-  const elapsed = muted && live ? '' : formatElapsed(elapsedMs);
+  const elapsed = muted && live
+    ? ''
+    : elapsedMs != null || liveElapsed != null
+      ? <LiveElapsed elapsedMs={elapsedMs} live={liveElapsed} />
+      : null;
   /**
    * ── 槽里写哪个数(产品 2026-09-04)────────────────────────────────────
    *
@@ -724,18 +767,8 @@ function ThoughtsRow({ texts, elapsedMs, tokens, muted, live, t, deferBody }: {
    * ⚠️ **只有 token 会数,计时不会。** 秒表每秒跳一次,给它再加一层自增就是产品
    * 警告过的那种「软件疯了」的闪动 —— 下面这条三元的 `: elapsed` 分支保持纯文本。
    */
-  const tokenText = tokens ? formatThinkingTokens(tokens.count) : null;
-  const slot = tokens != null && tokenText != null && !(tokens.stale && elapsed)
-    ? (
-      <CountingNumber
-        value={tokens.count}
-        /* 排版留在这一层:19 个语种的后缀在左在右、`formatThinkingTokens` 的 k 缩写
-           规矩,`CountingNumber` 一件都不必知道 */
-        render={(shown) => t('chat.record.thinkingTokens', {
-          count: formatThinkingTokens(shown) ?? tokenText,
-        })}
-      />
-    )
+  const slot = tokens
+    ? <ThinkingSlot tokens={tokens} elapsedMs={elapsedMs} liveElapsed={liveElapsed} muted={muted && live} t={t} />
     : elapsed;
   /*
    * 还在写的时候贴底跟随(用户 2026-09-02)。判据复用 ChatPane 那一套
@@ -872,7 +905,9 @@ function TodoRow({ segment, ctx }: { segment: TodoSegment; ctx: RenderCtx }): Re
    * 这一层只负责画;槽本身不许挂 `aria-live`(读屏会每秒念一遍)。
    * 守卫在 `tests/components/chat/live-row-elapsed.test.tsx`。
    */
-  const elapsed = formatElapsed(segment.elapsedMs);
+  const elapsed = segment.elapsedMs != null || segment.liveElapsed != null
+    ? <LiveElapsed elapsedMs={segment.elapsedMs} live={segment.liveElapsed} />
+    : null;
   /**
    * 抽屉里的推理也要收(用户问题二的真因)。
    *

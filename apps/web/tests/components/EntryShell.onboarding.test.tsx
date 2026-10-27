@@ -16,7 +16,20 @@ import {
 import { I18nProvider } from '../../src/i18n';
 import { fetchProjectFiles } from '../../src/providers/registry';
 import type { AgentInfo, AppConfig } from '../../src/types';
+import { isOpenDesignHostAvailable, pickHostWorkingDir } from '@open-design/host';
 import { setHomeHeroPrompt } from '../helpers/home-hero-lexical';
+
+vi.mock('@open-design/host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@open-design/host')>();
+  return {
+    ...actual,
+    isOpenDesignHostAvailable: vi.fn(() => false),
+    pickHostWorkingDir: vi.fn(),
+  };
+});
+
+const mockedIsHostAvailable = vi.mocked(isOpenDesignHostAvailable);
+const mockedPickHostWorkingDir = vi.mocked(pickHostWorkingDir);
 
 const analyticsMocks = vi.hoisted(() => ({
   track: vi.fn(),
@@ -328,6 +341,8 @@ afterEach(() => {
 beforeEach(() => {
   globalThis.fetch = originalFetch;
   globalThis.ResizeObserver = ResizeObserverMock as typeof ResizeObserver;
+  mockedIsHostAvailable.mockReturnValue(false);
+  mockedPickHostWorkingDir.mockReset();
   analyticsMocks.track.mockReset();
 });
 
@@ -751,6 +766,44 @@ describe('EntryShell Home submit handoff', () => {
 
     resolveCreate(true);
     await waitFor(() => expect(submit.disabled).toBe(false));
+  });
+
+  it('binds the picked source folder as the project working directory and preserves its host token', async () => {
+    globalThis.fetch = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+      if (url.endsWith('/api/plugins')) return jsonResponse({ plugins: [] });
+      if (url.endsWith('/api/mcp/servers')) return jsonResponse({ servers: [] });
+      if (url.endsWith('/api/community/discord')) return jsonResponse({ stale: true });
+      if (url.endsWith('/api/github/open-design')) return jsonResponse({ stale: true });
+      return jsonResponse({});
+    }) as typeof fetch;
+    mockedIsHostAvailable.mockReturnValue(true);
+    mockedPickHostWorkingDir.mockResolvedValueOnce({
+      ok: true,
+      baseDir: '/work/source',
+      token: 'source-token',
+    });
+    const onCreateProject = vi.fn(() => true);
+    renderHome({ onCreateProject });
+
+    await screen.findByTestId('home-hero-input');
+    fireEvent.click(screen.getByTestId('working-dir-trigger'));
+    fireEvent.click(screen.getByTestId('working-dir-pick'));
+    await waitFor(() => {
+      expect(mockedPickHostWorkingDir).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('working-dir-trigger').getAttribute('title')).toBe('/work/source');
+    });
+
+    setHomeHeroPrompt('Fix the existing app');
+    fireEvent.click(screen.getByTestId('home-hero-submit'));
+
+    await waitFor(() => expect(onCreateProject).toHaveBeenCalledTimes(1));
+    expect(onCreateProject).toHaveBeenCalledWith(expect.objectContaining({
+      userWorkingDirToken: 'source-token',
+      metadata: expect.objectContaining({
+        userWorkingDir: '/work/source',
+      }),
+    }));
   });
 });
 

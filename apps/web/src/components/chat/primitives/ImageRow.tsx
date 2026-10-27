@@ -22,8 +22,8 @@ import type { ReactElement } from 'react';
 import { VisuallyHidden } from '@open-design/components';
 import { useT } from '../../../i18n';
 import type { ImageRow as ImageRowData } from '../../../runtime/chat/contract';
-import { formatElapsed } from '../../../runtime/chat/format';
 import { PixelLiquid } from '../../PixelLiquid';
+import { LiveElapsed } from '../StreamClock';
 import { AudioIcon, FailIcon, ImageIcon, RetryIcon, VideoIcon } from './icons';
 import { StatusMark } from './StatusMark';
 import styles from './record.module.css';
@@ -101,6 +101,9 @@ export interface ImageRowProps {
 
 export function ImageRow({ row, onRetry, onOpenImage, imageSrc, running = false }: ImageRowProps): ReactElement {
   const t = useT();
+  const elapsed = row.elapsedMs != null || row.liveElapsed != null
+    ? <LiveElapsed elapsedMs={row.elapsedMs} live={row.liveElapsed} />
+    : null;
   const settled = !row.pending && row.done + row.failed >= row.total;
   /* 这一行说哪一类媒体的话 —— 见 `SURFACE_COPY` 的说明 */
   const copy = SURFACE_COPY[row.surface] ?? SURFACE_COPY.image;
@@ -155,7 +158,7 @@ export function ImageRow({ row, onRetry, onOpenImage, imageSrc, running = false 
             );
           })}
         </span>
-        {formatElapsed(row.elapsedMs) ? <span className={styles.meta}>{formatElapsed(row.elapsedMs)}</span> : null}
+        {elapsed ? <span className={styles.meta}>{elapsed}</span> : null}
       </div>
     );
   }
@@ -183,8 +186,8 @@ export function ImageRow({ row, onRetry, onOpenImage, imageSrc, running = false 
           * 不用 `0.0s` 顶上(§2.2b)。
           * ⚠️ 不许挂 `aria-live`:挂了读屏会每秒念一遍。
           */}
-        {formatElapsed(row.elapsedMs)
-          ? <span className={styles.meta}>{formatElapsed(row.elapsedMs)}</span>
+        {elapsed
+          ? <span className={styles.meta}>{elapsed}</span>
           : null}
       </div>
       <div className={styles.imgs}>

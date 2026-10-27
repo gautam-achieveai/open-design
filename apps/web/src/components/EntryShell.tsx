@@ -1591,10 +1591,7 @@ export function EntryShell({
         : fallbackName;
     const linkedDirs = Array.from(
       new Set(
-        [
-          ...(payload.workingDir ? [payload.workingDir] : []),
-          ...(payload.linkedDirs ?? []),
-        ].map((dir) => dir.trim()).filter(Boolean),
+        (payload.linkedDirs ?? []).map((dir) => dir.trim()).filter(Boolean),
       ),
     );
     const metadata: ProjectMetadata = {
@@ -1610,12 +1607,9 @@ export function EntryShell({
       ...(payload.contextConnectors && payload.contextConnectors.length > 0
         ? { contextConnectors: payload.contextConnectors }
         : {}),
-      // The Home working-directory picker grants the agent read-only
-      // awareness of a local folder (via `--add-dir`), it does NOT import
-      // that folder into Design Files. So the picked path becomes the new
-      // project's `linkedDirs` rather than its `baseDir`/`userWorkingDir`:
-      // Design Files stays the managed `.od/projects/<id>` artifact store,
-      // independent of the user's local files.
+      // The selected source folder becomes the project's real working tree;
+      // separately linked reference folders remain read-only `--add-dir` inputs.
+      ...(payload.workingDir ? { userWorkingDir: payload.workingDir } : {}),
       ...(linkedDirs.length > 0 ? { linkedDirs } : {}),
       ...(payload.examplePromptContext ? {
         examplePrompt: true,
@@ -1653,10 +1647,7 @@ export function EntryShell({
       ...(payload.attachments && payload.attachments.length > 0
         ? { pendingFiles: payload.attachments }
         : {}),
-      // No `userWorkingDirToken`: linkedDirs grant read-only `--add-dir`
-      // access and are validated by the daemon at create time, so they do
-      // not need the desktop main-process trust token that baseDir imports
-      // require for write access.
+      ...(payload.workingDirToken ? { userWorkingDirToken: payload.workingDirToken } : {}),
       autoSendFirstMessage: true,
     };
   }
