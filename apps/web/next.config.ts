@@ -240,6 +240,22 @@ const nextConfig: NextConfig = {
     : webOutputMode === 'standalone'
       ? {
         output: 'standalone' as const,
+        // pnpm's isolated node_modules layout defeats Next's nft trace for
+        // dependencies of the `next` package itself: the standalone server
+        // output boots without `@swc/helpers` / `@next/env` and the
+        // packaged web sidecar dies on its first require. Force-include
+        // the runtime deps the standalone server.js is known to need.
+        outputFileTracingIncludes: {
+          '/**': [
+            // The standalone server.js requires these at boot. pnpm keeps
+            // them only in the workspace .pnpm store, so they are declared
+            // as explicit devDeps of apps/web to give nft a logical
+            // (resolvable) copy path; force-include them so the trace
+            // cannot silently drop them again.
+            './node_modules/@swc/helpers/**/*',
+            './node_modules/@next/env/**/*',
+          ],
+        },
       }
       : !isProd
       ? {
