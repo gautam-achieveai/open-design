@@ -2885,6 +2885,9 @@ async function runMcp(args) {
   if (args[0] === 'install') {
     return runMcpInstall(args.slice(1));
   }
+  if (args[0] === 'token') {
+    return runMcpToken(args.slice(1));
+  }
   let flags;
   try {
     flags = parseFlags(args, {
@@ -2972,7 +2975,142 @@ for tool calls to succeed.
 
 To register this server into a coding agent's own config automatically:
   od mcp install <agent> [--uninstall] [--print] [--json] [--daemon-url <url>]
-  Agents: ${AGENT_SLUGS.join(' ')}`);
+  Agents: ${AGENT_SLUGS.join(' ')}
+
+Local HTTP MCP credentials (for agents connecting over http://127.0.0.1:<port>/mcp):
+  od mcp token create <name> [--ops <tag[,tag...]>] [--ttl-days <n>] [--json]
+  od mcp token list [--json]
+  od mcp token revoke <id> [--json]`);
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand: od mcp token <create|list|revoke>
+//
+// Manages user-managed local MCP credentials (Mode B, plan §5.2). These are
+// bearer tokens bound to an operation allowlist, stored under the daemon data
+// root; the plaintext is shown exactly once, at create time. Agents in other
+// workspaces present the token as `Authorization: Bearer …` against the
+// daemon's loopback Streamable HTTP MCP endpoint (POST /mcp).
+// ---------------------------------------------------------------------------
+
+const MCP_TOKEN_STRING_FLAGS = new Set(['daemon-url', 'ops', 'ttl-days']);
+const MCP_TOKEN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
+
+function printMcpTokenHelp() {
+  console.log(`Usage:
+  od mcp token create <name> [--ops <tag[,tag...]>] [--ttl-days <n>] [--json] [--daemon-url <url>]
+  od mcp token list [--json] [--daemon-url <url>]
+  od mcp token revoke <id> [--json] [--daemon-url <url>]
+
+Creates, lists, and revokes local MCP credentials for the daemon-hosted HTTP
+MCP endpoint. Tags are exact operation tags (mcp:ping) or prefix globs
+(browser/*); --ops defaults to unrestricted (*). --ttl-days defaults to 30.
+
+The plaintext token prints exactly once — store it in your agent's MCP
+config right away.`);
+}
+
+async function runMcpToken(args) {
+  const sub = args[0];
+  let flags;
+  try {
+    flags = parseFlags(args.slice(1), {
+      string: MCP_TOKEN_STRING_FLAGS,
+      boolean: MCP_TOKEN_BOOLEAN_FLAGS,
+    });
+  } catch (err) {
+    console.error(err.message);
+    printMcpTokenHelp();
+    process.exit(2);
+  }
+  if (flags.help || flags.h || !['create', 'list', 'revoke'].includes(sub)) {
+    printMcpTokenHelp();
+    if (!['create', 'list', 'revoke'].includes(sub) && sub !== undefined) process.exit(2);
+    return;
+  }
+  const useJson = Boolean(flags.json);
+  const rest = positionalArgs(args.slice(1), MCP_TOKEN_STRING_FLAGS);
+  const base = await cliDaemonBaseUrl(flags);
+
+  if (sub === 'create') {
+    const name = rest[0] ?? flags.name ?? '';
+    if (!name) {
+      console.error('missing credential name');
+      printMcpTokenHelp();
+      process.exit(2);
+    }
+    const allowedOperations = typeof flags.ops === 'string' && flags.ops.trim()
+      ? flags.ops.split(',').map((op) => op.trim()).filter(Boolean)
+      : undefined;
+    const ttlDays = typeof flags['ttl-days'] === 'string' ? Number(flags['ttl-days']) : undefined;
+    const body = {
+      name,
+      ...(allowedOperations ? { allowedOperations } : {}),
+      ...(Number.isFinite(ttlDays) && ttlDays !== undefined ? { ttlMs: ttlDays * 24 * 60 * 60 * 1000 } : {}),
+    };
+    const resp = await fetch(`${base}/api/mcp/credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const message = payload?.error?.message ?? `create failed with HTTP ${resp.status}`;
+      if (useJson) console.log(JSON.stringify({ ok: false, message }));
+      else console.error(`✗ ${message}`);
+      process.exit(1);
+    }
+    if (useJson) {
+      console.log(JSON.stringify({ ok: true, credential: payload.credential, token: payload.token }));
+    } else {
+      console.log(`✓ created credential "${payload.credential.name}" (id ${payload.credential.id})`);
+      console.log('  Copy this token now — it will never be shown again:');
+      console.log(`  ${payload.token}`);
+    }
+    return;
+  }
+
+  if (sub === 'list') {
+    const resp = await fetch(`${base}/api/mcp/credentials`);
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const message = payload?.error?.message ?? `list failed with HTTP ${resp.status}`;
+      if (useJson) console.log(JSON.stringify({ ok: false, message }));
+      else console.error(`✗ ${message}`);
+      process.exit(1);
+    }
+    if (useJson) {
+      console.log(JSON.stringify({ ok: true, credentials: payload.credentials ?? [] }));
+    } else {
+      const credentials = payload.credentials ?? [];
+      if (credentials.length === 0) {
+        console.log('no MCP credentials (create one with `od mcp token create <name>`)');
+      }
+      for (const credential of credentials) {
+        const ops = (credential.allowedOperations ?? []).join(', ');
+        console.log(`${credential.id}  ${credential.name}  ops=${ops}  expires=${credential.expiresAt ?? 'never'}  lastUsed=${credential.lastUsedAt ?? 'never'}`);
+      }
+    }
+    return;
+  }
+
+  // revoke
+  const id = rest[0];
+  if (!id) {
+    console.error('missing credential id');
+    printMcpTokenHelp();
+    process.exit(2);
+  }
+  const resp = await fetch(`${base}/api/mcp/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const payload = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const message = payload?.error?.message ?? `revoke failed with HTTP ${resp.status}`;
+    if (useJson) console.log(JSON.stringify({ ok: false, message }));
+    else console.error(`✗ ${message}`);
+    process.exit(1);
+  }
+  if (useJson) console.log(JSON.stringify({ ok: true, revoked: true, id }));
+  else console.log(`✓ revoked credential ${id}`);
 }
 
 // ---------------------------------------------------------------------------

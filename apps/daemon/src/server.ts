@@ -950,6 +950,11 @@ import { registerStrategyRolloutRoutes } from './routes/strategy-rollout.js';
 import { registerTerminalRoutes } from './routes/terminal.js';
 import { registerBrowserSessionRoutes } from './routes/browser-sessions.js';
 import { registerBrowserControlRoutes } from './routes/browser-control.js';
+import { createMcpToolRegistry } from './mcp-http/registry.js';
+import { createMcpCredentialStore } from './mcp-http/credentials.js';
+import { resolveMcpGrant } from './mcp-http/auth.js';
+import { registerMcpHttpRoutes, registerMcpCredentialRoutes } from './mcp-http/routes.js';
+import { registerCoreMcpTools } from './mcp-http/tools.js';
 import { registerEdgeAnnotationRoutes } from './routes/edge-annotations.js';
 import { pairedMemberRelayContext } from './routes/project/comments.js';
 import { createEdgeAnnotationBroker } from './services/edge-annotation-broker.js';
@@ -8660,6 +8665,19 @@ export async function startServer({
   };
 
   // External services
+  const mcpHttpRegistry = createMcpToolRegistry({
+    log: (entry) => console.info('[mcp-http]', entry),
+  });
+  registerCoreMcpTools(mcpHttpRegistry);
+  const mcpCredentialStore = createMcpCredentialStore({
+    filePath: path.join(RUNTIME_DATA_DIR, 'mcp-credentials.json'),
+  });
+  registerMcpHttpRoutes(app, {
+    registry: mcpHttpRegistry,
+    resolveGrant: (req) => resolveMcpGrant(req, { toolTokenRegistry, credentialStore: mcpCredentialStore }),
+    serverInfo: { name: 'open-design', version: currentAppVersionInfo()?.version ?? UNKNOWN_APP_VERSION },
+  });
+  registerMcpCredentialRoutes(app, { credentialStore: mcpCredentialStore });
   registerMcpRoutes(app, {
     http: httpDeps,
     paths: pathDeps,
