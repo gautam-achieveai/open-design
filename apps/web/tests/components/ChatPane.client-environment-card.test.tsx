@@ -76,28 +76,25 @@ function renderPane(extra: Record<string, unknown>) {
 }
 
 describe('G16 · 环境类报错卡的固定按钮', () => {
-  it('Cloud 证书失败只通过固定重试处理原失败轮', () => {
+  it('historical certificate diagnostics retain support without an unsupported retry', () => {
     const onOpenSettings = vi.fn();
     const onRetry = vi.fn();
     renderPane({ onOpenSettings, onRetry });
     const card = screen.getByTestId('chat-run-error-card');
     expect(within(card).getAllByRole('button').map((button) => button.textContent?.trim()))
-      .toEqual(['联系我们', '导出日志', '重试']);
-    fireEvent.click(within(card).getByRole('button', { name: '重试' }));
-    expect(onRetry).toHaveBeenCalledWith(expect.objectContaining({ id: 'assistant-1' }), 'manual_retry');
+      .toEqual(['联系我们', '导出日志']);
+    expect(onRetry).not.toHaveBeenCalled();
     expect(onOpenSettings).not.toHaveBeenCalled();
   });
 
-  it('本地 CLI 证书失败只交给 Cloud，不调用本地重试或设置', () => {
+  it('local certificate failure does not switch runtime or invoke settings', () => {
     const onRetry = vi.fn();
     const onOpenSettings = vi.fn();
-    const onSwitchToAmrAndRetry = vi.fn();
-    renderPane({ messages: certificateFailureTurn('opencode'), onRetry, onOpenSettings, onSwitchToAmrAndRetry });
+    renderPane({ messages: certificateFailureTurn('opencode'), onRetry, onOpenSettings, });
     const card = screen.getByTestId('chat-run-error-card');
     expect(within(card).getAllByRole('button').map((button) => button.textContent?.trim()))
-      .toEqual(['联系我们', '导出日志', '切换到 OpenDesign Cloud']);
-    fireEvent.click(within(card).getByRole('button', { name: '切换到 OpenDesign Cloud' }));
-    expect(onSwitchToAmrAndRetry).toHaveBeenCalledWith(expect.objectContaining({ id: 'assistant-1', agentId: 'opencode' }));
+      .toEqual(['联系我们', '导出日志']);
+    expect(within(card).queryByRole('button', { name: '切换到 OpenDesign Cloud' })).toBeNull();
     expect(onRetry).not.toHaveBeenCalled();
     expect(onOpenSettings).not.toHaveBeenCalled();
   });

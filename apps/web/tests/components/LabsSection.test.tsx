@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+// @vitest-environment jsdom
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   OdNextRolloutControlStatus,
@@ -661,39 +668,4 @@ describe('LabsSection', () => {
     expect(attempt).toBe(2);
   });
 
-  it.each([
-    [false, true],
-    [true, false],
-  ])('the OpenDesign Cloud switch writes only cloudFeatures (%s -> %s)', async (from, to) => {
-    const { writes } = stubFetch();
-    const onCloudFeaturesChange = vi.fn();
-    render(
-      <I18nProvider initial="en">
-        <LabsSection cloudFeatures={from} onCloudFeaturesChange={onCloudFeaturesChange} />
-      </I18nProvider>,
-    );
-
-    const control = await screen.findByTestId('labs-cloud-switch');
-    expect(control).toHaveAttribute('aria-checked', String(from));
-    fireEvent.click(control);
-
-    await waitFor(() => expect(onCloudFeaturesChange).toHaveBeenCalledWith(to));
-    expect(writes).toEqual([{ cloudFeatures: to }]);
-  });
-
-  it('leaves the cloud switch where it was when the daemon refuses the write', async () => {
-    stubFetch({ writeFails: true });
-    const onCloudFeaturesChange = vi.fn();
-    render(
-      <I18nProvider initial="en">
-        <LabsSection onCloudFeaturesChange={onCloudFeaturesChange} />
-      </I18nProvider>,
-    );
-
-    const control = await screen.findByTestId('labs-cloud-switch');
-    fireEvent.click(control);
-    await waitFor(() => expect(control).toHaveAttribute('aria-disabled', 'false'));
-    expect(onCloudFeaturesChange).not.toHaveBeenCalled();
-    expect(control).toHaveAttribute('aria-checked', 'false');
-  });
 });

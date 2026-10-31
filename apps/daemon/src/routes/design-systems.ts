@@ -24,7 +24,7 @@ import {
   enforceVerifiedWorkspaceResourceRead,
   headerValue,
   requestWithWorkspaceNavigationScope,
-  resolveOptionalLocalWorkspaceRequestAuthority,
+  resolveOptionalWorkspaceRequestAuthority,
   type VerifyWorkspaceRequestAuthority,
   type WorkspaceResourceAccessInput,
 } from '../collab/workspace-resource-mutation.js';
@@ -295,7 +295,7 @@ export function registerDesignSystemRoutes(
       });
       return false;
     }
-    const resolution = resolveOptionalLocalWorkspaceRequestAuthority(scopedRequest);
+    const resolution = await resolveOptionalWorkspaceRequestAuthority(scopedRequest, ctx.verifyWorkspaceRequestAuthority);
     if (!resolution.ok) {
       res.status(resolution.status).json({
         error: resolution.code,
@@ -380,7 +380,7 @@ export function registerDesignSystemRoutes(
     res: Response,
     id: string,
   ): Promise<boolean> {
-    const resolution = resolveOptionalLocalWorkspaceRequestAuthority(req);
+    const resolution = await resolveOptionalWorkspaceRequestAuthority(req, ctx.verifyWorkspaceRequestAuthority);
     if (!resolution.ok) {
       res.status(resolution.status).json({
         error: resolution.code,
@@ -454,7 +454,7 @@ export function registerDesignSystemRoutes(
     req: any,
     res: Response,
   ): Promise<{ workspaceId: string; workspaceMemberId: string } | null | 'denied'> {
-    const resolution = resolveOptionalLocalWorkspaceRequestAuthority(req);
+    const resolution = await resolveOptionalWorkspaceRequestAuthority(req, ctx.verifyWorkspaceRequestAuthority);
     if (!resolution.ok) {
       res.status(resolution.status).json({
         error: resolution.code,

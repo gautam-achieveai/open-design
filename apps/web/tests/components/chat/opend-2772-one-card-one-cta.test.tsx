@@ -105,9 +105,7 @@ function renderFailure(opts: {
   agentId: string;
   code: string;
   detail?: string;
-  onSwitchToAmrAndRetry?: (m: ChatMessage) => void;
 }) {
-  const onSwitchToAmrAndRetry = opts.onSwitchToAmrAndRetry ?? vi.fn();
   const rendered = render(
     <ChatPane
       messages={[failedMessage(opts)]}
@@ -119,8 +117,6 @@ function renderFailure(opts: {
       onSend={vi.fn()}
       onStop={vi.fn()}
       onRetry={vi.fn()}
-      onSwitchToAmrAndRetry={onSwitchToAmrAndRetry}
-      amrBalanceCardUsd={null}
       onOpenSettings={vi.fn() as never}
       conversations={[
         { projectId: 'project-1', id: 'conv-1', title: 'Current', createdAt: 1, updatedAt: 1 },
@@ -131,7 +127,7 @@ function renderFailure(opts: {
       config={{ agentId: opts.agentId, agentCliEnv: {} } as unknown as AppConfig}
     />,
   );
-  return { ...rendered, onSwitchToAmrAndRetry };
+  return rendered;
 }
 
 /** 卡上那一排里的主按钮(`RunErrorCardAction` 给每颗都盖了 `data-run-error-action`) */
@@ -158,7 +154,7 @@ describe('OPEND-2772 · 一次失败只出一张卡', () => {
     const hits = Array.from(container.querySelectorAll('button')).filter(
       (b) => (b.textContent ?? '').trim() === CLOUD_CTA,
     );
-    expect(hits).toHaveLength(1);
+    expect(hits).toHaveLength(0);
   });
 
   it('报错卡自己的文案原封不动 —— 合并没有改写标题/正文', () => {
@@ -169,101 +165,6 @@ describe('OPEND-2772 · 一次失败只出一张卡', () => {
     expect(screen.getByTestId('chat-run-error-description').textContent?.trim()).toBe(
       '请先完成 Claude 的登录，再重新尝试。',
     );
-  });
-});
-
-describe('OPEND-2807 · CLI/BYOK 主按钮固定切换到 OpenDesign Cloud', () => {
-  it('按钮逐字使用工单和 G16 的「切换到 OpenDesign Cloud」', () => {
-    renderFailure({ agentId: 'claude', code: 'AGENT_AUTH_REQUIRED' });
-
-    const cta = screen.getByTestId('chat-error-switch-to-cloud');
-    expect((cta.textContent ?? '').trim()).toBe(CLOUD_CTA);
-  });
-
-  it('主按钮就是那颗 CTA,而且整张卡只有一颗主按钮', () => {
-    const { container } = renderFailure({ agentId: 'claude', code: 'AGENT_AUTH_REQUIRED' });
-
-    const primaries = primaryActions(container);
-    expect(primaries).toHaveLength(1);
-    expect((primaries[0]!.textContent ?? '').trim()).toBe(CLOUD_CTA);
-  });
-
-  it('CLI/BYOK 不再保留旧重试，整张卡只有固定三颗', () => {
-    const { container } = renderFailure({ agentId: 'claude', code: 'AGENT_AUTH_REQUIRED' });
-
-    expect(screen.queryByTestId('chat-error-retry')).toBeNull();
-    expect(Array.from(screen.getByTestId('chat-run-error-card').querySelectorAll('button'),
-      (button) => button.dataset.testid)).toEqual([
-      'chat-error-contact-support', 'chat-error-export-logs', 'chat-error-switch-to-cloud',
-    ]);
-    // 常驻两颗照旧在
-    expect(container.querySelector('[data-testid="chat-error-contact-support"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="chat-error-export-logs"]')).toBeTruthy();
-  });
-
-  /*
-   * 铺开的证据。这四条今天**一条都不出切换卡**:
-   *   · S19 进程崩了(每月 20,868 次,第二大桶)—— 落兜底,只有一颗〔重试〕
-   *   · S01 没装 CLI
-   *   · S13 模型不可用 —— 主按钮是〔更换模型〕(旧 §6.Z 的第 1 档优先)
-   *   · S30 网络环境不对 —— 主按钮是〔去设置〕
-   * 产品 2026-09-07 把 8-26 那条「第 1 档永远优先」推翻掉了。
-   */
-  it.each([
-    ['S19 进程崩了', 'AGENT_EXECUTION_FAILED', 'process_crashed'],
-    ['S01 没装 CLI', 'AGENT_UNAVAILABLE', undefined],
-    ['S13 模型不可用', 'AMR_MODEL_UNAVAILABLE', undefined],
-    ['S30 网络环境不对', 'AGENT_EXECUTION_FAILED', 'certificate_failure'],
-  ] as const)('%s:BYOK 上也有这颗主 CTA', (_name, code, detail) => {
-    const { container } = renderFailure({
-      agentId: 'claude',
-      code,
-      ...(detail ? { detail } : {}),
-    });
-
-    const primaries = primaryActions(container);
-    expect(primaries).toHaveLength(1);
-    expect((primaries[0]!.textContent ?? '').trim()).toBe(CLOUD_CTA);
-  });
-
-  /*
-   * `UPSTREAM_UNAVAILABLE` 在映射表里一直写着要出切换卡,却被 `ChatPane` 单独
-   * 否掉,**没有任何注释说明理由**。合并之后这条无理由的否决一并消失。
-   */
-  it('上游过载(此前被无理由否掉的那一类)也有这颗 CTA', () => {
-    const { container } = renderFailure({ agentId: 'claude', code: 'UPSTREAM_UNAVAILABLE' });
-
-    const primaries = primaryActions(container);
-    expect(primaries).toHaveLength(1);
-    expect((primaries[0]!.textContent ?? '').trim()).toBe(CLOUD_CTA);
-  });
-
-  it('点它走的是现成的切换动作,并且埋点没丢', () => {
-    const onSwitchToAmrAndRetry = vi.fn();
-    const { container } = renderFailure({
-      agentId: 'claude',
-      code: 'AGENT_AUTH_REQUIRED',
-      onSwitchToAmrAndRetry,
-    });
-
-    fireEvent.click(primaryActions(container)[0]!);
-
-    expect(onSwitchToAmrAndRetry).toHaveBeenCalledTimes(1);
-    expect(onSwitchToAmrAndRetry.mock.calls[0]![0]).toMatchObject({ id: 'msg-failed' });
-    // 切换卡挂载/点击时发的那两个事件必须跟着 CTA 一起搬过来
-    expect(trackRunFailedToastGoAmrClick).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(trackRunFailedToastGoAmrClick).mock.calls[0]![1]).toMatchObject({
-      page_name: 'chat_panel',
-      area: 'chat_panel',
-      element: 'go_amr',
-    });
-    expect(
-      vi
-        .mocked(trackRunRecoveryActionClick)
-        .mock.calls.some(
-          (call) => call[1]?.recovery_action_type === 'switch_runtime_retry',
-        ),
-    ).toBe(true);
   });
 });
 
@@ -287,10 +188,8 @@ describe('OPEND-2772 · AMR 自己不许被劝去买 AMR', () => {
     );
     expect(hits).toHaveLength(0);
     expect(screen.queryByTestId('amr-guidance')).toBeNull();
-    expect(Array.from(screen.getByTestId('chat-run-error-card').querySelectorAll('button'),
-      (button) => button.dataset.testid)).toEqual([
-      'chat-error-contact-support', 'chat-error-export-logs', 'chat-error-retry',
-    ]);
-    expect(screen.getByTestId('chat-error-retry').dataset.runErrorAction).toBe('primary');
+    expect(screen.getByTestId('chat-error-contact-support')).toBeTruthy();
+    expect(screen.getByTestId('chat-error-export-logs')).toBeTruthy();
+    expect(primaryActions(container).length).toBeLessThanOrEqual(1);
   });
 });

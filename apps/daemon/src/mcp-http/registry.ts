@@ -9,6 +9,7 @@
 // Plan: specs/current/http-first-mcp-implementation-plan.md (Slice 1).
 
 import { z } from 'zod';
+import type { Request } from 'express';
 
 // ── Auth grants ────────────────────────────────────────────────────────────
 
@@ -48,6 +49,8 @@ export type McpToolContent =
 export interface McpToolResultMeta {
   ms: number;
   truncated?: boolean;
+  /** Version of the registered tool that produced this response. */
+  toolVersion?: number;
 }
 
 export type McpToolStructured =
@@ -66,6 +69,8 @@ export type McpToolResult = {
 export interface McpToolContext {
   grant: McpAuthGrant;
   signal: AbortSignal | undefined;
+  request: Request | undefined;
+  metadata?: unknown;
 }
 
 export interface McpToolDefinition<TArgs = unknown> {
@@ -87,6 +92,8 @@ export interface McpToolDefinition<TArgs = unknown> {
   /** Cap on text content characters; larger payloads are truncated with
    *  `meta.truncated` set. */
   maxResultChars?: number;
+  /** MCP Apps metadata belongs to the tool declaration, not its arguments. */
+  wireMeta?: Record<string, unknown>;
   handler: (args: TArgs, context: McpToolContext) => Promise<McpToolResult>;
 }
 
@@ -135,7 +142,7 @@ export interface McpToolLogEntry {
   resultChars: number;
   truncated: boolean;
   outcome: 'ok' | 'error' | 'denied' | 'invalid_args';
-  errorMessage?: string;
+  errorCode?: string;
 }
 
 const DEFAULT_MAX_RESULT_CHARS = 32_000;
@@ -175,7 +182,7 @@ export class McpToolRegistry {
     description: string;
     inputSchema: Record<string, unknown>;
     annotations?: McpToolDefinition['annotations'];
-    _meta?: { 'open-design/version': number };
+    _meta?: Record<string, unknown>;
   }> {
     const tools: Array<ReturnType<McpToolRegistry['listWireTools']>[number]> = [];
     for (const tool of this.#tools.values()) {
@@ -185,7 +192,7 @@ export class McpToolRegistry {
         description: tool.description,
         inputSchema: z.toJSONSchema(tool.schema, { target: 'draft-7' }) as Record<string, unknown>,
         ...(tool.annotations ? { annotations: tool.annotations } : {}),
-        _meta: { 'open-design/version': tool.version },
+        _meta: { ...tool.wireMeta, 'open-design/version': tool.version },
       });
     }
     return tools;
@@ -196,11 +203,31 @@ export class McpToolRegistry {
     rawArgs: unknown,
     grant: McpAuthGrant,
     signal?: AbortSignal,
+    request?: Request,
+    metadata?: unknown,
   ): Promise<McpToolResult> {
     const started = this.#now();
     const finish = (result: McpToolResult, outcome: McpToolLogEntry['outcome']): McpToolResult => {
+      if (!result.structuredContent.ok) {
+        const error = result.structuredContent.error;
+        const cap = this.#tools.get(name)?.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
+        const message = redactSecrets(error.message);
+        // A JSON escape can expand one character to six, and this envelope
+        // appears in both content and structuredContent. Bound it before either
+        // serialization or logging, including failures raised by handlers.
+        const maxMessage = Math.max(0, Math.floor(cap / 16));
+        if (message.length > maxMessage) {
+          error.message = `${message.slice(0, maxMessage)}<truncated>`;
+          result.structuredContent.meta.truncated = true;
+        } else {
+          error.message = message;
+        }
+        result.content = [{ type: 'text', text: safeJson({ ok: false, error }) }];
+      }
       const ms = this.#now() - started;
       result.structuredContent.meta.ms = ms;
+      const version = this.#tools.get(name)?.version;
+      if (version !== undefined) result.structuredContent.meta.toolVersion = version;
       this.#emitLog(name, grant, started, result, outcome);
       return result;
     };
@@ -228,22 +255,30 @@ export class McpToolRegistry {
 
     let result: McpToolResult;
     try {
-      result = await tool.handler(parsed.data, { grant, signal });
+      result = await tool.handler(parsed.data, { grant, signal, request, metadata });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return finish(toolError('TOOL_HANDLER_FAILED', redactSecrets(message), 0), 'error');
     }
 
     const cap = tool.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
-    let truncated = false;
-    result.content = result.content.map((block) => {
-      if (block.type === 'text' && block.text.length > cap) {
-        truncated = true;
-        return { ...block, text: `${block.text.slice(0, cap)}\n…<truncated>` };
+    // The SDK returns structuredContent as well as text. Truncating only the
+    // text left the full value in the response. Replace oversized data with a
+    // bounded JSON preview so both representations remain parseable.
+    if (result.structuredContent.ok) {
+      const serialized = safeJson(result.structuredContent.data);
+      if (serialized.length > cap) {
+        const data = { preview: `${serialized.slice(0, Math.floor(cap / 8))}<truncated>` };
+        result.structuredContent.data = data;
+        result.structuredContent.meta.truncated = true;
+        result.content = result.content.map((block) => block.type === 'text'
+          ? { type: 'text', text: safeJson(data) }
+          : block);
       }
-      return block;
-    });
-    if (truncated) result.structuredContent.meta.truncated = true;
+    }
+    result.content = result.content.map((block) => block.type === 'text' && block.text.length > cap
+      ? { type: 'text', text: safeJson({ error: 'result exceeded output limit' }) }
+      : block);
     return finish(result, result.isError ? 'error' : 'ok');
   }
 
@@ -255,11 +290,10 @@ export class McpToolRegistry {
     outcome: McpToolLogEntry['outcome'],
   ): void {
     if (!this.#log) return;
-    const errorMessage = result.structuredContent.ok
-      ? undefined
-      : redactSecrets(result.structuredContent.error.message);
+    const code = result.structuredContent.ok ? undefined : result.structuredContent.error.code;
+    const errorCode = code && /^[A-Z0-9_]{1,80}$/.test(code) ? code : undefined;
     this.#log({
-      tool: name,
+      tool: this.#tools.has(name) ? name : '<unknown>',
       operation: this.#tools.get(name)?.operation ?? '',
       grantKind: grant.kind,
       runId: grant.runId,
@@ -268,7 +302,7 @@ export class McpToolRegistry {
       resultChars: result.content.reduce((sum, block) => sum + (block.type === 'text' ? block.text.length : 0), 0),
       truncated: result.structuredContent.meta.truncated === true,
       outcome,
-      ...(errorMessage ? { errorMessage } : {}),
+      ...(errorCode ? { errorCode } : {}),
     });
   }
 }

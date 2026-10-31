@@ -28,7 +28,6 @@ import {
   fetchPromptTemplates,
   fetchSkills,
 } from '../../src/providers/registry';
-import { fetchAmrModels } from '../../src/providers/daemon';
 import { listProjects, listTemplates } from '../../src/state/projects';
 
 type TestRoute = Record<string, unknown>;
@@ -151,15 +150,6 @@ vi.mock('../../src/providers/registry', async () => {
   };
 });
 
-vi.mock('../../src/providers/daemon', async () => {
-  const actual = await vi.importActual<typeof import('../../src/providers/daemon')>(
-    '../../src/providers/daemon',
-  );
-  return {
-    ...actual,
-    fetchAmrModels: vi.fn(),
-  };
-});
 
 vi.mock('../../src/state/projects', async () => {
   const actual = await vi.importActual<typeof import('../../src/state/projects')>(
@@ -199,7 +189,6 @@ const mockedFetchAppVersionInfo = vi.mocked(fetchAppVersionInfo);
 const mockedFetchDesignSystems = vi.mocked(fetchDesignSystems);
 const mockedFetchPromptTemplates = vi.mocked(fetchPromptTemplates);
 const mockedFetchSkills = vi.mocked(fetchSkills);
-const mockedFetchAmrModels = vi.mocked(fetchAmrModels);
 const mockedListProjects = vi.mocked(listProjects);
 const mockedListTemplates = vi.mocked(listTemplates);
 const mockedLoadConfig = vi.mocked(loadConfig);
@@ -270,11 +259,6 @@ describe('App onboarding completion persistence', () => {
     mockedFetchAppVersionInfo.mockResolvedValue(null);
     mockedListProjects.mockResolvedValue([]);
     mockedListTemplates.mockResolvedValue([]);
-    mockedFetchAmrModels.mockResolvedValue({
-      source: 'preset',
-      refreshing: false,
-      models: [],
-    });
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }),
@@ -369,58 +353,7 @@ describe('App onboarding completion persistence', () => {
     });
   });
 
-  it('persists the Cloud reset without discarding BYOK and returns to onboarding', async () => {
-    mockedLoadConfig.mockReturnValue({
-      ...returningUserConfig(),
-      mode: 'api',
-      apiKey: 'persisted-key',
-      apiProtocol: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-5',
-      apiProviderBaseUrl: 'https://api.openai.com/v1',
-      apiProtocolConfigs: {
-        openai: {
-          apiKey: 'persisted-key',
-          baseUrl: 'https://api.openai.com/v1',
-          model: 'gpt-5',
-        },
-      },
-    });
-    mockedFetchDaemonConfig.mockResolvedValue({ onboardingCompleted: true });
 
-    render(<App />);
-
-    await waitFor(() => {
-      expect(entryViewCapture.activeSignOut).toEqual(expect.any(Function));
-    });
-    await act(async () => {
-      await entryViewCapture.activeSignOut?.();
-    });
-
-    expect(screen.getByTestId('onboarding-completed').textContent).toBe('false');
-    expect(screen.getByTestId('agent-id').textContent).toBe('none');
-    expect(screen.getByTestId('api-key').textContent).toBe('persisted-key');
-    expect(screen.getByTestId('api-model').textContent).toBe('gpt-5');
-    expect(mockedSyncConfigToDaemon).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        onboardingCompleted: false,
-        mode: 'daemon',
-        agentId: null,
-        apiKey: 'persisted-key',
-        model: 'gpt-5',
-        agentModels: {},
-        apiProtocolConfigs: {
-          openai: {
-            apiKey: 'persisted-key',
-            baseUrl: 'https://api.openai.com/v1',
-            model: 'gpt-5',
-          },
-        },
-      }),
-      { allowOnboardingReset: true },
-    );
-    expect(await navigatedToOnboarding()).toBe(true);
-  });
 
   it('keeps a completed user out of onboarding when the daemon copy still says false', async () => {
     mockedLoadConfig.mockReturnValue(returningUserConfig());

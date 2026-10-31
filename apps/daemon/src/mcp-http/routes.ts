@@ -15,11 +15,15 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+  type ListResourcesResult,
+  type ReadResourceResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import { sendApiError } from '../http/api-errors.js';
 import { validateLocalDaemonRequest } from '../http/local-daemon-request.js';
 import type { McpCredentialStore } from './credentials.js';
-import type { McpAuthGrant, McpToolRegistry } from './registry.js';
+import type { McpAuthGrant, McpToolContext, McpToolRegistry } from './registry.js';
 
 export const MCP_HTTP_PATH = '/mcp';
 
@@ -27,14 +31,21 @@ const MCP_ACCEPT = 'application/json, text/event-stream';
 
 export interface RegisterMcpHttpRoutesDeps {
   registry: McpToolRegistry;
+  resources?: McpHttpResources;
   resolveGrant: (req: Request) =>
     | { ok: true; grant: McpAuthGrant }
     | { ok: false; status: number; code: 'UNAUTHORIZED' | 'TOOL_TOKEN_MISSING' | 'TOOL_TOKEN_EXPIRED'; message: string };
   serverInfo: { name: string; version: string };
 }
 
+export interface McpHttpResources {
+  list: (context: McpToolContext, cursor?: string) => Promise<ListResourcesResult>;
+  read: (uri: string, context: McpToolContext) => Promise<ReadResourceResult>;
+}
+
 export interface RegisterMcpCredentialRoutesDeps {
   credentialStore: McpCredentialStore;
+  onRevoked?: (id: string) => void;
 }
 
 // ── /mcp ───────────────────────────────────────────────────────────────────
@@ -91,14 +102,33 @@ export function registerMcpHttpRoutes(app: Express, deps: RegisterMcpHttpRoutesD
     }
     const grant = auth.grant;
 
-    const server = new Server(deps.serverInfo, { capabilities: { tools: {} } });
+    const disconnect = new AbortController();
+    const cancel = () => {
+      if (!res.writableEnded) disconnect.abort();
+    };
+    req.once('aborted', cancel);
+    res.once('close', cancel);
+    const server = new Server(deps.serverInfo, { capabilities: { tools: {}, ...(deps.resources ? { resources: {} } : {}) } });
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: deps.registry.listWireTools(grant),
     }));
-    server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       const params = request.params as { name: string; arguments?: unknown };
-      return deps.registry.call(params.name, params.arguments, grant, undefined);
+      const result = await deps.registry.call(params.name, params.arguments, grant, AbortSignal.any([disconnect.signal, extra.signal]), req, request.params._meta);
+      if (result.structuredContent.ok && result.content.some(block => block.type === 'image')) {
+        // Codex selects structuredContent instead of image content when both
+        // exist. Keep the image authoritative and preserve metadata separately.
+        const { structuredContent, ...wireResult } = result;
+        return { ...wireResult, _meta: { 'open-design/result': structuredContent } };
+      }
+      return result;
     });
+    if (deps.resources) {
+      const resources = deps.resources;
+      const context = (signal: AbortSignal): McpToolContext => ({ grant, request: req, signal: AbortSignal.any([disconnect.signal, signal]) });
+      server.setRequestHandler(ListResourcesRequestSchema, (request, extra) => resources.list(context(extra.signal), request.params?.cursor));
+      server.setRequestHandler(ReadResourceRequestSchema, (request, extra) => resources.read(request.params.uri, context(extra.signal)));
+    }
 
     // Stateless transport: `sessionIdGenerator` omitted (the SDK treats an
     // absent generator as stateless — no session ids, no session validation).
@@ -117,6 +147,8 @@ export function registerMcpHttpRoutes(app: Express, deps: RegisterMcpHttpRoutesD
         res.end();
       }
     } finally {
+      req.off('aborted', cancel);
+      res.off('close', cancel);
       await server.close().catch(() => {});
     }
   });
@@ -162,6 +194,7 @@ export function registerMcpCredentialRoutes(app: Express, deps: RegisterMcpCrede
     if (!revoked) {
       return sendApiError(res, 404, 'NOT_FOUND', `no MCP credential with id ${req.params.id}`);
     }
+    deps.onRevoked?.(req.params.id);
     res.json({ ok: true, revoked: true });
   });
 }

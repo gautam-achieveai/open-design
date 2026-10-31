@@ -109,8 +109,6 @@ function errorCardTitle(
       onSend={vi.fn()}
       onStop={vi.fn()}
       onRetry={vi.fn()}
-      onSwitchToAmrAndRetry={onSwitchToAmrAndRetry}
-      amrBalanceCardUsd={null}
       onOpenSettings={vi.fn() as never}
       conversations={[
         { projectId: 'project-1', id: 'conv-1', title: 'Current', createdAt: 1, updatedAt: 1 },
@@ -179,7 +177,7 @@ describe('报错卡标题 · S01 / S02 / S04', () => {
    * 一个本地 agent 没登录,归 S02 那一边。拆键时最容易漏的就是这一个:
    * 它离另外两个调用点有一百多行,而且 code 和 S02 完全一样。
    */
-  it('Antigravity 认证失败保留 S02 文案,固定入口切换到 Cloud', () => {
+  it('Antigravity authentication failure preserves S02 copy without a Cloud action', () => {
     const onSwitchToAmrAndRetry = vi.fn();
     const title = errorCardTitle(
       { agentId: 'antigravity', code: 'AGENT_AUTH_REQUIRED' },
@@ -193,13 +191,9 @@ describe('报错卡标题 · S01 / S02 / S04', () => {
       .toBe('请先完成 Antigravity 的登录，再重新尝试。');
     const card = screen.getByTestId('chat-run-error-card');
     expect(within(card).getAllByRole('button').map((button) => button.textContent?.trim()))
-      .toEqual(['联系我们', '导出日志', '切换到 OpenDesign Cloud']);
+      .toEqual(['联系我们', '导出日志']);
     expect(within(card).queryByRole('button', { name: '在终端中登录' })).toBeNull();
-    fireEvent.click(within(card).getByRole('button', { name: '切换到 OpenDesign Cloud' }));
-    expect(onSwitchToAmrAndRetry).toHaveBeenCalledOnce();
-    expect(onSwitchToAmrAndRetry).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'msg-failed', agentId: 'antigravity', runId: 'run-failed',
-    }));
+    expect(within(card).queryByRole('button', { name: '切换到 OpenDesign Cloud' })).toBeNull();
   });
 
   it('AMR 的通用 401(UNAUTHORIZED)仍然是 S04 那句,不会掉到 S02', () => {

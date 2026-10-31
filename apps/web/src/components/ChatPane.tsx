@@ -55,11 +55,10 @@ import { createPortal } from 'react-dom';
 import historyStyles from './chat/ConversationHistoryDock.module.css';
 import { hasOdCard, OD_NEXT_STRATEGY_ID, type ProjectMediaTask } from '@open-design/contracts';
 import { useAnalytics } from '../analytics/provider';
-import { getResolvedDeviceId } from '../analytics/client';
 import {
   trackChatPanelClick,
   trackMessageQueueClick,
-  trackRunFailedToastGoAmrClick,
+
   trackRunFailedToastSurfaceView,
   trackRunRecoveryActionClick,
   trackRunRecoveryActionSurfaceView,
@@ -68,7 +67,6 @@ import {
   buildRecoveryTaskAnalytics,
   runAgentProviderId,
 } from '../analytics/run-task';
-import { amrHandoffDeviceId, attributedAmrUrl, recordAmrEntry } from '../analytics/amr-attribution';
 import { setChatCorrelation } from '../observability/chat-context';
 import {
   chatSurfaceSample,
@@ -153,29 +151,15 @@ import {
   type NextStepActionsVariant,
 } from './NextStepActions';
 import {
-  AMR_LOGIN_STATUS_EVENT,
-  amrLoginStatusEventReason,
-  isAmrSessionAuthenticated,
-} from './amrLoginPolling';
-import {
-  amrPlansUrlForProfile,
+
   daemonFailureVerdictFrom,
-  failureCardHandedToAmrBalanceCard,
+
   formatModelWindowRetryAt,
   isReconnectOwnedFailure,
   resolveRunErrorCardDescription,
   resolveRunFailureUi,
   RUN_FAILURE_FALLBACK_MESSAGE_KEY,
 } from '../runtime/amr-guidance';
-import {
-  fetchVelaLoginStatus,
-  type VelaLoginStatus,
-} from '../providers/daemon';
-import {
-  canConsumeAmrAuthRetryContinuation,
-  type AmrAuthRetryContinuation,
-  type AmrAuthRetryPersonalAdoptionWitness,
-} from '../runtime/amr-auth-retry-continuation';
 import {
   ChatComposer,
   type ChatComposerHandle,
@@ -192,7 +176,6 @@ import {
   RunErrorCard,
   RunErrorCardAction,
 } from './chat/RunErrorCard';
-import { UpgradeCard } from './chat/UpgradeCard';
 import { SupportDialog } from './chat/SupportDialog';
 import { Toast } from './Toast';
 import { supportChannels } from './chat/support-channels';
@@ -696,23 +679,6 @@ interface Props {
   supersededErrorAssistantIds?: readonly string[];
   /** Retry a user message whose daemon run was never created. */
   onResendUserMessage?: (message: ChatMessage) => void;
-  amrAuthRetryContinuation?: AmrAuthRetryContinuation | null;
-  amrAuthRetryMountId?: string;
-  amrAuthRetryWorkspaceIdentityKey?: string;
-  /** A same-principal directory projection awaits the authoritative scope. */
-  amrAuthRetryAuthorityPending?: boolean;
-  /** The host can accept a retry against the current authoritative transcript. */
-  amrAuthRetryReady?: boolean;
-  amrAuthRetryPersonalAdoptionWitness?: AmrAuthRetryPersonalAdoptionWitness | null;
-  onArmAmrAuthRetryContinuation?: (
-    continuation: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
-  ) => void;
-  onConsumeAmrAuthRetryContinuation?: (
-    continuation: AmrAuthRetryContinuation,
-  ) => boolean;
-  onDiscardAmrAuthRetryContinuation?: (
-    continuation: AmrAuthRetryContinuation,
-  ) => void;
   onResumeRun?: (assistantMessage: ChatMessage) => void;
   onStop: () => void;
   // Skills available for @-mention assembly. ProjectView filters out the
@@ -784,62 +750,8 @@ interface Props {
    * 没接的宿主(首页那种没有内联列表的)回落到设置面板,总好过按了没反应。
    */
   onSwitchModel?: (assistantMessage: ChatMessage) => void;
-  /**
-   * 钱包余额提示(交付稿第 75 / 76 格的升级卡),`null` = 不提示。
-   *
-   * 单位美元,卡面两档由余额自己决定:`> 0` 是「撑不完下一个任务」的暖橙档,
-   * `= 0` 是「现在无法开始新任务」的红档。这里只负责**呈现** —— 卡在流水里,
-   * 不挡发送(D4)。
-   *
-   * ⚠️ **暖橙那一档今天只有一条来源:跑到一半死在钱上,而停下来时还剩一点。**
-   * 发送前的告警档(余额 `> 0` 但低于某条线)已由产品 2026-09-07 整档撤掉
-   * (规格 T66),判定层不再产生它 —— 所以「余额低所以先提醒一句」这件事**不存在
-   * 了**,别照着这段注释把它接回来。判定在 `runtime/amr-balance-gate.ts`。
-   */
-  amrBalanceCardUsd?: number | null;
-  /**
-   * **这份读数是哪一轮的。** `null` = 没有轮次可锚,读数直接摆在流水末尾。
-   *
-   * T61(产品 2026-09-07):升级卡从「当前余额的实时读数」改成「**这一轮为什么
-   * 停下来的凭据**」。凭据必须有主 —— 卡坐在**那一轮下面**,第二轮跑起来时它
-   * 不许跟着挪下去;第二轮结束后余额仍不足,是**另出一张新的**,不是搬旧的。
-   *
-   * 谁给锚点由 `ProjectView` 决定,因为只有它知道这次读数是替哪一轮取的:
-   *   · 发送前钱包是空的但硬拦让了位(`gate.kind === 'empty_not_blocked'`)
-   *     → 刚画出去的那一轮
-   *   · 跑到一半死在钱上 → 那条失败的助手消息
-   *   · 拦截档(`gate.kind === 'hard'`)→ **`null`**。那一轮已经被
-   *     `retractPaintedTurn` 收回,根本没有 run,也就没有轮次可锚。
-   *
-   * ⚠️ 锚点只决定「挂在谁下面」,**不决定什么时候出现**。出现时机看那一轮自己
-   * 的收尾状态(见 `archiveLowBalanceTurnCard`)。
-   */
-  amrBalanceCardAnchorMessageId?: string | null;
-  /**
-   * **失败之后的那次钱包补查已经落地,而且没读出数字。**
-   *
-   * 只有跑到一半死在余额上那条路用得着它。那条失败自己**不带余额**,升级卡的
-   * 数字要由 `ProjectView` 事后补查一次(`amrInsufficientBalanceFailure`)。
-   * 补查落空时升级卡画不出来,而报错卡又已经把自己交给了升级卡 —— 两边都不画,
-   * 用户在一轮「钱不够」之后屏幕上什么都不剩,没有充值入口也没有重试。
-   *
-   * 所以这一位说的是「接手方接不住」:置 true 时把白色报错卡还回来。
-   * 补查**还没落地**时它是 false —— 那一格什么都不画,免得每次都先闪一下白卡
-   * 再换成升级卡,把「一张卡」闪成两张。
-   */
-  amrBalanceCardUnavailable?: boolean;
-  /**
-   * 升级卡那颗按钮点下去做什么。给了就用它,没给就退回本组件自己的 plans 深链。
-   *
-   * 之所以由调用方给:**点了跳哪由身份 × 订阅决定**(规格 §6.V 的四组),而那份
-   * 判据握在 ProjectView / EntryShell 手里 —— 它们才知道这一次要付钱的是哪个
-   * 工作区、这个人有没有账单权限。聊天面板不该自己去猜。
-   */
-  onAmrBalanceUpgrade?: () => void;
   showByokRecoveryAction?: boolean;
   onSwitchToLocalCli?: () => void;
-  onOpenAmrSettings?: () => void;
-  onSwitchToAmrAndRetry?: (failedAssistant: ChatMessage) => void;
   // PR #3157: Antigravity's `agy -p` can't complete OAuth on its own,
   // so the auth banner offers a "Sign in via terminal" button that
   // POSTs to /api/agents/antigravity/oauth-launch. Handler resolves
@@ -993,8 +905,6 @@ interface Props {
   designSystemPicker?: ReactNode;
   config?: AppConfig;
 }
-
-const AMR_PROFILE_ENV_KEY = 'OPEN_DESIGN_AMR_PROFILE';
 
 type Tab = 'chat' | 'comments';
 
@@ -1342,14 +1252,7 @@ export function ChatPane({
   retryPendingAssistantId = null,
   supersededErrorAssistantIds = [],
   onResendUserMessage,
-  amrAuthRetryContinuation = null,
-  amrAuthRetryMountId,
-  amrAuthRetryWorkspaceIdentityKey,
-  amrAuthRetryAuthorityPending = false,
-  amrAuthRetryReady = true,
-  amrAuthRetryPersonalAdoptionWitness = null,
-  onConsumeAmrAuthRetryContinuation,
-  onDiscardAmrAuthRetryContinuation,
+
   onStop,
   onRemoveQueuedSend,
   onUpdateQueuedSend,
@@ -1386,12 +1289,7 @@ export function ChatPane({
   onSelectConversation,
   onDeleteConversation,
   onOpenSettings,
-  amrBalanceCardUsd = null,
-  amrBalanceCardAnchorMessageId = null,
-  amrBalanceCardUnavailable = false,
-  onAmrBalanceUpgrade,
-  onOpenAmrSettings,
-  onSwitchToAmrAndRetry,
+
   onOpenMcpSettings,
   onBrowsePlugins,
   onOpenConnectors,
@@ -1483,27 +1381,6 @@ export function ChatPane({
     () => displayMessages.reduce((total, message) => total + (message.events?.length ?? 0), 0),
     [displayMessages],
   );
-  /**
-   * 每一轮各自那张升级卡:key = 那一轮助手消息的 id,value = **结束那一刻**的余额。
-   *
-   * 存在 ref 里而不是 state:它是**只增不改**的账本(T61 ④「存档在当时状态」),
-   * 写入永远发生在一次本来就会重渲的 props 变化里(那一轮转成终态、或者读数落地),
-   * 所以不需要自己再推一次渲染。同一个 key 重复写同一个值是幂等的,
-   * StrictMode 的双跑不会把它写坏。
-   */
-  const lowBalanceTurnCardsRef = useRef<Map<string, number>>(new Map());
-  archiveLowBalanceTurnCard(lowBalanceTurnCardsRef.current, {
-    messages: displayMessages,
-    anchorMessageId: amrBalanceCardAnchorMessageId,
-    balanceUsd: amrBalanceCardUsd,
-  });
-  const lowBalanceTurnCards = lowBalanceTurnCardsRef.current;
-  /**
-   * 有主的读数由锚点那一轮自己画(见上)。**没主**的那一档才落到流水末尾 ——
-   * 拦截档那一轮已经被收回,没有轮次可挂,读数不摆在末尾就彻底没地方说了。
-   */
-  const tailAmrBalanceCardUsd =
-    amrBalanceCardAnchorMessageId == null ? amrBalanceCardUsd : null;
   const trackedMediaRunKey = useMemo(
     () => mediaTaskRunKey(displayMessages, streaming),
     [displayMessages, streaming],
@@ -1606,11 +1483,6 @@ export function ChatPane({
     }
     return grouped;
   }, [projectMediaTasks]);
-  const amrProfile = config?.agentCliEnv?.amr?.[AMR_PROFILE_ENV_KEY] ?? null;
-  const [inlineAmrLoginStatus, setInlineAmrLoginStatus] =
-    useState<VelaLoginStatus | null>(null);
-  const amrAuthRetrySignedOutWitnessRef =
-    useRef<AmrAuthRetryContinuation | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
   const historyWrapRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<ChatComposerHandle | null>(null);
@@ -1665,37 +1537,6 @@ export function ChatPane({
   /** (3) 的那一帧。挂着的时候说明有一张条子在等着过期。 */
   const wheelWitnessFrameRef = useRef<number | null>(null);
   const scrolledToFormRef = useRef<Set<string>>(new Set());
-  const refreshInlineAmrLoginStatus = useCallback(async (options: { refresh?: boolean } = {}) => {
-    const next = await fetchVelaLoginStatus(options).catch(() => null);
-    if (next) setInlineAmrLoginStatus(next);
-    return next;
-  }, []);
-
-  useEffect(() => {
-    void refreshInlineAmrLoginStatus();
-    const onAmrLoginStatusChange = (event: Event) => {
-      const reason = amrLoginStatusEventReason(event);
-      if (reason === 'login-canceled') return;
-      void refreshInlineAmrLoginStatus();
-    };
-    window.addEventListener(AMR_LOGIN_STATUS_EVENT, onAmrLoginStatusChange);
-    return () => {
-      window.removeEventListener(AMR_LOGIN_STATUS_EVENT, onAmrLoginStatusChange);
-    };
-  }, [refreshInlineAmrLoginStatus]);
-
-  useEffect(() => {
-    const refreshAfterExternalAmrReturn = () => {
-      if (document.visibilityState === 'hidden') return;
-      void refreshInlineAmrLoginStatus({ refresh: true });
-    };
-    window.addEventListener('focus', refreshAfterExternalAmrReturn);
-    document.addEventListener('visibilitychange', refreshAfterExternalAmrReturn);
-    return () => {
-      window.removeEventListener('focus', refreshAfterExternalAmrReturn);
-      document.removeEventListener('visibilitychange', refreshAfterExternalAmrReturn);
-    };
-  }, [refreshInlineAmrLoginStatus]);
 
   /*
    * "Anchor the just-sent turn to the top" (ChatGPT-style):新发出的那条用户消息
@@ -2146,166 +1987,6 @@ export function ChatPane({
         daemonFailureVerdictFrom(failedRunErrorEvent),
       )
     : null;
-  const hasInlineAmrAuthorizeFailure = Boolean(
-    retryAssistant && onRetry && runFailureUi?.primaryAction === 'authorize',
-  );
-  useEffect(() => {
-    if (
-      !amrAuthRetryContinuation
-      || !onDiscardAmrAuthRetryContinuation
-      || loading
-      || !projectId
-      || !activeConversationId
-      || messagesConversationId !== activeConversationId
-    ) {
-      return;
-    }
-    const personalAdoptionAuthorityTransition =
-      amrAuthRetryContinuation.workspaceIdentityKey === 'none'
-      && amrAuthRetryContinuation.originMountId === amrAuthRetryMountId
-      && amrAuthRetryPersonalAdoptionWitness?.workspaceIdentityKey
-        === amrAuthRetryWorkspaceIdentityKey;
-    const mismatched =
-      amrAuthRetryContinuation.projectId !== projectId
-      || amrAuthRetryContinuation.conversationId !== activeConversationId
-      || amrAuthRetryContinuation.assistantId !== retryAssistant?.id
-      || (
-        amrAuthRetryWorkspaceIdentityKey !== undefined
-        && amrAuthRetryContinuation.workspaceIdentityKey
-          !== amrAuthRetryWorkspaceIdentityKey
-        && !personalAdoptionAuthorityTransition
-        && !amrAuthRetryAuthorityPending
-      );
-    if (mismatched) {
-      onDiscardAmrAuthRetryContinuation(amrAuthRetryContinuation);
-    }
-  }, [
-    activeConversationId,
-    amrAuthRetryContinuation,
-    amrAuthRetryAuthorityPending,
-    amrAuthRetryMountId,
-    amrAuthRetryPersonalAdoptionWitness,
-    amrAuthRetryWorkspaceIdentityKey,
-    loading,
-    messagesConversationId,
-    onDiscardAmrAuthRetryContinuation,
-    projectId,
-    retryAssistant?.id,
-  ]);
-  const consumeAmrAuthRetryIfAuthorized = useCallback((status: VelaLoginStatus | null) => {
-    if (!isAmrSessionAuthenticated(status)) {
-      if (
-        status?.loginInFlight === true
-        && amrAuthRetryContinuation
-        && amrAuthRetryContinuation.workspaceIdentityKey === 'none'
-        && amrAuthRetryContinuation.originMountId === amrAuthRetryMountId
-      ) {
-        amrAuthRetrySignedOutWitnessRef.current = amrAuthRetryContinuation;
-      }
-      return;
-    }
-    if (
-      !isAmrSessionAuthenticated(status)
-      || !amrAuthRetryContinuation
-      || !amrAuthRetryReady
-      || loading
-      || recoveryActionsDisabled
-      || !amrAuthRetryMountId
-      || !amrAuthRetryWorkspaceIdentityKey
-      || !projectId
-      || !activeConversationId
-      || !retryAssistant
-      || !onRetry
-      || !onConsumeAmrAuthRetryContinuation
-    ) {
-      return;
-    }
-    const originMountObservedSignedOut =
-      amrAuthRetrySignedOutWitnessRef.current === amrAuthRetryContinuation;
-    // Every continuation is consumed against the account identity returned by
-    // this exact status observation. An ambient shell snapshot can belong to a
-    // prior account during sign-out/sign-in transitions.
-    const loggedInAccountId = status?.user?.id ?? null;
-    if (!canConsumeAmrAuthRetryContinuation(amrAuthRetryContinuation, {
-      projectId,
-      conversationId: activeConversationId,
-      assistantId: retryAssistant.id,
-      workspaceIdentityKey: amrAuthRetryWorkspaceIdentityKey,
-      mountId: amrAuthRetryMountId,
-      loggedInAccountId,
-      nowMs: Date.now(),
-      originMountObservedSignedOut,
-      personalAdoptionWitness: amrAuthRetryPersonalAdoptionWitness,
-    })) {
-      return;
-    }
-    if (onConsumeAmrAuthRetryContinuation(amrAuthRetryContinuation)) {
-      amrAuthRetrySignedOutWitnessRef.current = null;
-      onRetry(
-        retryAssistant,
-        retryAssistant.agentId === 'amr'
-          ? 'authorize_and_retry'
-          : 'switch_runtime_retry',
-      );
-    }
-  }, [
-    activeConversationId,
-    amrAuthRetryContinuation,
-    amrAuthRetryReady,
-    amrAuthRetryMountId,
-    amrAuthRetryPersonalAdoptionWitness,
-    amrAuthRetryWorkspaceIdentityKey,
-    onConsumeAmrAuthRetryContinuation,
-    onRetry,
-    projectId,
-    retryAssistant,
-    loading,
-    recoveryActionsDisabled,
-  ]);
-  useEffect(() => {
-    if (!amrAuthRetryContinuation || !isAmrSessionAuthenticated(inlineAmrLoginStatus)) return;
-    // A Settings handoff remounts the whole project surface, so there is no
-    // inline AmrLoginPill callback to drive consumption. The fresh pane's own
-    // status read may request the one-shot retry; the common guard above still
-    // requires the exact project, conversation, failed assistant, account,
-    // fresh mount and Workspace authority.
-    consumeAmrAuthRetryIfAuthorized(inlineAmrLoginStatus);
-  }, [
-    amrAuthRetryContinuation,
-    consumeAmrAuthRetryIfAuthorized,
-    inlineAmrLoginStatus,
-  ]);
-  useEffect(() => {
-    if (
-      amrAuthRetrySignedOutWitnessRef.current
-      && amrAuthRetrySignedOutWitnessRef.current !== amrAuthRetryContinuation
-    ) {
-      amrAuthRetrySignedOutWitnessRef.current = null;
-    }
-  }, [amrAuthRetryContinuation]);
-  useEffect(() => {
-    if (!hasInlineAmrAuthorizeFailure || !retryAssistant || !onRetry) return;
-    let stopped = false;
-    const retryIfSignedIn = async () => {
-      const next = await refreshInlineAmrLoginStatus();
-      if (stopped) return;
-      consumeAmrAuthRetryIfAuthorized(next);
-    };
-    void retryIfSignedIn();
-    const interval = window.setInterval(() => {
-      void retryIfSignedIn();
-    }, 500);
-    return () => {
-      stopped = true;
-      window.clearInterval(interval);
-    };
-  }, [
-    consumeAmrAuthRetryIfAuthorized,
-    hasInlineAmrAuthorizeFailure,
-    onRetry,
-    refreshInlineAmrLoginStatus,
-    retryAssistant,
-  ]);
   // `error` is a shared escape hatch for both run failures and unrelated pane
   // errors. A run error also lives durably on its assistant message. Suppress
   // it only when its exact source assistant owns the persisted diagnostic and
@@ -2390,27 +2071,15 @@ export function ChatPane({
   // 引入之前落库的原文 —— 跟 `ProjectView.hasGenericDisconnectFailureEvent` 同一对。
   // 面板级的那条错误(还没落到消息上)也要过这一道,否则重连行在场时它照样冒出来。
   //
-  // `suppressCard` 是**交接**,不是删除:它说的是「别人已经在说这件事了」。
-  // 余额那一档的接手方是升级卡,而升级卡只有在钱包补查读出确定数字时才画得出来;
-  // 断线那一档的接手方是流水末尾那一行重连行,而它的数据(`ProjectView` 的
-  // `reconnectView`)在换项目 / 离开这一屏时被专门清空 —— 退出项目再进来,那一行
-  // 就不在了。两处都一样:接不住的时候没有任何人在说话,这时还按下白卡,用户在一轮
-  // 失败之后屏幕上什么都不剩,既没有说明也没有恢复入口。
-  //
-  // **所以交接只在接手方真的在场时成立。**这是一条不变量,两档共用同一个形状:
-  // 先各自认出「这一档交给谁」,再统一问一句「那个人在不在」。
+  // Reconnect needs a visible owner; retired recharge cards cannot take over.
+  // Independent suppression (such as Git Bash diagnostics) remains intact.
   const reconnectRowOwnsFailure = isReconnectOwnedFailure(
     failedRunErrorEvent?.code,
     rawError,
   );
-  const balanceCardCannotTakeTheHandoff =
-    failureCardHandedToAmrBalanceCard(runFailureUi) && amrBalanceCardUnavailable;
-  const reconnectRowCannotTakeTheHandoff = reconnectRowOwnsFailure && !reconnect;
-  const handoffTargetIsAbsent =
-    balanceCardCannotTakeTheHandoff || reconnectRowCannotTakeTheHandoff;
-  const anotherSurfaceOwnsFailure =
-    (runFailureUi?.suppressCard === true || reconnectRowOwnsFailure)
-    && !handoffTargetIsAbsent;
+  const anotherSurfaceOwnsFailure = reconnectRowOwnsFailure
+    ? Boolean(reconnect)
+    : runFailureUi?.suppressCard === true && runFailureUi.primaryAction !== 'recharge';
   // 面板槽里那段字是不是某一轮跑出来的原文 —— 只看**有没有来源助手**,不看是不是
   // 「这一轮」的。别的助手留下的原文也一样是原文,不该因为「跟这一轮无关」就原样放行。
   const paneErrorCameFromARun = !!currentGlobalError && errorSourceAssistantId != null;
@@ -2500,38 +2169,14 @@ export function ChatPane({
    */
   const errorCardOwnerId =
     !accessErrorCopy && retryAssistant && failedRunErrorEvent ? retryAssistant.id : null;
-  // OPEND-2807 / G16: the failed run selects one fixed recovery action.
-  // The classifier still owns approved copy and handoffs, never extra buttons.
-  const failedRunUsesCloud = retryAssistant?.agentId === 'amr';
-  const showCloudRetry = Boolean(retryAssistant && failedRunUsesCloud && onRetry);
-  const showCloudSwitchCta = Boolean(
-    retryAssistant && !failedRunUsesCloud
-    && (onSwitchToAmrAndRetry || onOpenAmrSettings),
-  );
+  const showRunRetry = Boolean(retryAssistant && onRetry && runFailureUi?.primaryAction === 'retry');
   const [supportDialogOpen, setSupportDialogOpen] = useState(false);
-  // The separate balance card retains its existing plans entry.
-  const openAmrPlans = useCallback((entrySource: 'chat_upgrade_card') => {
-    const attribution = recordAmrEntry(analytics.track, entrySource, new Date(), {
-      metricsConsent: config?.telemetry?.metrics === true,
-    });
-    const deviceId = amrHandoffDeviceId({
-      metricsConsent: config?.telemetry?.metrics === true,
-      resolvedDeviceId: getResolvedDeviceId(),
-      installationId: config?.installationId,
-    });
-    window.open(
-      attributedAmrUrl(amrPlansUrlForProfile(amrProfile), attribution, deviceId),
-      '_blank',
-      'noopener,noreferrer',
-    );
-  }, [amrProfile, analytics.track, config?.installationId, config?.telemetry?.metrics]);
   const visibleRecoveryActionTypes = useMemo(() => {
     const actions: TrackingRunRecoveryActionType[] = [];
     if (!displayError) return actions;
-    if (showCloudRetry) actions.push('manual_retry');
-    if (showCloudSwitchCta && onSwitchToAmrAndRetry) actions.push('switch_runtime_retry');
+    if (showRunRetry) actions.push('manual_retry');
     return actions;
-  }, [displayError, onSwitchToAmrAndRetry, showCloudRetry, showCloudSwitchCta]);
+  }, [displayError, showRunRetry]);
   const recoveryAnalyticsProps = useCallback((
     assistantMessage: ChatMessage,
     actionType: TrackingRunRecoveryActionType,
@@ -4474,10 +4119,6 @@ export function ChatPane({
                   items={chatRenderItems}
                   messages={displayMessages}
                   streaming={streaming}
-                  lowBalanceTurnCards={lowBalanceTurnCards}
-                  onLowBalanceTurnCardUpgrade={
-                    onAmrBalanceUpgrade ?? (() => openAmrPlans('chat_upgrade_card'))
-                  }
                   onResendUserMessage={onResendUserMessage}
                   onRetryImage={handleRetryImage}
                   projectId={projectId}
@@ -4569,7 +4210,7 @@ export function ChatPane({
                           {t('chat.runError.contactSupportCta')}
                         </RunErrorCardAction>
                         <ExportLogsAction />
-                        {showCloudRetry && retryAssistant && onRetry ? (
+                        {showRunRetry && retryAssistant && onRetry ? (
                           <RunErrorCardAction
                             type="button"
                             variant="primary"
@@ -4584,64 +4225,12 @@ export function ChatPane({
                             {t(retryLabelKey)}
                           </RunErrorCardAction>
                         ) : null}
-                        {showCloudSwitchCta ? (
-                          <RunErrorCardAction
-                            type="button"
-                            variant="primary"
-                            data-testid="chat-error-switch-to-cloud"
-                            // `handleSwitchToAmrAndRetry` 头一行就是同一道门控;
-                            // 挡住时这颗按钮点下去连设置面板都不会开。
-                            disabled={recoveryActionsDisabled}
-                            onClick={() => {
-                              trackRunFailedToastGoAmrClick(analytics.track, {
-                                page_name: 'chat_panel',
-                                area: 'chat_panel',
-                                element: 'go_amr',
-                              });
-                              recordAmrEntry(
-                                analytics.track,
-                                'chat_error_switch_retry_card',
-                                new Date(),
-                                { metricsConsent: config?.telemetry?.metrics === true },
-                              );
-                              if (retryAssistant && onSwitchToAmrAndRetry) {
-                                trackRecoveryClick(retryAssistant, 'switch_runtime_retry', {
-                                  agentProviderId: 'amr',
-                                  modelId: config?.agentModels?.amr?.model?.trim() || 'default',
-                                });
-                                onSwitchToAmrAndRetry(retryAssistant);
-                              } else {
-                                onOpenAmrSettings?.();
-                              }
-                            }}
-                          >
-                            {t('chat.amrCard.switchCta')}
-                          </RunErrorCardAction>
-                        ) : null}
+
                       </>
                     )}
                   />
                 ) : null}
-                {/*
-                  * 升级卡(交付稿第 75 / 76 格)。**流水里的一张卡,不是弹窗** ——
-                  * 产品 2026-08-26 裁决「告警可继续的不弹窗,只有卡片;余额不足再弹窗」。
-                  * 不挡发送(D4)。和 `PlanPill` 不同:那枚是钉在 composer 上方的,
-                  * 这张在流水里随内容滚。
-                  *
-                  * ⚠️ **这里画的只剩「没有轮次可锚」那一档。** T61 之后,有主的读数
-                  * 由锚点那一轮自己画(`ChatRows` 的 `lowBalanceTurnCards`)——
-                  * 卡是「那一轮为什么停」的凭据,不能钉在流水末尾跟着新一轮往下跑。
-                  * 剩在这儿的是拦截档:那一轮已经被 `retractPaintedTurn` 收回,
-                  * 没有 run 也就没有轮次,读数不摆在末尾就彻底没地方说了。
-                  */}
-                {tailAmrBalanceCardUsd != null ? (
-                  <UpgradeCard
-                    balanceUsd={tailAmrBalanceCardUsd}
-                    onUpgrade={
-                      onAmrBalanceUpgrade ?? (() => openAmrPlans('chat_upgrade_card'))
-                    }
-                  />
-                ) : null}
+
                 {/*
                  * 组件 22(重连,第 82–84 格 · S29):产品裁决用设计稿现有的设计,
                  * 位置在**会话中最后一行**。`reconnect` 为空就整行不在 ——
@@ -5236,8 +4825,7 @@ function ChatRows({
   items,
   messages,
   streaming,
-  lowBalanceTurnCards,
-  onLowBalanceTurnCardUpgrade,
+
   onResendUserMessage,
   onRetryImage,
   projectId,
@@ -5308,15 +4896,6 @@ function ChatRows({
    * 「上一轮宣布过哪些待办」和「助手换没换人」数的是真实回合,不是画出来的行。
    */
   messages: ChatMessage[];
-  /**
-   * 每一轮各自那张升级卡:key = 那一轮助手消息的 id,value = 那一轮结束时的余额。
-   *
-   * 卡就画在这条助手消息**紧下面**,和它同一个虚拟行 —— T61 要的「锚定在那一轮
-   * 下面、第二轮跑起来时不许挪」是这样成立的,不靠任何位置计算。
-   */
-  lowBalanceTurnCards?: ReadonlyMap<string, number>;
-  /** 升级卡那颗按钮。落点由宿主决定,和流水末尾那张同一个 handler。 */
-  onLowBalanceTurnCardUpgrade?: () => void;
   onResendUserMessage?: (message: ChatMessage) => void;
   /** 生图失败格的「重试」—— 见 ChatPane 的 handleRetryImage(D59) */
   onRetryImage?: (row: { total: number; done: number; failed: number }, index: number) => void;
@@ -5454,7 +5033,6 @@ function ChatRows({
      * 位置由 DOM 顺序本身保证,新一轮追加在后面,它自然就留在原处 ——
      * 不需要任何「记住第几个位置」的计算,也就没有算错的可能。
      */
-    const turnBalanceUsd = lowBalanceTurnCards?.get(m.id);
     const assistantRow = (
       <AssistantMessage
         message={m}
@@ -5564,13 +5142,7 @@ function ChatRows({
         nextStepVariant={nextStepVariant}
       />
     );
-    if (turnBalanceUsd == null) return assistantRow;
-    return (
-      <>
-        {assistantRow}
-        <UpgradeCard balanceUsd={turnBalanceUsd} onUpgrade={onLowBalanceTurnCardUpgrade} />
-      </>
-    );
+    return assistantRow;
   };
 
   if (items.length === 0) return null;
@@ -6421,41 +5993,6 @@ function isTerminalRunStatus(status: ChatMessage['runStatus']): boolean {
 function isFinishedTurn(message: ChatMessage): boolean {
   if (isTerminalRunStatus(message.runStatus)) return true;
   return message.runStatus === undefined && message.endedAt !== undefined;
-}
-
-/**
- * 把「这一轮结束时的余额」记进账本 —— **升级卡按轮次存档的唯一写入口**(T61)。
- *
- * 三条不变量,缺一条就会退回产品否掉的那个形态:
- *
- * - **运行中不写。** 锚点那一轮还在跑(或还在排队)就什么都不记,于是屏幕上也
- *   画不出卡。这是 T61 ① 的全部实现 —— 出现时机由那一轮**自己的收尾状态**决定,
- *   不由读数什么时候到决定。
- * - **只增不删。** 记过的那一轮永远留着,哪怕后来余额涨回放行档、读数被撤掉。
- *   产品原话「不能说我干个啥把当时的失败态搞丢了」;卡是历史记录,不是当前读数。
- * - **锚点换人就冻。** 同一个锚点在场期间允许覆写(发送前闸门读到的是**跑之前**
- *   的余额,跑到一半死在钱上那次补查读到的才是**停下来时**的;后者更该是凭据)。
- *   一旦 `ProjectView` 把锚点交给下一轮,上一轮那格就再没人写得动了。
- *
- * 就地改 `archive`,不返回新 Map:调用方在渲染中同步读它,新建对象只会让
- * `ChatRows` 每次拿到不同身份的 prop,白赔一次比较。
- */
-function archiveLowBalanceTurnCard(
-  archive: Map<string, number>,
-  input: {
-    messages: ChatMessage[];
-    anchorMessageId: string | null | undefined;
-    balanceUsd: number | null | undefined;
-  },
-): void {
-  const { anchorMessageId, balanceUsd } = input;
-  if (!anchorMessageId || balanceUsd == null) return;
-  const anchor = input.messages.find((message) => message.id === anchorMessageId);
-  // 锚点不在这条会话里 = 切走了 / 那一轮被收回了。既然挂不上去,就不画 ——
-  // 退回流水末尾会把一份别的会话的读数扣在这条会话的最后一轮头上。
-  if (!anchor || anchor.role !== 'assistant') return;
-  if (!isFinishedTurn(anchor)) return;
-  archive.set(anchorMessageId, balanceUsd);
 }
 
 /**

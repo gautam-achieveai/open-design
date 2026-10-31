@@ -612,6 +612,7 @@ export function withCodexTransport(
   return {
     ...def,
     streamFormat: CODEX_APP_SERVER_STREAM_FORMAT,
+    externalMcpInjection: 'codex-thread-config',
     // The prompt is a `turn/start` parameter; stdin carries JSON-RPC frames.
     promptViaStdin: false,
     buildArgs: (_prompt, _imagePaths, extraAllowedDirs = [], _options = {}, runtimeContext = {}) =>

@@ -41,7 +41,7 @@ export interface RunToolBundleValidationOptions {
 
 type RunToolBundleAgent = Pick<
   RuntimeAgentDef,
-  'id' | 'name' | 'externalMcpInjection'
+  'id' | 'name' | 'externalMcpInjection' | 'mcpDiscovery'
 >;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -136,7 +136,14 @@ export function validateRunToolBundleForAgent(
     return { ok: true };
   }
 
+  if (agent.externalMcpInjection === 'codex-thread-config') {
+    return { ok: true };
+  }
+
   if (agent.externalMcpInjection === 'acp-merge') {
+    // The session's initialize capabilities decide which remote transports it
+    // accepts. Mature ACP now forwards those descriptors instead of dropping them.
+    if (agent.mcpDiscovery === 'mature-acp') return { ok: true };
     const unsupported = servers.findIndex(
       (server) => server.enabled && server.transport !== 'stdio',
     );

@@ -138,7 +138,7 @@ export interface MediaFailureSignal {
   message?: string | null | undefined;
   /** Only an explicit boolean counts; undefined means "the producer did not say". */
   retryable?: boolean | null | undefined;
-  /** Model id, so an OD-owned (`vela/*`) credential failure is not read as a BYOK one. */
+  /** Model id, including retired providers in persisted task records. */
   model?: string | null | undefined;
 }
 
@@ -160,10 +160,9 @@ const MEDIA_FAILURE_NEXT_STEP_BY_CODE: Readonly<Record<string, MediaFailureNextS
   UPSTREAM_UNAVAILABLE: 'retry-later',
   // The installed runtime cannot place the call at all.
   MEDIA_CLI_INCOMPATIBLE: 'update-app',
-  // Money.
-  AMR_INSUFFICIENT_BALANCE: 'add-credit',
-  // Identity behind an OD-owned model.
-  AMR_AUTH_REQUIRED: 'sign-in',
+  // Historical Cloud tasks require an explicitly selected available model.
+  AMR_INSUFFICIENT_BALANCE: 'switch-model',
+  AMR_AUTH_REQUIRED: 'switch-model',
   AGENT_AUTH_REQUIRED: 'sign-in',
 };
 
@@ -185,11 +184,8 @@ const MISSING_CREDENTIAL_RE = /\bno\s+(?:[\w.-]+\s+){0,3}(?:api key|credential)\
 /** Every long-poll adapter gives up with this exact phrase. */
 const RENDER_TIMED_OUT_RE = /\bdid not finish in time\b/i;
 
-function nextStepForStatus(
-  status: number,
-  odOwnedModel: boolean,
-): MediaFailureNextStep | undefined {
-  if (status === 401 || status === 403) return odOwnedModel ? 'sign-in' : 'open-settings';
+function nextStepForStatus(status: number): MediaFailureNextStep | undefined {
+  if (status === 401 || status === 403) return 'open-settings';
   if (status === 402) return 'add-credit';
   if (status === 404) return 'switch-model';
   if (status === 408 || status === 425 || status === 429) return 'retry-later';
@@ -208,23 +204,24 @@ function statusFromMessage(message: string): number | undefined {
 /**
  * Classify a media failure into the one thing its reader should do next.
  *
- * Precedence is deliberate and narrows outward from proof to guess: a code the
- * producer published, then a real HTTP status, then the two message shapes
+ * A retired provider requires an explicit model replacement. Otherwise,
+ * precedence narrows outward from proof to guess: a code the producer
+ * published, then a real HTTP status, then the two message shapes
  * that provably carry a status, then a two-entry message allowlist, then the
  * producer's own retry verdict. Anything left is `contact-support` — "we could
  * not name it" is an honest answer and its copy still offers a retry, whereas
  * guessing `revise-request` would blame the user for our outage.
  */
 export function mediaFailureNextStep(signal: MediaFailureSignal): MediaFailureNextStep {
+  const model = typeof signal.model === 'string' ? signal.model.trim() : '';
+  if (model.startsWith('vela/')) return 'switch-model';
+
   const code = typeof signal.code === 'string' ? signal.code.trim() : '';
   const byCode = code ? MEDIA_FAILURE_NEXT_STEP_BY_CODE[code] : undefined;
   if (byCode) return byCode;
 
-  const model = typeof signal.model === 'string' ? signal.model.trim() : '';
-  const odOwnedModel = model.startsWith('vela/');
-
   if (typeof signal.status === 'number' && Number.isFinite(signal.status)) {
-    const byStatus = nextStepForStatus(signal.status, odOwnedModel);
+    const byStatus = nextStepForStatus(signal.status);
     if (byStatus) return byStatus;
   }
 
@@ -232,7 +229,7 @@ export function mediaFailureNextStep(signal: MediaFailureSignal): MediaFailureNe
   if (message) {
     const embedded = statusFromMessage(message);
     if (embedded !== undefined) {
-      const byEmbedded = nextStepForStatus(embedded, odOwnedModel);
+      const byEmbedded = nextStepForStatus(embedded);
       if (byEmbedded) return byEmbedded;
     }
     if (MISSING_CREDENTIAL_RE.test(message)) return 'open-settings';

@@ -17,6 +17,26 @@ export interface AcpMcpServerInput {
   command?: unknown;
   args?: unknown;
   env?: unknown;
+  url?: unknown;
+  headers?: unknown;
+}
+
+export interface AcpOwnMcpServers {
+  stdio: AcpMcpServerInput | null;
+  http: AcpMcpServerInput | null;
+}
+
+/** Replace only the caller-owned stdio object, preserving every external entry. */
+export function selectAcpOwnMcpTransport(servers: AcpMcpServerInput[], own: AcpOwnMcpServers | undefined, httpSupported: boolean): AcpMcpServerInput[] {
+  if (!own) return servers;
+  const reserved = new Set([own.stdio?.name, own.http?.name].filter(name => typeof name === 'string'));
+  if (servers.some(server => server !== own.stdio && typeof server.name === 'string' && reserved.has(server.name))) {
+    throw new Error('Reserved MCP server name collision.');
+  }
+  if (!httpSupported || !own.http) return servers;
+  return own.stdio && servers.includes(own.stdio)
+    ? servers.map(server => server === own.stdio ? own.http! : server)
+    : [own.http, ...servers];
 }
 /**
  * Options accepted by `buildAcpSessionNewParams` controlling optional MCP
@@ -52,6 +72,23 @@ export function buildAcpSessionNewParams(cwd: string, { mcpServers, envFormat = 
     // auto-install or mutate user/global MCP config; callers must pass an
     // explicit per-session MCP descriptor when a compatible agent supports it.
     mcpServers: servers.map((s) => {
+      if (s?.type === 'http' || s?.type === 'sse') {
+        const rawHeaders = s.headers;
+        const headers = Array.isArray(rawHeaders)
+          ? rawHeaders.filter((entry): entry is { name: string; value: string } =>
+              !!entry && typeof entry === 'object'
+              && typeof entry.name === 'string' && typeof entry.value === 'string')
+          : rawHeaders && typeof rawHeaders === 'object'
+            ? Object.entries(rawHeaders).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+                .map(([name, value]) => ({ name, value }))
+            : [];
+        return {
+          type: s.type,
+          name: typeof s.name === 'string' ? s.name : '',
+          url: typeof s.url === 'string' ? s.url : '',
+          headers,
+        };
+      }
       const rawEnv = s?.env;
       // Already a plain object — pass through in map mode, convert to
       // array in array mode (e.g. live-artifacts MCP from

@@ -100,7 +100,6 @@ describe('app scrim material (styles/material.css)', () => {
       '../../src/components/FigmaHelpModal.module.css',
       '../../src/components/LibraryPreviewModal.module.css',
       '../../src/components/LibraryUploadModal.module.css',
-      '../../src/components/MessageCenter.module.css',
       '../../src/components/NewBrandModal.module.css',
       '../../src/components/ProjectReferenceModal.module.css',
       '../../src/components/UpdateDialog.module.css',

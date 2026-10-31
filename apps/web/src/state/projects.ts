@@ -403,6 +403,8 @@ export async function bootstrapProjectRoute(
   options: {
     accountGeneration: number;
     exactContext?: WorkspaceCollabContext | null;
+    /** Ignore settled display cache when revalidating route authority. */
+    fresh?: boolean;
   },
 ): Promise<ProjectRouteBootstrapResult> {
   const suppliedContext = options.exactContext ?? null;
@@ -528,7 +530,7 @@ export async function bootstrapProjectRoute(
     } catch {
       return { kind: 'unavailable' };
     }
-  });
+  }, options.fresh ? 0 : undefined);
   if (result.kind === 'unavailable') evictCoalescedGet(key);
   return result;
 }

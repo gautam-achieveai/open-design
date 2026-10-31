@@ -71,15 +71,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Only the Windows `full` lane packages anything here (the updater fixture),
-  # and a fixture that points at a different backend than the installed build
-  # would make the update look like a configuration change. Prerelease packages
-  # ship the prod profile, so the fixture does too.
-  OPEN_DESIGN_AMR_PROFILE: prod
-  OD_VELA_WEB_URL: ${{ secrets.VELA_WEB_URL_PROD }}
-  OD_VELA_WEB_URL_FEATURE_TEST: ${{ secrets.VELA_WEB_URL_FEATURE_TEST }}
-  OD_VELA_WEB_URL_TEST: ${{ secrets.VELA_WEB_URL_TEST }}
-  OD_VELA_WEB_URL_PROD: ${{ secrets.VELA_WEB_URL_PROD }}
   OPEN_DESIGN_TELEMETRY_RELAY_URL: ${{ vars.OPEN_DESIGN_TELEMETRY_RELAY_URL }}
   POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
   POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}

@@ -38,6 +38,7 @@ import type {
 } from "@open-design/host";
 
 import { renderDeckSlides } from "./deck-capture.js";
+import { createPerformanceApprovalConfirmer } from "./browser-performance-approval.js";
 import {
   DESIGN_BROWSER_PARTITION,
   createDesignBrowserCdpController,
@@ -335,6 +336,7 @@ const BROWSER_TARGET_IPC_CHANNELS = [
   "browser:unregister-target",
   "browser:list-targets",
   "browser:execute",
+  "browser:confirm-performance-approval",
   "browser:list-popups",
   "browser:bind-popup",
   "browser:present-popup",
@@ -2528,14 +2530,65 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     const status = await (options.updater?.status() ?? unavailableUpdaterStatus());
     return { ...status, error: updateRestartSafetyError(safety) };
   };
-  const browserCdp = createDesignBrowserCdpController(
-    session.fromPartition(DESIGN_BROWSER_PARTITION),
-  );
+  type PerformanceGrant = { approvalId: string; projectId: string; tabId: string; webContentsId: number; navigationGeneration: number; reportId: string; cpu: number; expiresAt: string; generation: number };
+  const performanceGrants = new Map<string, PerformanceGrant>();
+  const confirmedTargets = new Map<string, PerformanceGrant>();
+  let performanceWindowGeneration = 0;
+  const browserCdp = createDesignBrowserCdpController(session.fromPartition(DESIGN_BROWSER_PARTITION), (request) => {
+    const grant = performanceGrants.get(request.approvalId);
+    if (!grant) return false;
+    performanceGrants.delete(request.approvalId); // Atomic, one-use consumption before any CDP side effect.
+    return grant.generation === performanceWindowGeneration && Date.parse(grant.expiresAt) > Date.now() &&
+      grant.projectId === request.projectId && grant.tabId === request.tabId && grant.webContentsId === request.webContentsId &&
+      grant.navigationGeneration === request.navigationGeneration && grant.reportId === request.reportId && grant.cpu === request.cpu;
+  });
+  const confirmPerformanceApproval = createPerformanceApprovalConfirmer({
+    discoverDaemonUrl: async () => (await options.discoverDaemonUrl?.()) ?? await options.discoverUrl(),
+    secret: options.desktopAuthSecret ?? null,
+    alive: () => !window.isDestroyed() && !window.webContents.isDestroyed(),
+    confirm: async (challenge) => {
+      const target = browserCdp.performanceTargetIdentity(challenge.projectId, challenge.tabId);
+      if (!target) return false;
+      const generation = performanceWindowGeneration;
+      const result = await dialog.showMessageBox(window, { type: "question", title: "Temporary performance CPU change",
+        message: `Apply ${challenge.cpu}× CPU slowdown to this capture?`,
+        detail: `Project: ${challenge.projectId}\nTab: ${challenge.tabId}\nLocation: ${challenge.location}\nCapture: ${challenge.reportId}\n\nThe prior CPU setting will be restored when recording stops, unless another CPU change supersedes it.`,
+        buttons: ["Deny", "Allow temporary CPU change"], defaultId: 0, cancelId: 0, noLink: true });
+      if (result.response !== 1 || window.isDestroyed() || window.webContents.isDestroyed() || generation !== performanceWindowGeneration) return false;
+      confirmedTargets.set(challenge.approvalId, { ...challenge, ...target, generation });
+      return true;
+    },
+    onApproved: (challenge) => {
+      const grant = confirmedTargets.get(challenge.approvalId);
+      confirmedTargets.delete(challenge.approvalId);
+      const target = browserCdp.performanceTargetIdentity(challenge.projectId, challenge.tabId);
+      if (!grant || grant.generation !== performanceWindowGeneration || !target || target.webContentsId !== grant.webContentsId ||
+        target.navigationGeneration !== grant.navigationGeneration) return false;
+      for (const [id, item] of performanceGrants) if (Date.parse(item.expiresAt) <= Date.now()) performanceGrants.delete(id);
+      if (performanceGrants.size >= 128) return false;
+      performanceGrants.set(challenge.approvalId, grant);
+      return true;
+    },
+  });
+  ipcMain.handle("browser:confirm-performance-approval", async (event, request: unknown) => {
+    requireMainWindowSender(event);
+    if (event.senderFrame !== window.webContents.mainFrame) return { ok: false, reason: "native confirmation requires the main application frame" };
+    const senderFrame = event.senderFrame;
+    const generation = performanceWindowGeneration;
+    try { return await confirmPerformanceApproval(request, () => generation === performanceWindowGeneration && senderFrame === window.webContents.mainFrame); }
+    finally {
+      if (request && typeof request === "object" && "approvalId" in request && typeof request.approvalId === "string") confirmedTargets.delete(request.approvalId);
+    }
+  });
   const browserPopups = createDesignBrowserPopupController(window, session.fromPartition(DESIGN_BROWSER_PARTITION), browserCdp, (event) => {
     if (!window.webContents.isDestroyed()) window.webContents.send("browser:popup-event", event);
   });
   window.webContents.on("did-start-navigation", (_event, _url, inPlace, mainFrame) => {
-    if (mainFrame && !inPlace) browserPopups.close();
+    if (mainFrame && !inPlace) {
+      performanceWindowGeneration++;
+      performanceGrants.clear(); confirmedTargets.clear();
+      browserPopups.close();
+    }
   });
   window.on("hide", browserPopups.hideAll);
   ipcMain.handle("browser:list-popups", (event, projectId) => { requireMainWindowSender(event); return browserPopups.list(projectId); });

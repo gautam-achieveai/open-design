@@ -57,7 +57,17 @@ tab unless the user names another target.
 
 ## OpenDesign-owned tabs
 
-Discover the existing broker before claiming browser access:
+When OpenDesign browser MCP tools are available, use them first. Call
+`browser_snapshot` for the selected tab, then `browser_inspect`,
+`browser_screenshot`, `browser_console`, or the network tools as needed.
+Pass the selected tab id and project id when available. For a browser action,
+submit the tool call without an approval id. If it returns
+`approval_required`, wait for approval in OpenDesign and repeat the exact
+call with the returned `approvalRequestId`. An approval applies to that action
+once. Do not supply an `approved` field.
+
+If those MCP tools are unavailable, discover the existing broker before
+claiming browser access:
 
 ```bash
 "$OD_NODE_BIN" "$OD_BIN" browser --help
@@ -70,7 +80,7 @@ quoted safely for your shell. Confirm it appears in the registered tabs first.
 If context has no tab id, confirm the intended tab from the list. Use `inspect`,
 `screenshot`, `console`, or `network` for additional evidence; `browser --help`
 documents their arguments. Read-only inspection does not require `--approve`.
-Consequential operations require user authorization and `--approve`.
+Consequential CLI operations require user authorization and `--approve`.
 
 On PowerShell use `& $env:OD_NODE_BIN $env:OD_BIN browser tabs --project $env:OD_PROJECT_ID --json`.
 On cmd.exe use `"%OD_NODE_BIN%" "%OD_BIN%" browser tabs --project "%OD_PROJECT_ID%" --json`.

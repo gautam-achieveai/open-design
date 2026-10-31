@@ -6,6 +6,25 @@ The adapter layer is OD's most load-bearing design decision. We delegate the **e
 
 If you're adding a new ACP-backed runtime, start with [`new-agent-runtime-acp.md`](new-agent-runtime-acp.md) for the expected stdio transport, JSON-RPC message flow, and process lifecycle contract.
 
+HTTP MCP tools are hosted at `/mcp` on the daemon's loopback listener. Launched
+Claude and HTTP-capable mature ACP sessions receive a run-scoped credential;
+completion, failure and cancellation revoke it. External clients use a credential
+created in MCP Settings or through `od mcp token`, then `od mcp install <agent>`
+registers the discovered HTTP endpoint and a bearer environment-variable name.
+Restart or reinstall that registration if the daemon's port changes.
+
+Screenshot responses carry the PNG in MCP image content. Their result envelope
+is preserved under `_meta["open-design/result"]`, without `structuredContent`:
+clients that prefer structured output would otherwise discard the image.
+
+The SDK-based `od mcp` stdio server remains a compatibility surface during the
+deprecation window in the [HTTP-first implementation plan](../specs/current/http-first-mcp-implementation-plan.md).
+The separate hand-written live-artifact JSON-RPC server has been removed.
+`od mcp live-artifacts` now uses SDK stdio only as a carrier to the HTTP registry;
+it retains its six live-artifact/connector tool names and requires the run's
+daemon origin and credential environment. Unsupported native client formats are
+reported as manual installation instructions rather than written speculatively.
+
 > **Thesis:** The code agent space has already converged on strong implementations (Claude Code, Codex, Devin for Terminal, Cursor Agent, OpenCode, Qoder CLI, and others). Reimplementing another one is worse than talking to all of them.
 >
 > **Inspiration:** [multica](https://github.com/multica-ai/multica) (PATH-scan detection + daemon architecture) and [cc-switch](https://github.com/farion1231/cc-switch) (per-agent config format knowledge + symlink-based skill distribution).
@@ -142,7 +161,7 @@ definitions currently group by transport as follows:
 | `json-event-stream` | `codex`, `cursor-agent`, `opencode`, `mimo`, `byok-opencode` |
 | `copilot-stream-json` | `copilot` |
 | `qoder-stream-json` | `qoder` |
-| `acp-json-rpc` | `amr` (Vela), `devin`, `hermes`, `kimi`, `kiro`, `kilo`, `reasonix`, `trae-cli`, `vibe` |
+| `acp-json-rpc` | `devin`, `hermes`, `kimi`, `kiro`, `kilo`, `reasonix`, `trae-cli`, `vibe` |
 | `pi-rpc` | `pi` |
 | `dsh-profile-jsonl` | `deepseek-harness` |
 | `plain` | `aider`, `antigravity`, `atomcode`, `deepseek`, `grok-build`, `qwen` |
@@ -587,7 +606,7 @@ apps/daemon/src/
 ├── copilot-stream.ts       # streamFormat="copilot-stream-json" — the one stream parser that sits flat at src/
 ├── agent-protocol/         # JSON-RPC transports, dispatched via agent-protocol/index.ts (attachAcpSession / attachPiRpcSession)
 │   ├── index.ts            # barrel: attachAcpSession / attachPiRpcSession / mapPiRpcEvent
-│   ├── acp/                # streamFormat="acp-json-rpc": shared transport for AMR, Devin, Hermes, Kimi, Kiro, Kilo, Reasonix, Trae CLI, and Vibe
+│   ├── acp/                # streamFormat="acp-json-rpc": shared transport for Devin, Hermes, Kimi, Kiro, Kilo, Reasonix, Trae CLI, and Vibe
 │   ├── pi-rpc/             # streamFormat="pi-rpc": pi's JSON-RPC-over-stdio transport
 │   └── core/               # shared JSON-line stream helpers
 └── server.ts               # spawn pipeline + stream dispatch: routes def.streamFormat/eventParser to a parser
@@ -612,26 +631,9 @@ The engine is agent-agnostic: it iterates `AGENT_DEFS` and reads fields. A commu
   enforce a prompt budget so Windows' command-line limit fails observably before spawn.
 - **Docker-contained agents.** Some users run Claude Code in a container. Adapter needs a "remote" mode — probably same interface but talks over SSH. Phase 2+.
 
-### AMR compaction continuation (ACP extension v1)
+### Retired Cloud runtime
 
-The shared contract lives in `packages/contracts/src/api/amr-continuation.ts`.
-An AMR `initialize` response must advertise both `loadSession` and
-`agentCapabilities._meta["com.open-design.nativeSessionContinue"].version = 1`.
-A structured `OPENCODE_COMPACTION_CONTINUATION_INCOMPLETE` prompt error can
-supply the durable session ID and exact user/assistant message cursor only
-when every observed tool result is terminal. The daemon independently checks
-its tool frames before closing unfinished rows.
-
-The daemon waits for the previous process tree to become quiescent, loads the
-same durable session in a new process, and sends `_session/continue` with only
-that cursor. Vela calls OpenCode's guarded `POST /session/:sessionID/continue`;
-OpenCode rechecks persisted history and committed tools under its serialized
-runner and continues the model loop without inserting a user prompt. This
-requires matching Vela and OpenCode implementations; ordinary `session/load`
-alone is insufficient.
-
-At most one native continuation is allowed per physical Run. Cancellation,
-missing or changed history, outstanding/unknown tools, unsupported versions,
-and exhausted recovery stop with failure. Legacy compaction failure wording
-is classified but never authorizes reseeding or full prompt replay. The same
-daemon behavior serves web and `od` callers through the existing run API.
+Vela/AMR is not an available runtime in this fork. A saved Cloud agent choice
+must be replaced explicitly; it must not launch a different agent silently.
+Historical continuation data may remain readable through the existing shared
+contracts. It does not enable a Cloud runtime or authorize prompt replay.

@@ -235,6 +235,7 @@ const shell = {
 };
 
 const browser: OpenDesignHostBridge['browser'] = {
+  confirmPerformanceApproval: (request) => ipcRenderer.invoke('browser:confirm-performance-approval', request).catch((error: unknown) => failure(reasonFromError(error))),
   listPopups: (projectId) => ipcRenderer.invoke('browser:list-popups', projectId).catch((error: unknown) => failure(reasonFromError(error))),
   bindPopup: (request) => ipcRenderer.invoke('browser:bind-popup', request).catch((error: unknown) => failure(reasonFromError(error))),
   presentPopup: (request) => ipcRenderer.invoke('browser:present-popup', request).catch((error: unknown) => failure(reasonFromError(error))),

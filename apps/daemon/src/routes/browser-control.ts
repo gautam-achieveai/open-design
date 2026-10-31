@@ -132,6 +132,9 @@ function parseOperation(raw: unknown): BrowserOperationRequest {
       return { operation: 'evaluate', approved, expression };
     }
     case 'devtools': {
+      if (body.action === 'capture-throttle') {
+        throw new BrowserBrokerError('FORBIDDEN', 'Temporary capture CPU changes require the desktop native confirmation flow', 403);
+      }
       if (!isBrowserDevtoolsAction(body.action)) {
         throw new BrowserBrokerError('BAD_REQUEST', `action must be one of ${Object.keys(BROWSER_DEVTOOLS_ACTIONS).join(', ')}`, 400);
       }

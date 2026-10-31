@@ -83,6 +83,7 @@ function createBriefAppHarness(options: {
   failFirstLegacyFollowUp?: boolean;
   legacyFollowUp?: boolean;
   nativeToolOutput?: typeof WEBSITE_BRIEF_PAYLOAD;
+  httpEnvelope?: boolean;
 } = {}) {
   const requests: JsonRpcMessage[] = [];
   const legacyFollowUps: Array<{ prompt: string; scrollToBottom?: boolean }> = [];
@@ -93,13 +94,17 @@ function createBriefAppHarness(options: {
 
   function confirmationResult(): Record<string, unknown> {
     return {
-      structuredContent: {
+      structuredContent: payload({
         view: 'brief-confirmed',
         artifactType: 'website',
         briefConfirmationId: 'brief-confirmation-test',
         summary: 'What should this website do?: Launch a product',
-      },
+      }),
     };
+  }
+
+  function payload(value: unknown): unknown {
+    return options.httpEnvelope ? { ok: true, data: value, meta: { toolVersion: 1 } } : value;
   }
 
   function initializationResult(): Record<string, unknown> {
@@ -111,7 +116,7 @@ function createBriefAppHarness(options: {
         updateModelContext: { text: true },
       },
       ...(options.initialPayload
-        ? { structuredContent: options.initialPayload }
+        ? { structuredContent: payload(options.initialPayload) }
         : {}),
     };
   }
@@ -172,7 +177,7 @@ function createBriefAppHarness(options: {
       if (options.legacyFollowUp || options.nativeToolOutput) {
         const openai: Record<string, unknown> = {};
         if (options.nativeToolOutput) {
-          openai.toolOutput = options.nativeToolOutput;
+          openai.toolOutput = payload(options.nativeToolOutput);
           openai.callTool = async () => confirmationResult();
         }
         if (options.legacyFollowUp) {
@@ -238,7 +243,7 @@ function createBriefAppHarness(options: {
         jsonrpc: '2.0',
         method: 'ui/notifications/tool-result',
         params: {
-          result: { structuredContent: payload },
+          result: { structuredContent: options.httpEnvelope ? { ok: true, data: payload, meta: {} } : payload },
         },
       });
     },
@@ -246,6 +251,22 @@ function createBriefAppHarness(options: {
 }
 
 describe('local OpenDesign MCP brief app', () => {
+  it.each(['standard', 'native'])('renders and confirms the HTTP envelope through the %s host', async host => {
+    const native = host === 'native';
+    const harness = createBriefAppHarness({ httpEnvelope: true,
+      ...(native ? { nativeToolOutput: WEBSITE_BRIEF_PAYLOAD, legacyFollowUp: true, hostCapabilities: {} }
+        : { initialPayload: WEBSITE_BRIEF_PAYLOAD }) });
+    try {
+      const document = harness.dom.window.document;
+      await eventually(() => expect(document.querySelector('form')?.hidden).toBe(false));
+      document.querySelector('form')?.dispatchEvent(new harness.dom.window.Event('submit', { bubbles: true, cancelable: true }));
+      await eventually(() => expect(native ? harness.legacyFollowUps.length
+        : harness.requests.filter(request => request.method === 'ui/message').length).toBe(1));
+      expect(harness.requests.find(request => request.method === 'ui/initialize')?.params).toMatchObject({ appInfo: { version: 'v9' } });
+      expect(document.querySelector('#confirm')?.disabled).toBe(true);
+    } finally { harness.dom.window.close(); }
+  });
+
   it('exposes collect_brief through the canonical MCP Apps resource', () => {
     const collectBrief = localMcpToolDefinitions().find(
       (tool) => tool.name === 'collect_brief',
@@ -255,15 +276,15 @@ describe('local OpenDesign MCP brief app', () => {
       name: 'collect_brief',
       _meta: {
         ui: {
-          resourceUri: 'ui://open-design/artifact-card-v8.html',
+          resourceUri: 'ui://open-design/artifact-card-v9.html',
         },
-        'ui/resourceUri': 'ui://open-design/artifact-card-v8.html',
-        'openai/outputTemplate': 'ui://open-design/artifact-card-v8.html',
+        'ui/resourceUri': 'ui://open-design/artifact-card-v9.html',
+        'openai/outputTemplate': 'ui://open-design/artifact-card-v9.html',
       },
     });
     expect(localMcpResourceDefinitions()).toContainEqual(
       expect.objectContaining({
-        uri: 'ui://open-design/artifact-card-v8.html',
+        uri: 'ui://open-design/artifact-card-v9.html',
         mimeType: 'text/html;profile=mcp-app',
       }),
     );

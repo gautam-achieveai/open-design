@@ -1,0 +1,3 @@
+/** Host tool guidance delivered through mounted MCP tool descriptions. */
+export const BROWSER_MCP_TOOLING_DIRECTIVE = 'For browser interaction required by the task, prefer the available OpenDesign MCP tools over invoking od browser. Start with browser_snapshot. If listed and authorized, use browser_inspect for element details and browser_screenshot to receive an image. Use the CLI fallback when the MCP tools are unavailable. '
+  + 'If a mutating tool returns approval_required, wait for an OpenDesign grant, then retry with the same action arguments plus the returned approvalRequestId. An authorization denial requires the permission to change before trying again. Keep authentication values out of prompts, files and visible output.';

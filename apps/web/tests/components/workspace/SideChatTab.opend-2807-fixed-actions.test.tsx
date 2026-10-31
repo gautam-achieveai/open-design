@@ -53,34 +53,25 @@ describe('OPEND-2807 actions in the real side-chat host', () => {
       id: 'side-conversation', projectId: 'side-project', title: 'Side conversation',
       createdAt: 0, updatedAt: 2000, sessionMode: 'chat',
     };
-    const onSwitchConversationToCloud = vi.fn();
     render(<SideChatTab
       projectId="side-project" conversationId={conversation.id}
       config={{ mode: 'daemon', agentId, agentCliEnv: {} } as AppConfig}
       agentsById={new Map()} locale="zh-CN" projectFiles={[]}
       conversations={[conversation]} onSelectConversation={vi.fn()} onDeleteConversation={vi.fn()}
-      {...{ onSwitchConversationToCloud }}
     />);
 
     // ChatPane and RunErrorCard are real: this catches missing callbacks in
     // SideChatTab that a ChatPane-only fixture supplying every callback hides.
     const card = screen.getByTestId('chat-run-error-card');
-    const primaryLabel = agentId === 'amr' ? '重试' : '切换到 OpenDesign Cloud';
+    const primaryLabel = '重试';
     expect(within(card).getAllByRole('button').map((button) => button.textContent?.trim()))
       .toEqual(['联系我们', '导出日志', primaryLabel]);
     const primary = within(card).getByRole('button', { name: primaryLabel }) as HTMLButtonElement;
     expect(primary.disabled).toBe(false);
-    if (agentId === 'amr') {
-      fireEvent.click(primary);
-      expect(chat.onRetry).toHaveBeenCalledOnce();
-      expect(chat.onRetry).toHaveBeenCalledWith(expect.objectContaining({ id: failed.id }), 'manual_retry');
-      expect(onSwitchConversationToCloud).not.toHaveBeenCalled();
-    } else {
-      fireEvent.click(primary);
-      expect(onSwitchConversationToCloud).toHaveBeenCalledOnce();
-      expect(onSwitchConversationToCloud).toHaveBeenCalledWith(conversation.id, expect.objectContaining({ id: failed.id }));
-      expect(chat.onRetry).not.toHaveBeenCalled();
-    }
+    fireEvent.click(primary);
+    expect(chat.onRetry).toHaveBeenCalledOnce();
+    expect(chat.onRetry).toHaveBeenCalledWith(expect.objectContaining({ id: failed.id }), 'manual_retry');
+    expect(within(card).queryByRole('button', { name: '切换到 OpenDesign Cloud' })).toBeNull();
     expect(chat.messages).toEqual(before);
   });
 });

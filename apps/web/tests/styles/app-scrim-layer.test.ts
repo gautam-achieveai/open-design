@@ -457,18 +457,6 @@ describe('本批 6 处的档位', () => {
   }
 
   /**
-   * 共享原语为什么正好是 1500,而不是「比 1000 高一点」的随手数字。
-   *
-   * `AmrBalanceDialog`(有账单权限)和 `AmrOwnerTopUpDialog`(没有账单权限)是
-   * **同一个余额闸门的两个分支** —— 在 `EntryShell.tsx` 和 `ProjectView.tsx` 里
-   * 它们是同一个三元表达式的两条腿,同一处渲染,只按权限分叉。后者已经落在
-   * 1500;前者不带 `backdropClassName`,吃的就是这个原语的遮罩。
-   * 同一个闸门的两条腿不能差两档 —— 那样同一件事会因为「你是谁」而长得不一样。
-   *
-   * 这是一次**单向读取**:这条守护读 chat 那边的数,chat 那条不读这边。
-   * 哪天 chat 那边挪了 1500,这里红 —— 那正是要的:另一条腿得跟着挪。
-   */
-  /**
    * `Dialog` 的遮罩身上同时挂着 CSS Module 的 `.backdrop` 和字面量
    * `.modal-backdrop`(见头注)。两条同特异度,谁赢看打包器的注入顺序 ——
    * 那不是这条守护量得出来的。所以这里守的不是「谁赢」,而是**赢家一定过地板**:
@@ -485,15 +473,7 @@ describe('本批 6 处的档位', () => {
     expect(dialogTsx).toContain("'modal-backdrop'");
   });
 
-  it('共享原语和余额闸门的另一条腿同档 —— 同一个闸门不许因为「你是谁」而分层', () => {
-    const sibling = ruleIn(
-      'apps/web/src/components/chat/AmrOwnerTopUpDialog.module.css',
-      '.overlay',
-    );
-    expect(sibling, 'AmrOwnerTopUpDialog 的 .overlay 没了 —— 这条档位理由已经过期').toBeTruthy();
-    const primitive = ruleIn('packages/components/src/dialog.module.css', '.backdrop');
-    expect(zIndexOf(primitive!.decls)).toBe(zIndexOf(sibling!.decls));
-  });
+
 });
 
 // ================================================================ 排除项

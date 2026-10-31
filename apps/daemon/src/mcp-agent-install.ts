@@ -1,12 +1,10 @@
 // Per-agent MCP registration planner.
 //
 // `od mcp install <agent>` (and the hosted `install.sh | sh -s <agent>`
-// bootstrap that calls it) wires OpenDesign's stdio MCP server into a
-// coding agent's own configuration. Each agent stores MCP servers
-// differently, so this module maps a single resolved launch spec
-// (command/args/env — the same shape buildMcpInstallPayload produces and
-// the Settings → MCP panel pastes) onto one of three registration
-// strategies:
+// bootstrap that calls it) registers the local HTTP endpoint using a credential
+// environment-variable name. Explicit stdio compatibility retains its launch
+// spec. Each agent stores MCP servers differently, so the pure planners select
+// one of three registration strategies:
 //
 //   - 'cli'    : the agent ships its own `<bin> mcp add/remove/get`. We
 //                shell out to it (like codex-cli.ts) so we inherit the
@@ -29,6 +27,7 @@
 // performs the IO.
 
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 export const AGENT_SLUGS = [
   'claude',
@@ -71,6 +70,8 @@ export interface PlanContext {
   platform: NodeJS.Platform;
   /** MCP server name as it appears in the agent config. */
   serverName: string;
+  /** Current Kimi Code supports a user-selected configuration home. */
+  kimiCodeHome?: string;
 }
 
 /** Agent owns a `<bin> mcp add/remove/get`; we drive it. */
@@ -96,6 +97,8 @@ export interface JsonInstallPlan {
   serverKey: string;
   /** Value stored under keyPath → serverKey. */
   entry: unknown;
+  /** HTTP setup refuses to replace an unrelated registration or config map. */
+  preserveExisting?: boolean;
 }
 
 /** Unverified format — print a snippet, never write. */
@@ -110,6 +113,97 @@ export interface ManualInstallPlan {
 }
 
 export type InstallPlan = CliInstallPlan | JsonInstallPlan | ManualInstallPlan;
+
+/** HTTP registration contains an environment-variable name, never its value. */
+export interface McpHttpInstallSpec {
+  url: string;
+  bearerTokenEnvVar: string;
+}
+
+/**
+ * Plan a local HTTP registration using a documented credential-name reference.
+ * This does not issue credentials, set environment variables, or write config.
+ */
+export function planHttpAgentInstall(slug: 'codex' | 'claude', spec: McpHttpInstallSpec, ctx: PlanContext): CliInstallPlan;
+export function planHttpAgentInstall(slug: AgentSlug, spec: McpHttpInstallSpec, ctx: PlanContext): InstallPlan;
+export function planHttpAgentInstall(slug: AgentSlug, spec: McpHttpInstallSpec, ctx: PlanContext): InstallPlan {
+  // Planner output can be printed or used as argv. Reject known token prefixes
+  // anywhere in caller-controlled fields, without copying them into errors.
+  const containsTokenPrefix = (value: string) => /(?:odtt_|odmcp_)/i.test(value);
+  if (!/^[a-z][a-z0-9_-]{0,63}$/.test(ctx.serverName) || containsTokenPrefix(ctx.serverName)) {
+    throw new Error('invalid MCP server name');
+  }
+  if (!/^[A-Z_][A-Z0-9_]{0,127}$/.test(spec.bearerTokenEnvVar) || containsTokenPrefix(spec.bearerTokenEnvVar)) {
+    throw new Error('invalid bearer environment variable name');
+  }
+  if (containsTokenPrefix(spec.url)) throw new Error('invalid local HTTP MCP URL');
+  let url: URL;
+  try { url = new URL(spec.url); } catch { throw new Error('invalid local HTTP MCP URL'); }
+  // Numeric loopback prevents a configured hostname from later resolving to
+  // a non-loopback address while the client sends its bearer header.
+  if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(url.hostname)
+    || url.username || url.password || url.pathname !== '/mcp' || url.href.includes('?') || url.href.includes('#')) {
+    throw new Error('invalid local HTTP MCP URL');
+  }
+  const { serverName, home } = ctx;
+  const envName = spec.bearerTokenEnvVar;
+  const header = 'Bearer ${' + envName + '}';
+  const json = (configPath: string, keyPath: string[], entry: unknown): JsonInstallPlan => ({
+    kind: 'json', slug, configPath, keyPath, serverKey: serverName, entry, preserveExisting: true,
+  });
+  switch (slug) {
+    case 'codex':
+      return {
+        kind: 'cli', slug, bin: 'codex',
+        addArgv: ['mcp', 'add', serverName, '--url', url.href, '--bearer-token-env-var', envName],
+        removeArgv: ['mcp', 'remove', serverName], getArgv: ['mcp', 'get', serverName],
+      };
+    case 'claude':
+      return {
+        kind: 'cli', slug, bin: 'claude',
+        addArgv: ['mcp', 'add', '--scope', 'user', '--transport', 'http', serverName, url.href,
+          '--header', 'Authorization: ' + header],
+        removeArgv: ['mcp', 'remove', '--scope', 'user', serverName], getArgv: ['mcp', 'get', serverName],
+      };
+    case 'kimi':
+      return json(path.join(ctx.kimiCodeHome ?? path.join(home, '.kimi-code'), 'mcp.json'), ['mcpServers'],
+        { url: url.href, bearerTokenEnvVar: envName });
+    case 'opencode':
+      return json(path.join(home, '.config', 'opencode', 'opencode.json'), ['mcp'],
+        { type: 'remote', url: url.href, enabled: true, oauth: false,
+          headers: { Authorization: 'Bearer {env:' + envName + '}' } });
+    case 'kiro':
+      return json(path.join(home, '.kiro', 'settings', 'mcp.json'), ['mcpServers'],
+        { url: url.href, headers: { Authorization: header } });
+    case 'hermes':
+      return {
+        kind: 'manual', slug, format: 'yaml', configPath: path.join(home, '.hermes', 'config.yaml'),
+        snippet: ['mcp_servers:', `  ${serverName}:`, `    url: ${JSON.stringify(url.href)}`,
+          '    headers:', `      Authorization: ${JSON.stringify(header)}`].join('\n'),
+        reason: 'Merge this documented HTTP entry into the existing Hermes YAML configuration. Automatic YAML editing is unavailable.',
+      };
+    case 'vibe':
+      return {
+        kind: 'manual', slug, format: 'toml', configPath: path.join(home, '.vibe', 'config.toml'), snippet: '',
+        reason: `Configure ${url.href} using Vibe's HTTP MCP transport and its api_key_env setting ${envName}. Follow https://docs.mistral.ai/vibe/code/cli/mcp-servers; automatic TOML editing is unavailable.`,
+      };
+    default:
+      return {
+        kind: 'manual', slug, format: 'json', configPath: null, snippet: '',
+        reason: 'A native HTTP bearer environment-reference format has not been verified for this client. No configuration was changed. Use the client documentation or explicit --transport stdio compatibility.',
+      };
+  }
+}
+
+/** A stored endpoint is the current listener snapshot, not a daemon identity. */
+export function httpMcpUrlFromDaemonOrigin(raw: string): string {
+  let origin: URL;
+  try { origin = new URL(raw); } catch { throw new Error('invalid local daemon origin'); }
+  if (origin.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(origin.hostname)
+    || origin.username || origin.password || origin.pathname !== '/' || origin.href.includes('?') || origin.href.includes('#')
+    || /(?:odtt_|odmcp_)/i.test(raw)) throw new Error('invalid local daemon origin');
+  return `${origin.origin}/mcp`;
+}
 
 function envFlags(env: Record<string, string>, flag: string): string[] {
   const out: string[] = [];
@@ -417,9 +511,13 @@ export function applyJsonInstall(existingText: string | null, plan: JsonInstallP
   for (const key of plan.keyPath) {
     const next = cursor[key];
     if (next == null || typeof next !== 'object' || Array.isArray(next)) {
+      if (plan.preserveExisting && Object.hasOwn(cursor, key)) throw new Error('Existing MCP configuration map is not an object; no configuration changed.');
       cursor[key] = {};
     }
     cursor = cursor[key] as Record<string, unknown>;
+  }
+  if (plan.preserveExisting && Object.hasOwn(cursor, plan.serverKey) && !isDeepStrictEqual(cursor[plan.serverKey], plan.entry)) {
+    throw new Error('MCP server name is already configured differently; remove it explicitly or choose --name. No configuration changed.');
   }
   cursor[plan.serverKey] = plan.entry;
   return `${JSON.stringify(root, null, 2)}\n`;
@@ -450,10 +548,9 @@ function parseJsonObject(text: string | null, where: string): Record<string, unk
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
-  } catch (err) {
-    throw new Error(
-      `existing config at ${where} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
-    );
+  } catch {
+    // JSON parser excerpts can include credentials from an existing config.
+    throw new Error(`existing config at ${where} is not valid JSON`);
   }
   if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`existing config at ${where} is not a JSON object`);

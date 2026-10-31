@@ -1,4 +1,5 @@
 import type { Express, Request, Response } from 'express';
+import type { LocalCommandExecution, LocalCommandHandler } from '../services/project-run-commands.js';
 import type Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -185,6 +186,7 @@ import {
   validateRunToolBundleForAgent,
 } from '../run-tool-bundle.js';
 import type { DetectedAgent, RuntimeAgentDef } from '../runtimes/types.js';
+import { applyCodexTransportOverride } from '../runtimes/defs/codex.js';
 import {
   buildOpenCodeByokProviderConfig,
   BYOK_OPENCODE_AGENT_ID,
@@ -590,6 +592,94 @@ function automaticOdNextFallbackDecision(
   };
 }
 
+export interface RunCancellationTask {
+  taskExecutionId: string;
+  revision: number;
+  projectId: string;
+  activeRunId: string | null;
+  outcome: string;
+}
+
+export interface RunCancellationOptions<TRun> {
+  /** Strict callers resolve before mutation and on terminal conflict reloads. */
+  resolveTarget?: (runId: string, fallback: TRun) => TRun;
+  validate?: (run: TRun, task: RunCancellationTask | null) => boolean;
+  onTaskCancellationStarting?: () => void;
+  onPhysicalCancellationStarting?: () => void;
+}
+
+export class RunCancellationError extends Error {
+  constructor(readonly code: string, message: string) { super(message); }
+}
+
+/** Start logical CAS and physical cancellation in the caller's checked JS turn. */
+export function beginRunCancellation<
+  TRun extends { id: string; projectId: string | null; strategyTask?: unknown },
+  TTask extends RunCancellationTask,
+>(requestedRun: TRun, deps: {
+  readTask: (runId: string) => TTask | null;
+  resolveTarget: (runId: string, fallback: TRun) => TRun;
+  cancelTask: (task: TTask) => TTask;
+  projectTask: (task: TTask, runId: string) => unknown;
+  cancelPhysical: (run: TRun) => Promise<unknown>;
+}, options: RunCancellationOptions<TRun> = {}): { completion: Promise<TRun> } {
+  const terminal = (task: TTask) => ['completed', 'blocked', 'canceled'].includes(task.outcome);
+  const resolveTarget = options.resolveTarget ?? deps.resolveTarget;
+  const validate = (run: TRun, task: TTask | null) => {
+    if (options.validate && !options.validate(run, task)) {
+      throw new RunCancellationError('RUN_UNAVAILABLE', 'Run unavailable in this scope');
+    }
+  };
+  let task: TTask | null;
+  try { task = deps.readTask(requestedRun.id); }
+  catch (error) {
+    // Only the initial task read has these REST 409 semantics. Later failures
+    // may follow a committed CAS and must retain their existing error path.
+    if (error instanceof InvalidStrategyTaskRecordError) throw new RunCancellationError('OD_NEXT_TASK_STATE_INVALID', error.message);
+    if (error instanceof InvalidFrozenSkillPackageError) throw new RunCancellationError('OD_NEXT_SKILL_SNAPSHOT_INVALID', error.message);
+    throw error;
+  }
+  let run = task?.activeRunId ? resolveTarget(task.activeRunId, requestedRun) : requestedRun;
+  validate(run, task);
+  if (task && !terminal(task)) {
+    let canceled: TTask | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const physicalRunId = task.activeRunId ?? run.id;
+      const checkedRun = options.resolveTarget ? resolveTarget(physicalRunId, run) : run;
+      validate(checkedRun, task);
+      try {
+        // cancelTask can commit and then throw while reading its result.
+        options.onTaskCancellationStarting?.();
+        canceled = deps.cancelTask(task);
+        // REST historically performs get/fallback only after CAS wins. MCP
+        // keeps the exact in-memory target checked before that mutation.
+        run = options.resolveTarget ? checkedRun : resolveTarget(physicalRunId, run);
+        break;
+      } catch (error) {
+        if (!(error instanceof StrategyTaskTransitionConflictError)) throw error;
+        const latest = deps.readTask(run.id) ?? deps.readTask(requestedRun.id);
+        if (!latest) throw error;
+        task = latest;
+        // A terminal reload retains REST's previous selection. Strict MCP
+        // callers must instead reselect and authorize the current target.
+        if (options.resolveTarget) run = resolveTarget(task.activeRunId ?? run.id, run);
+        validate(run, task);
+        if (terminal(task)) { canceled = task; break; }
+      }
+    }
+    if (!canceled || !terminal(canceled)) {
+      throw new RunCancellationError('STRATEGY_TASK_CANCEL_CONFLICT', 'strategy task changed while cancellation was being applied');
+    }
+    validate(run, canceled);
+    run.strategyTask = deps.projectTask(canceled, run.id);
+    task = canceled;
+  }
+  validate(run, task);
+  options.onPhysicalCancellationStarting?.();
+  const completion = deps.cancelPhysical(run);
+  return { completion: Promise.resolve(completion).then(() => run) };
+}
+
 export interface RegisterRunRoutesDeps {
   db: SqliteDb;
   design: RunRoutesDesignService;
@@ -939,17 +1029,19 @@ export function sendStructuredRunCreateFailure(
 
 export function registerRunCreateRoute(
   app: Express,
-  handleRunCreate: (req: ApiRequest, res: ApiResponse) => Promise<unknown>,
+  handleRunCreate: (req: ApiRequest, res: ApiResponse, command?: LocalCommandExecution) => Promise<unknown>,
   sendApiError: RegisterRunRoutesDeps['http']['sendApiError'],
-): void {
-  app.post('/api/runs', async (req: ApiRequest, res: ApiResponse) => {
+): LocalCommandHandler {
+  const command: LocalCommandHandler = async (req, res, execution) => {
     try {
-      return await handleRunCreate(req, res);
+      return await handleRunCreate(req as ApiRequest, res as ApiResponse, execution);
     } catch (error) {
       if (res.headersSent) throw error;
       return sendStructuredRunCreateFailure(res, sendApiError, error);
     }
-  });
+  };
+  app.post('/api/runs', (req: ApiRequest, res: ApiResponse) => command(req, res));
+  return command;
 }
 
 export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
@@ -1062,6 +1154,15 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       ? { ...status, appliedPluginSnapshotId: projectedSnapshotId }
       : status;
   };
+  const beginCancelRun = (run: ChatRun, options: RunCancellationOptions<ChatRun> = {}) => beginRunCancellation(run, {
+    readTask: (runId) => getStrategyTaskExecutionByRunId(db, runId),
+    resolveTarget: (runId, fallback) => design.runs.get(runId) ?? fallback,
+    cancelTask: (task) => cancelStrategyTaskExecution(db, {
+      taskExecutionId: task.taskExecutionId, expectedRevision: task.revision,
+    }),
+    projectTask: projectStrategyTask,
+    cancelPhysical: (target) => design.runs.cancel(target, 'user_stop'),
+  }, options);
 
   /**
    * The presentation-side deliverable answer, resolved only when a strategy
@@ -1685,7 +1786,12 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     }
   }
 
-  const handleRunCreate = async (req: ApiRequest, res: ApiResponse) => {
+  const handleRunCreate = async (req: ApiRequest, res: ApiResponse, command?: LocalCommandExecution) => {
+    command?.assertCurrent();
+    const resolveCommandSnapshot: typeof resolvePluginSnapshot = (input) => {
+      command?.beforeMutation();
+      return resolvePluginSnapshot(input);
+    };
     if (ctx.lifecycle.isDaemonShuttingDown()) {
       return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'daemon is shutting down');
     }
@@ -1776,6 +1882,9 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         const cfgAgent = typeof appCfg.agentId === 'string' && appCfg.agentId
           ? appCfg.agentId
           : null;
+        if (cfgAgent === 'amr') {
+          return sendApiError(res, 400, 'AGENT_UNAVAILABLE', 'Cloud support has been removed. Choose a local agent.');
+        }
         const agents = await detectAgents(
           toJsonRecord(appCfg.agentCliEnv),
         ).catch((): DetectedAgent[] => []);
@@ -1790,6 +1899,9 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       }
     }
     let preparedWorkspaceScope: RunWorkspaceScope | null = null;
+    if (effectiveAgentId === 'amr') {
+      return sendApiError(res, 400, 'AGENT_UNAVAILABLE', 'Cloud support has been removed. Choose a local agent.');
+    }
     if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
       const prepared = await prepareRunWorkspaceScope(
         req,
@@ -2189,7 +2301,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           && (selectedExamplePlugin || getInstalledPlugin(db, automaticOrdinaryFallbackPluginId))
           ? { ...requestBody, pluginId: automaticOrdinaryFallbackPluginId }
           : requestBody;
-        resolveAutomaticOrdinaryFallback = () => resolvePluginSnapshot({
+        resolveAutomaticOrdinaryFallback = () => resolveCommandSnapshot({
           db,
           body: fallbackBody,
           projectId: requestBody.projectId as string,
@@ -2214,7 +2326,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
             : {}),
         });
       }
-      const resolved = resolvePluginSnapshot({
+      const resolved = resolveCommandSnapshot({
         db,
         body: runResolveBody,
         projectId: requestBody.projectId,
@@ -2320,6 +2432,9 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         const cfgAgent = typeof appCfg.agentId === 'string' && appCfg.agentId
           ? appCfg.agentId
           : null;
+        if (cfgAgent === 'amr') {
+          return sendApiError(res, 400, 'AGENT_UNAVAILABLE', 'Cloud support has been removed. Choose a local agent.');
+        }
         const agents = await detectAgents(
           toJsonRecord(appCfg.agentCliEnv),
         ).catch((): DetectedAgent[] => []);
@@ -2351,7 +2466,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     }
     const toolBundleSupport = validateRunToolBundleForAgent(
       toolBundle.bundle,
-      typeof meta.agentId === 'string' ? getAgentDef(meta.agentId) : null,
+      typeof meta.agentId === 'string' ? applyCodexTransportOverride(getAgentDef(meta.agentId) ?? null) : null,
       {
         deliveryTarget: runToolBundleDeliveryTargetForProject(
           meta.projectId,
@@ -2904,6 +3019,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           route: 'full_plan',
           mode: 'unresolved',
         });
+        command?.beforeMutation();
         createdTaskInputSnapshot = createOdNextTaskInputSnapshot({
           snapshotsRoot: taskInputSnapshotsRoot,
           taskExecutionId,
@@ -2949,6 +3065,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     }
     let preparedRun;
     try {
+      command?.beforeMutation();
       preparedRun = internalRuns.prepare({
         meta,
         ...((runUserSeed || selectedAnnotationIds.length || clarificationTask || strategyRolloutDecision?.effectiveMode === 'active')
@@ -3052,6 +3169,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         preparedPromptBundleText = null;
         frozenSkillPackage = undefined;
         if (!await fallbackAutomaticBeforeStart(error.preparationCause)) return;
+        command?.beforeMutation();
         preparedRun = internalRuns.prepare({
           meta,
           ...(runUserSeed ? { beforeClaimCommit: () => {
@@ -3293,6 +3411,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         ? { byokProvider: requestBody.byokProvider }
         : {}),
     };
+    command?.beforeMutation();
     internalRuns.start(
       run,
       {
@@ -3309,11 +3428,11 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         resumed,
         attributionMismatch: analyticsAttributionMismatch,
       },
-      () => startChatRun(executionMeta, run),
+      () => { command?.beforeMutation(); return startChatRun(executionMeta, run); },
     );
   };
 
-  registerRunCreateRoute(app, handleRunCreate, sendApiError);
+  const createRunCommand = registerRunCreateRoute(app, handleRunCreate, sendApiError);
 
   app.get('/api/runs', async (req: ApiRequest, res: ApiResponse) => {
     const { projectId, conversationId, status } = req.query;
@@ -3531,12 +3650,15 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     res.json(body);
   });
 
-  app.get('/api/runs/:id', async (req: ApiRequest, res: ApiResponse) => {
+  const handleRunQuery: LocalCommandHandler = async (request, response, command) => {
+    const req = request as ApiRequest, res = response as ApiResponse;
     const runId = routeParamId(req);
     if (!runId) return sendApiError(res, 400, 'BAD_REQUEST', 'run id missing');
+    command?.beforeMutation();
     const run = design.runs.get(runId);
     if (!run) return sendApiError(res, 404, 'NOT_FOUND', 'run not found');
     if (!await authorizeRunProject(req, res, run, { mode: 'read' })) return;
+    command?.beforeMutation();
     const status = statusWithStrategyTask(run);
     if (!design.runs.isTerminal(run.status)) {
       res.json(status);
@@ -3554,6 +3676,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       run,
       status,
     );
+    command?.assertCurrent();
     if (
       typeof status.deliverableValid === 'boolean'
       && typeof status.deliverableValidation === 'string'
@@ -3573,6 +3696,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         ? { touchedPaths: touchedArtifactPaths }
         : {}),
     });
+    command?.beforeMutation();
     design.runs.setDeliverableValidation?.(run, deliverable);
     res.json({
       ...status,
@@ -3586,7 +3710,8 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         ? { deliverableArtifactKind: deliverable.artifactKind }
         : {}),
     });
-  });
+  };
+  app.get('/api/runs/:id', (req, res) => handleRunQuery(req, res));
 
   app.get('/api/runs/:id/events', async (req: ApiRequest, res: ApiResponse) => {
     const runId = routeParamId(req);
@@ -3668,58 +3793,17 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       run,
       { mode: 'write', capability: 'writeFiles' },
     )) return;
-    let task;
+    let started: { completion: Promise<ChatRun> };
     try {
-      task = getStrategyTaskExecutionByRunId(db, runId);
+      started = beginCancelRun(run);
     } catch (error) {
-      if (error instanceof InvalidStrategyTaskRecordError) {
-        return sendApiError(res, 409, 'OD_NEXT_TASK_STATE_INVALID', error.message);
-      }
-      if (error instanceof InvalidFrozenSkillPackageError) {
-        return sendApiError(res, 409, 'OD_NEXT_SKILL_SNAPSHOT_INVALID', error.message);
-      }
+      if (error instanceof RunCancellationError) return sendApiError(res, 409, error.code, error.message);
       throw error;
-    }
-    const activeRun = task?.activeRunId ? design.runs.get(task.activeRunId) : null;
-    let cancelRun = activeRun ?? run;
-    let taskForCancel = task;
-    if (taskForCancel && !['completed', 'blocked', 'canceled'].includes(taskForCancel.outcome)) {
-      let canceled = null;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        const physicalRunId = taskForCancel.activeRunId ?? cancelRun.id;
-        try {
-          canceled = cancelStrategyTaskExecution(db, {
-            taskExecutionId: taskForCancel.taskExecutionId,
-            expectedRevision: taskForCancel.revision,
-          });
-          cancelRun = design.runs.get(physicalRunId) ?? cancelRun;
-          break;
-        } catch (error) {
-          if (!(error instanceof StrategyTaskTransitionConflictError)) throw error;
-          const latest = getStrategyTaskExecutionByRunId(db, cancelRun.id)
-            ?? getStrategyTaskExecutionByRunId(db, runId);
-          if (!latest) throw error;
-          taskForCancel = latest;
-          if (['completed', 'blocked', 'canceled'].includes(latest.outcome)) {
-            canceled = latest;
-            break;
-          }
-        }
-      }
-      if (!canceled || !['completed', 'blocked', 'canceled'].includes(canceled.outcome)) {
-        return sendApiError(
-          res,
-          409,
-          'STRATEGY_TASK_CANCEL_CONFLICT',
-          'strategy task changed while cancellation was being applied',
-        );
-      }
-      cancelRun.strategyTask = projectStrategyTask(canceled, cancelRun.id);
     }
     // Logical CAS wins before physical finish: the emitted end frame therefore
     // carries the terminal task projection and can never advertise a running
     // task after the cancel response already succeeded.
-    await design.runs.cancel(cancelRun, 'user_stop');
+    const cancelRun = await started.completion;
     const body = { ok: true, run: statusWithStrategyTask(cancelRun) };
     res.json(body);
   });
@@ -3916,7 +4000,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     }
     const toolBundleSupport = validateRunToolBundleForAgent(
       toolBundle.bundle,
-      typeof meta.agentId === 'string' ? getAgentDef(meta.agentId) : null,
+      typeof meta.agentId === 'string' ? applyCodexTransportOverride(getAgentDef(meta.agentId) ?? null) : null,
       {
         deliveryTarget: runToolBundleDeliveryTargetForProject(
           meta.projectId,
@@ -4166,6 +4250,16 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       () => startChatRun(executionMeta, run),
     );
   });
+
+  return {
+    handleRunCreate: createRunCommand,
+    handleRunQuery,
+    // No filters: unlike a project-filtered list, this does not hydrate durable runs.
+    peekInMemoryRun: (runId: string) => design.runs.list({}).find((run) => run.id === runId) ?? null,
+    readRunStatus: statusWithStrategyTask,
+    isTerminalRun: (run: ChatRun) => design.runs.isTerminal(run.status),
+    beginCancelRun,
+  };
 }
 
 export const __forTestHasCompleteByokOpenCodeConfig = hasCompleteByokOpenCodeConfig;

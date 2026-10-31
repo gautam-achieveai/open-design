@@ -303,6 +303,7 @@ describe('chat Agent exact-text production choke point', () => {
     expect(result.instructionPrompt).toBe(instruction);
     expect(result.composedPrompt).toContain('browser tabs --project');
     expect(result.composedPrompt).toContain('## Browser: UI debugging and testing');
+    expect(result.composedPrompt).toContain('When OpenDesign browser MCP tools are available');
     expect(result.composedPrompt).toContain('preferred way to debug and test UI changes');
     expect(result.composedPrompt).toContain('--tab <selected-tab-id>');
     expect(result.composedPrompt).toBe(

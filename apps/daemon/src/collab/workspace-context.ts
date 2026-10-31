@@ -11,7 +11,6 @@ import type {
   WorkspaceProviderMode,
   WorkspaceType,
 } from '@open-design/contracts';
-import { resolveEffectiveVelaConsoleOrigin } from '../integrations/vela-console-origin.js';
 
 // The daemon's single B-integration point . Presence + sync need the
 // caller's workspace identity (workspaceMemberId + role + lifecycle). In
@@ -190,64 +189,15 @@ function nonNegativeInt(value: unknown, fallback: number): number {
  * neither is available (the client then hides the settings entry).
  */
 export function resolveWorkspaceSettingsUrl(
-  workspaceId: string,
-  explicit: unknown,
-  env: NodeJS.ProcessEnv = process.env,
-  configuredEnv: Record<string, string> = {},
+  _workspaceId: string,
+  _explicit: unknown,
+  _env: NodeJS.ProcessEnv = process.env,
+  _configuredEnv: Record<string, string> = {},
 ): string | undefined {
-  // B's web console supports workspace deep links (?workspaceId=…): the target
-  // page opens directly when it matches the account's Active Workspace, and
-  // otherwise asks the user to confirm the switch — the confirmation IS the
-  // explicit user action that may change B's Active Workspace (the client
-  // itself never PUTs it). A bare /settings link would depend on whatever
-  // workspace another device left active, so every console link pins the id.
-  // The low-cardinality source marker lets Vela attribute the resulting
-  // Workspace management outcomes without carrying user-entered values.
-  const base = resolveEffectiveVelaConsoleOrigin(env, configuredEnv);
-  const hasRuntimeProfile = Boolean(
-    configuredEnv.OPEN_DESIGN_AMR_PROFILE?.trim() || configuredEnv.VELA_PROFILE?.trim(),
-  );
-  // A workspace payload can carry a console URL minted by the environment that
-  // last served it. After an in-app profile switch that value is stale by
-  // definition: letting it win would send create-team and workspace-settings
-  // actions back to prod while every API request already targets feature-test.
-  // The selected profile's build-injected origin is authoritative whenever a
-  // runtime selection exists; explicit URLs remain the compatibility source for
-  // deployments that do not support profile switching.
-  if (hasRuntimeProfile) {
-    if (!base) return undefined;
-    return withWorkspaceDeepLink(`${base.replace(/\/$/, '')}/settings`, workspaceId);
-  }
-  if (typeof explicit === 'string' && explicit.trim()) {
-    return withWorkspaceDeepLink(explicit.trim(), workspaceId);
-  }
-  if (!base) return undefined;
-  return withWorkspaceDeepLink(`${base.replace(/\/$/, '')}/settings`, workspaceId);
+  return undefined;
 }
 
-function withWorkspaceDeepLink(url: string, workspaceId: string): string {
-  try {
-    const parsed = new URL(url);
-    if (!parsed.searchParams.get('workspaceId') && workspaceId.trim()) {
-      parsed.searchParams.set('workspaceId', workspaceId.trim());
-    }
-    if (!parsed.searchParams.get('source')) {
-      parsed.searchParams.set('source', 'open_design');
-    }
-    return parsed.toString();
-  } catch {
-    return url;
-  }
-}
 
-/**
- * Validate an untrusted workspace-context payload (dev PUT body / env). Returns
- * the typed context or null if any required enum field is missing or out of enum.
- * Permissions and the seat summary are DERIVED through the contract helpers
- * (B's `buildWorkspacePermissions`/`buildWorkspaceSeatSummary` mirror) so a dev
- * payload only needs role + lifecycle + seat counts; the real B proxy passes
- * B's already-derived values straight through.
- */
 export function parseWorkspaceCollabContext(input: unknown): WorkspaceCollabContext | null {
   if (!input || typeof input !== 'object') return null;
   const raw = input as Record<string, unknown>;

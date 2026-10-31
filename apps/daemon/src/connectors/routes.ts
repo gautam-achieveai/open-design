@@ -2,9 +2,8 @@ import net from 'node:net';
 
 import type { Express, Request, RequestHandler, Response } from 'express';
 
-import { checkConnectorAccess, type ToolTokenGrant } from '../tool-tokens.js';
-import { validateBoundedJsonObject } from '../live-artifacts/schema.js';
-import { executeConnectorTool, listConnectorTools } from '../tools/connectors.js';
+import type { ToolTokenGrant } from '../tool-tokens.js';
+import { executeAuthorizedConnectorTool, listConnectorTools } from '../tools/connectors.js';
 import { readComposioConfig, readPublicComposioConfig, writeComposioConfig } from './composio-config.js';
 import type { ConnectorToolUseCase } from './catalog.js';
 import { connectorService, ConnectorService, ConnectorServiceError, deleteConnectorCredentialsByProvider } from './service.js';
@@ -765,52 +764,12 @@ export function registerConnectorRoutes(app: Express, options: RegisterConnector
         return;
       }
 
-      const { projectId, connectorId, toolName, input, purpose } = req.body || {};
-      if (projectId && projectId !== grant.projectId) {
-        options.sendApiError(res, 403, 'FORBIDDEN', 'projectId is derived from the tool token', {
-          details: { suppliedProjectId: projectId },
-        });
+      const outcome = await executeAuthorizedConnectorTool(req.body || {}, { grant, projectsRoot: options.projectsRoot, service });
+      if (!outcome.ok) {
+        options.sendApiError(res, outcome.status, outcome.code, outcome.message, 'details' in outcome ? { details: outcome.details } : undefined);
         return;
       }
-      if (purpose !== undefined && purpose !== 'agent_preview') {
-        options.sendApiError(res, 403, 'FORBIDDEN', 'connector tool purpose is derived from the tool token', {
-          details: { suppliedPurpose: purpose },
-        });
-        return;
-      }
-      if (typeof connectorId !== 'string' || connectorId.length === 0) {
-        options.sendApiError(res, 400, 'BAD_REQUEST', 'connectorId is required');
-        return;
-      }
-      if (typeof toolName !== 'string' || toolName.length === 0) {
-        options.sendApiError(res, 400, 'BAD_REQUEST', 'toolName is required');
-        return;
-      }
-
-      // Plan §3.A3 / spec §9: re-validate the plugin connector capability
-      // gate on every call so a token replacement attack never bypasses
-      // the §5.3 rule. When the grant has no plugin context the gate is
-      // a no-op.
-      const connectorGate = checkConnectorAccess(grant, connectorId);
-      if (!connectorGate.ok) {
-        options.sendApiError(res, 403, 'CONNECTOR_NOT_GRANTED', connectorGate.reason, {
-          details: { connectorId },
-        });
-        return;
-      }
-      const inputValidation = validateBoundedJsonObject(input ?? {}, 'input');
-      if (!inputValidation.ok) {
-        options.sendApiError(res, 400, 'VALIDATION_FAILED', inputValidation.error, {
-          details: { kind: 'validation', issues: inputValidation.issues },
-        });
-        return;
-      }
-
-      const result = await executeConnectorTool(
-        { connectorId, toolName, input: inputValidation.value },
-        { grant, projectsRoot: options.projectsRoot, service },
-      );
-      res.json(result);
+      res.json(outcome.result);
     } catch (err) {
       sendConnectorRouteError(res, err, options.sendApiError);
     }

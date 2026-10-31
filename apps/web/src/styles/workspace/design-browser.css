@@ -29,6 +29,61 @@
   overflow: hidden;
 }
 
+.db-approvals {
+  flex: 0 0 auto;
+  max-height: min(45%, 360px);
+  overflow: auto;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 13px;
+}
+.db-approvals > p {
+  margin: 4px 0 8px;
+  color: var(--text-muted);
+}
+.db-approval {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.db-approval-details {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.db-approval-details pre {
+  margin: 4px 0;
+  font: inherit;
+  white-space: pre-wrap;
+}
+.db-approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.db-approval-actions button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.db-approval-actions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.db-approval-actions button:disabled { opacity: .5; cursor: not-allowed; }
+@container design-browser (max-width: 500px) {
+  .db-approval { flex-direction: column; }
+}
+
 /* ---- Chrome bar ---------------------------------------------------------- */
 .db-chrome {
   position: relative;
@@ -174,6 +229,44 @@
     transform: translate(-50%, -50%) scale(1.8);
   }
 }
+.db-performance {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  background: var(--bg);
+  font-size: 12px;
+}
+.db-performance button, .db-performance-entry {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.db-performance button:disabled { opacity: .5; cursor: default; }
+.db-performance button[aria-pressed="true"] { background: var(--bg-hover); }
+.db-performance-toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.db-performance select, .db-performance input { color: inherit; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px; max-width: 100%; }
+.db-performance-scenario input { width: 120px; }
+.db-performance-report-choice select { width: 100%; margin-top: 3px; }
+.db-performance-comparison-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.db-performance-comparison-table th, .db-performance-comparison-table td { padding: 5px; text-align: left; border-bottom: 1px solid var(--border); }
+.db-performance-comparison-table small { display: block; color: var(--text-muted); }
+.db-performance-status { height: 44px; flex: 0 0 44px; overflow-y: auto; overflow-wrap: anywhere; }
+.db-performance-close { margin-left: auto; }
+.db-performance-body { display: flex; gap: 14px; height: 190px; margin-top: 8px; }
+.db-performance-reports { width: 200px; min-width: 0; flex-shrink: 0; overflow-y: auto; overflow-x: hidden; }
+.db-performance-reports button { display: flex; flex-direction: column; box-sizing: border-box; width: 100%; min-width: 0; height: auto; min-height: 44px; flex-shrink: 0; text-align: left; gap: 3px; margin-top: 6px; padding: 7px 8px; }
+.db-performance-report { flex: 1; min-width: 0; overflow: auto; }
+.db-performance code { display: block; max-width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; font-size: 10px; }
+.db-performance p { margin: 5px 0; }
+.db-performance-warning, .db-performance [role="alert"] { color: var(--danger, #c33); }
+.db-performance-evidence { border-top: 1px solid var(--border); padding: 7px 0; overflow-wrap: anywhere; }
+.db-performance-evidence dl { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.db-performance-evidence dl > div { display: flex; gap: 5px; }
+.db-performance-evidence dd { margin: 0; }
+@media (max-width: 600px) { .db-performance-reports { width: 130px; } }
+
 .db-browser-diagnostics {
   position: absolute;
   top: calc(100% + 8px);

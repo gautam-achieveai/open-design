@@ -23,12 +23,7 @@ import {
   createDevTeamResourceStateProvider,
   type TeamResourceStateProvider,
 } from './team-resource-state.js';
-import {
-  createVelaCliResourceAdapter,
-  shouldUseVelaCliResourceTransport,
-} from './vela-cli-resource-adapter.js';
 import type { WorkspaceContextProvider } from './workspace-context.js';
-import { createWorkspaceContextProviderFromEnv } from './vela-workspace-context.js';
 
 type TeamProjectCatalogSyncState = 'pending_upload' | 'synced' | 'failed';
 
@@ -178,28 +173,8 @@ export interface CreateCollabRuntimeOptions {
   canPublishProjectContent?: (projectId: string) => boolean;
 }
 
-function selectResourcePublishAdapter(
-  resolveProjectDir: ((projectId: string) => string | Promise<string>) | undefined,
-  resolvePullDir: ((projectId: string) => string | Promise<string>) | undefined,
-  describeProject: ((projectId: string) => Record<string, unknown> | null | Promise<Record<string, unknown> | null>) | undefined,
-): ResourcePublishAdapter | null {
-  if (!resolveProjectDir) return null;
-  if (shouldUseVelaCliResourceTransport()) {
-    return createVelaCliResourceAdapter({
-      resolveProjectDir,
-      ...(resolvePullDir ? { resolvePullDir } : {}),
-      ...(describeProject ? { describeProject } : {}),
-      // Every data-plane caller must provide a principal that was captured from
-      // an explicit, authoritative Workspace scope. There is no ambient
-      // Workspace fallback at the transport boundary.
-      hasTeamIdentity: (principal) => principal != null,
-    });
-  }
-  return null;
-}
-
 export function createCollabRuntime(options: CreateCollabRuntimeOptions = {}): CollabRuntime {
-  const workspaceContext = options.workspaceContext ?? createWorkspaceContextProviderFromEnv();
+  const workspaceContext = options.workspaceContext ?? { current: async () => null };
   const sharePrincipals = new Map<string, Map<string, ResourceHubPrincipal>>();
   const knownScopedPrincipals = new Map<string, ResourceHubPrincipal>();
   const scopedOwners = new Map<string, string>();
@@ -248,13 +223,7 @@ export function createCollabRuntime(options: CreateCollabRuntimeOptions = {}): C
   };
 
   const baseAdapter =
-    options.adapter ??
-    selectResourcePublishAdapter(
-      options.resolveProjectDir,
-      options.resolvePullDir,
-      options.describeProject,
-    ) ??
-    createStubResourcePublishAdapter();
+    options.adapter ?? createStubResourcePublishAdapter();
 
   function rememberTeamShare(
     projectId: string,

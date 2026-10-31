@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createAuthorizeProjectRequest } from '../../src/collab/project-request-authority.js';
+import { createAuthorizeProjectRequest, createProjectRequestDecision, createSynchronousProjectRequestDecision } from '../../src/collab/project-request-authority.js';
 import { verifyWorkspaceRequestContext } from '../../src/collab/request-workspace-context.js';
 import { createCachedWorkspaceDirectoryFetcher } from '../../src/collab/vela-workspace-context.js';
 
@@ -55,6 +55,83 @@ function context(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe('response-independent project authority', () => {
+  it('applies durable retirement before headerless or Personal projection allowances', async () => {
+    const row = { workspaceId: 'personal', visibility: 'personal', resourceState: 'active', createdByWorkspaceMemberId: 'owner' };
+    const deps = { db: {}, getWorkspaceProject: () => row, getWorkspaceProjectByProjectId: () => row,
+      isProjectUnavailable: (_db: unknown, id: string) => id === 'retired' };
+    const decide = createSynchronousProjectRequestDecision(deps);
+    for (const req of [request({}), request({workspaceId:'personal',memberId:'owner'}), request({workspaceId:'other',memberId:'other'})]) {
+      for (const options of [{mode:'read'} as const, {mode:'write',capability:'writeFiles'} as const, {mode:'write',capability:'comment'} as const]) {
+        expect(decide(req,'retired',options)).toMatchObject({ok:false,status:403,code:'WORKSPACE_UNAVAILABLE'});
+        await expect(createProjectRequestDecision(deps)(req,'retired',options)).resolves.toMatchObject({ok:false,status:403,code:'WORKSPACE_UNAVAILABLE'});
+      }
+    }
+    expect(decide(request({workspaceId:'personal',memberId:'owner'}),'local',{mode:'read'})).toEqual({ok:true});
+  });
+
+  it('rechecks the current project state synchronously and retains the async decision contract', async () => {
+    const row = {
+      workspaceId: 'workspace-a',
+      visibility: 'team',
+      resourceState: 'active',
+      createdByWorkspaceMemberId: 'member-a',
+    };
+    let revoked = false;
+    const deps = {
+      db: {},
+      getWorkspaceProject: () => row,
+      getWorkspaceProjectByProjectId: () => row,
+      isProjectRevoked: () => revoked,
+    };
+    const decideSync = createSynchronousProjectRequestDecision(deps);
+    const decide = createProjectRequestDecision(deps);
+    const member = request({ workspaceId: 'workspace-a', memberId: 'member-a' });
+    const options = { mode: 'write', capability: 'writeFiles' } as const;
+    expect(decideSync(member, 'project-a', options)).toEqual({ ok: true });
+    const asyncAllowed = decide(member, 'project-a', options);
+    expect(asyncAllowed).toBeInstanceOf(Promise);
+    await expect(asyncAllowed).resolves.toEqual({ ok: true });
+
+    row.resourceState = 'frozen';
+    const frozen = { ok: false, status: 403, code: 'WORKSPACE_LOCKED', message: 'workspace project mutation is not allowed' };
+    expect(decideSync(member, 'project-a', options)).toEqual(frozen);
+    await expect(decide(member, 'project-a', options)).resolves.toEqual(frozen);
+
+    revoked = true;
+    const revokedResult = { ok: false, status: 403, code: 'WORKSPACE_PROJECT_PERMISSION_DENIED', message: 'workspace project mutation is not allowed' };
+    expect(decideSync(member, 'project-a', options)).toEqual(revokedResult);
+    await expect(decide(member, 'project-a', options)).resolves.toEqual(revokedResult);
+  });
+
+  it('keeps workspace, revoked, frozen and placeholder decisions available without an HTTP response', async () => {
+    const row = {
+      workspaceId: 'workspace-a',
+      visibility: 'team',
+      resourceState: 'active',
+      createdByWorkspaceMemberId: 'member-a',
+    };
+    const decide = createProjectRequestDecision({
+      db: {},
+      getWorkspaceProject: () => row,
+      getWorkspaceProjectByProjectId: () => row,
+      isProjectRevoked: (_db, id) => id === 'revoked',
+      isProjectUnmaterializedPlaceholder: (_db, id) => id === 'placeholder',
+    });
+    const member = request({ workspaceId: 'workspace-a', memberId: 'member-a' });
+    await expect(decide(member, 'project-a', { mode: 'read' })).resolves.toEqual({ ok: true });
+    await expect(decide(request({ workspaceId: 'workspace-b', memberId: 'member-b' }), 'project-a', { mode: 'read' }))
+      .resolves.toEqual({ ok: false, status: 403, code: 'WORKSPACE_PROJECT_PERMISSION_DENIED', message: 'workspace project read is not allowed' });
+    await expect(decide(member, 'revoked', { mode: 'read' }))
+      .resolves.toEqual({ ok: false, status: 404, code: 'PROJECT_NOT_FOUND', message: 'project not found' });
+    await expect(decide(member, 'placeholder', { mode: 'write', capability: 'writeFiles' }))
+      .resolves.toEqual({ ok: false, status: 409, code: 'PROJECT_MATERIALIZATION_PENDING', message: 'project content is still materializing' });
+    row.resourceState = 'frozen';
+    await expect(decide(member, 'project-a', { mode: 'write', capability: 'writeFiles' }))
+      .resolves.toEqual({ ok: false, status: 403, code: 'WORKSPACE_LOCKED', message: 'workspace project mutation is not allowed' });
+  });
+});
 
 describe('createAuthorizeProjectRequest', () => {
   it('keeps a first-open placeholder readable/commentable but blocks content writes', async () => {

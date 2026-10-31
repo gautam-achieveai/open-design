@@ -3,6 +3,17 @@ import { describe, expect, it } from 'vitest';
 import { composeSystemPrompt } from '../src/prompts/system.js';
 import { DISCOVERY_AND_PHILOSOPHY } from '../src/prompts/discovery.js';
 
+it('requires a configured model instead of silently replacing a retired Cloud template default', () => {
+  const promptTemplate = { id: 'legacy', surface: 'image' as const, title: 'Legacy template',
+    prompt: 'A blue square', model: 'gpt-image-2', source: { repo: 'synthetic', license: 'MIT' } };
+  const prompt = composeSystemPrompt({ metadata: { kind: 'image', promptTemplate } });
+  expect(prompt).toContain('Choose a configured media model before generation');
+  expect(prompt).not.toContain('suggested model: vela/gpt-image-2');
+  expect(prompt).not.toContain('suggested model: gpt-image-2');
+  const explicit = composeSystemPrompt({ metadata: { kind: 'image', imageModel: 'custom-image/model', promptTemplate } });
+  expect(explicit).toContain('custom-image/model');
+});
+
 // Guard: the contracts copy of DISCOVERY_AND_PHILOSOPHY must have the same
 // cap removal as apps/daemon/src/prompts/discovery.ts. The web app imports
 // composeSystemPrompt from @open-design/contracts, so only testing the daemon
@@ -295,5 +306,13 @@ describe('composeSystemPrompt', () => {
     expect(prompt).not.toContain('# OD core directives');
     expect(prompt).not.toContain('<question-form id="discovery"');
     expect(prompt).toContain('## Media generation contract');
+  });
+
+  it.each(['image', 'video'] as const)('requires replacement of a saved Cloud %s model', (kind) => {
+    const prompt = composeSystemPrompt({
+      metadata: { kind, [`${kind}Model`]: 'vela/retired-model' },
+    });
+    expect(prompt).toContain('The selected media model is unavailable');
+    expect(prompt).toContain('Do not substitute another provider automatically');
   });
 });

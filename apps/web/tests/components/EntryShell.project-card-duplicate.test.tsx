@@ -8,7 +8,22 @@
 // `EntryShell` (drafts and all-projects) never passed it, so the item silently
 // stayed out of the card menu.
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+// @vitest-environment jsdom
+//
+// OPEND-2686 (QA 2026-09-15 addendum): the Personal projects (/drafts) card
+// "more" menu offered only Rename / Delete. `RecentProjectsStrip` already
+// renders a Duplicate item between the two whenever it is handed an
+// `onDuplicate` — the rail row (F1, #7878) and the 项目 DesignsTab both wire
+// the shell's `onDuplicateProject` through — but the two strip mounts in
+// `EntryShell` (drafts and all-projects) never passed it, so the item silently
+// stayed out of the card menu.
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from '@testing-library/react';
 import {
   buildWorkspacePermissions,
   buildWorkspaceSeatSummary,
@@ -109,7 +124,7 @@ function renderAt(path: string, overrides: Partial<React.ComponentProps<typeof E
     onRefreshAgents: vi.fn(() => [cliAgent()]),
     onCreateProject: vi.fn(() => Promise.resolve(true)),
     onBeginProjectCreation: () => ({ projectId: 'optimistic-project', rollback: () => undefined }),
-    onAmrBalanceGateBlockChange: () => undefined,
+
     onCreatePluginShareProject: vi.fn(),
     onImportClaudeDesign: vi.fn(),
     onOpenProject: vi.fn(),

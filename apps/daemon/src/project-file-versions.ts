@@ -56,6 +56,8 @@ export interface CreateProjectFileVersionOptions {
   restoreFromVersionId?: string;
   parentVersionId?: string;
   origin?: ArtifactOrigin;
+  /** Internal current-authority check immediately before filesystem mutation. */
+  beforeMutation?: () => void;
 }
 
 export interface ProjectFileVersionLockContext {
@@ -372,9 +374,10 @@ async function writeVersionManifest(
   projectId: string,
   fileName: string,
   entries: VersionEntry[],
-  options: { currentVersionId: string | null; deletedAt?: number },
+  options: { currentVersionId: string | null; deletedAt?: number; beforeMutation?: (() => void) | undefined },
 ): Promise<void> {
   const root = versionRootFor(projectsRoot, projectId, fileName);
+  options.beforeMutation?.();
   await mkdir(root, { recursive: true });
   const manifest: {
     schemaVersion: number;
@@ -391,6 +394,7 @@ async function writeVersionManifest(
   if (typeof options.deletedAt === 'number' && Number.isFinite(options.deletedAt)) {
     manifest.deletedAt = options.deletedAt;
   }
+  options.beforeMutation?.();
   await writeFile(path.join(root, VERSION_MANIFEST), JSON.stringify(manifest, null, 2));
 }
 
@@ -496,6 +500,7 @@ async function createProjectFileVersionUnlocked(
   options: CreateProjectFileVersionOptions,
 ): Promise<ProjectFileVersion> {
   const root = versionRootFor(projectsRoot, projectId, safeName);
+  options.beforeMutation?.();
   await mkdir(root, { recursive: true });
   const state = await readVersionManifestState(projectsRoot, projectId, safeName);
   const preserveDeletedHistory =
@@ -504,7 +509,9 @@ async function createProjectFileVersionUnlocked(
   let entries = state.entries;
   let priorCurrentVersionId = state.currentVersionId;
   if (state.deletedAt && !preserveDeletedHistory) {
+    options.beforeMutation?.();
     await rm(root, { recursive: true, force: true });
+    options.beforeMutation?.();
     await mkdir(root, { recursive: true });
     entries = [];
     priorCurrentVersionId = null;
@@ -552,10 +559,12 @@ async function createProjectFileVersionUnlocked(
     const origin = normalizeArtifactOrigin(options.origin);
     if (origin) entry.origin = origin;
   }
+  options.beforeMutation?.();
   await writeFile(path.join(root, contentPath), text);
   const nextEntries = [...entries, entry];
   await writeVersionManifest(projectsRoot, projectId, safeName, nextEntries, {
     currentVersionId: id,
+    beforeMutation: options.beforeMutation,
   });
   return publicVersion(entry, id);
 }
@@ -565,6 +574,7 @@ export async function markProjectFileVersionStoreDeleted(
   projectId: string,
   fileName: string,
   metadata?: unknown,
+  beforeMutation?: () => void,
 ): Promise<void> {
   const safeName = validateUserFileName(fileName);
   if (!/\.html?$/i.test(safeName)) return;
@@ -575,6 +585,7 @@ export async function markProjectFileVersionStoreDeleted(
     await writeVersionManifest(projectsRoot, projectId, safeName, state.entries, {
       currentVersionId: state.currentVersionId,
       deletedAt: Date.now(),
+      beforeMutation,
     });
   });
 }

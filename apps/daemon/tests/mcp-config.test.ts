@@ -352,7 +352,7 @@ describe('sanitizeMcpServer headers', () => {
 });
 
 describe('buildAcpMcpServers', () => {
-  it('drops sse / http servers (ACP descriptor is stdio-only)', () => {
+  it('converts enabled remote servers to ACP descriptors with scoped headers', () => {
     const out = buildAcpMcpServers([
       {
         id: 'a',
@@ -366,8 +366,40 @@ describe('buildAcpMcpServers', () => {
         enabled: true,
         url: 'https://example.com',
       },
+      {
+        id: 'c',
+        transport: 'http',
+        enabled: true,
+        authMode: 'oauth',
+        url: 'https://example.com/mcp',
+        headers: { 'X-Context': 'fixture' },
+      },
+      {
+        id: 'd',
+        transport: 'http',
+        enabled: false,
+        url: 'https://example.com/disabled',
+      },
+    ], { c: 'synthetic-token' });
+    expect(out).toEqual([
+      { type: 'stdio', name: 'a', command: 'echo', args: [], env: [] },
+      { type: 'sse', name: 'b', url: 'https://example.com', headers: [] },
+      { type: 'http', name: 'c', url: 'https://example.com/mcp', headers: [
+        { name: 'X-Context', value: 'fixture' },
+        { name: 'Authorization', value: 'Bearer synthetic-token' },
+      ] },
     ]);
-    expect(out.map((s) => s.name)).toEqual(['a']);
+  });
+
+  it('preserves a user-provided authorization header over an OAuth token', () => {
+    const out = buildAcpMcpServers([{
+      id: 'remote', transport: 'http', enabled: true, authMode: 'oauth',
+      url: 'https://example.com/mcp', headers: { authorization: 'Bearer chosen' },
+    }], { remote: 'other-token' });
+    expect(out[0]).toEqual({
+      type: 'http', name: 'remote', url: 'https://example.com/mcp',
+      headers: [{ name: 'authorization', value: 'Bearer chosen' }],
+    });
   });
 
   it('flattens env to ACP {name,value} array shape', () => {

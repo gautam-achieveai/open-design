@@ -90,7 +90,6 @@ function renderChat(opts: {
   onRetry?: (m: ChatMessage) => void;
   onOpenSettings?: (section?: string) => void;
   onSwitchModel?: () => void;
-  amrBalanceCardUsd?: number | null;
   onSend?: (...args: unknown[]) => void;
 } = {}) {
   return render(
@@ -104,7 +103,6 @@ function renderChat(opts: {
       onSend={opts.onSend ?? vi.fn()}
       onStop={vi.fn()}
       onRetry={opts.onRetry ?? vi.fn()}
-      amrBalanceCardUsd={opts.amrBalanceCardUsd ?? null}
       onOpenSettings={opts.onOpenSettings as never}
       onSwitchModel={opts.onSwitchModel}
       conversations={[
@@ -140,7 +138,7 @@ describe('ChatPane — 报错卡的常驻动作', () => {
 
   it('每一张报错卡都带〔联系支持〕和〔导出日志〕两颗次级', () => {
     const { container } = renderChat({
-      messages: [failedMessage({ code: 'AGENT_EXECUTION_FAILED' })],
+      messages: [failedMessage({ code: 'AGENT_EXECUTION_FAILED', failureDetail: 'process_crashed' })],
     });
 
     expect(container.querySelector('[data-user-action-card="run-recovery"]')).toBeTruthy();
@@ -155,7 +153,7 @@ describe('ChatPane — 报错卡的常驻动作', () => {
   // 产品裁决:「好多都应该得有导出日志这个按钮」→ 不挑场景。
   // `cpu_unsupported` 是今天**一颗按钮都没有**的那一档(R-023「无任何按钮」),
   // 恰好是这条裁决最想覆盖的场景。
-  it('Cloud 的 cpu_unsupported 同样固定两颗次级和主重试', () => {
+  it('unsupported CPU retains support/export without a futile retry', () => {
     renderChat({
       messages: [
         failedMessage({
@@ -168,8 +166,8 @@ describe('ChatPane — 报错卡的常驻动作', () => {
     expect(screen.getByTestId('chat-error-contact-support')).toBeTruthy();
     expect(screen.getByTestId('chat-error-export-logs')).toBeTruthy();
     // G16 按运行来源固定动作，不再按旧恢复阶梯移除重试。
-    expect(screen.getByTestId('chat-error-retry').dataset.runErrorAction).toBe('primary');
-    expect(screen.getByTestId('chat-run-error-card').querySelectorAll('button')).toHaveLength(3);
+    expect(screen.queryByTestId('chat-error-retry')).toBeNull();
+    expect(screen.getByTestId('chat-run-error-card').querySelectorAll('button')).toHaveLength(2);
   });
 
   it('只有面板级错误、没有可重试轮次时，两颗常驻动作仍共用描边次级壳', () => {
@@ -182,7 +180,7 @@ describe('ChatPane — 报错卡的常驻动作', () => {
   // 稿子第 78 格:〔联系支持〕〔导出日志〕〔从失败处重试〕—— 前两颗次级、第三颗主。
   it('三颗动作按稿子的顺序排(次级在左,主动作在最右)', () => {
     const { container } = renderChat({
-      messages: [failedMessage({ code: 'AGENT_EXECUTION_FAILED' })],
+      messages: [failedMessage({ code: 'AGENT_EXECUTION_FAILED', failureDetail: 'process_crashed' })],
     });
 
     const footer = container.querySelector('[data-user-action-footer="true"]');
@@ -201,7 +199,7 @@ describe('ChatPane — 报错卡的常驻动作', () => {
   });
 
   it('点〔联系支持〕开出联系支持弹窗,里面是飞书社群 + Discord 两行', () => {
-    renderChat({ messages: [failedMessage({ code: 'AGENT_EXECUTION_FAILED' })] });
+    renderChat({ messages: [failedMessage({ code: 'AGENT_EXECUTION_FAILED', failureDetail: 'process_crashed' })] });
 
     expect(screen.queryByTestId('chat-support-dialog')).toBeNull();
     fireEvent.click(screen.getByTestId('chat-error-contact-support'));
@@ -215,64 +213,29 @@ describe('ChatPane — 报错卡的常驻动作', () => {
   });
 });
 
-describe('ChatPane — Cloud 模型不可用也遵守 G16 固定动作', () => {
-  it('AMR_MODEL_UNAVAILABLE 显示固定三颗，不增加换模型或设置', () => {
+describe('ChatPane — historical unavailable model diagnostics', () => {
+  it('AMR_MODEL_UNAVAILABLE retains support/export without choosing a replacement model', () => {
     renderChat({ messages: [failedMessage({ code: 'AMR_MODEL_UNAVAILABLE' })] });
 
     const actions = screen.getByTestId('chat-run-error-card').querySelectorAll('button');
     expect(Array.from(actions, (button) => button.dataset.testid)).toEqual([
       'chat-error-contact-support',
       'chat-error-export-logs',
-      'chat-error-retry',
     ]);
-    expect(screen.getByTestId('chat-error-retry').dataset.runErrorAction).toBe('primary');
+    expect(screen.queryByTestId('chat-error-retry')).toBeNull();
     expect(screen.queryByTestId('chat-error-switch-model')).toBeNull();
   });
 
-  it('点重试传回原失败消息，不打开模型选择或设置', () => {
+  it('does not automatically retry, select a model, or open settings', () => {
     const onOpenSettings = vi.fn();
     const onSwitchModel = vi.fn();
     const onRetry = vi.fn();
     const message = failedMessage({ code: 'AMR_MODEL_UNAVAILABLE' });
     renderChat({ messages: [message], onOpenSettings, onSwitchModel, onRetry });
 
-    fireEvent.click(screen.getByTestId('chat-error-retry'));
-    expect(onRetry).toHaveBeenCalledExactlyOnceWith(message, 'manual_retry');
+    expect(screen.queryByTestId('chat-error-retry')).toBeNull();
+    expect(onRetry).not.toHaveBeenCalled();
     expect(onOpenSettings).not.toHaveBeenCalled();
     expect(onSwitchModel).not.toHaveBeenCalled();
-  });
-});
-
-describe('ChatPane — 升级卡接在流水里', () => {
-  it('余额 > 0 但撑不住下一轮:暖橙档,卡出现在流水里', () => {
-    const { container } = renderChat({ amrBalanceCardUsd: 1.2 });
-
-    const card = screen.getByTestId('chat-upgrade-card');
-    expect(card).toBeTruthy();
-    expect(card.getAttribute('data-out')).toBe('false');
-    expect(card.textContent).toContain('$1.20');
-    // 流水里(chat-log 内),不是钉在输入框上方的那一类。
-    expect(container.querySelector('.chat-log')?.contains(card)).toBe(true);
-  });
-
-  it('余额 = 0:红档,文案换成「现在无法开始新任务」', () => {
-    renderChat({ amrBalanceCardUsd: 0 });
-
-    const card = screen.getByTestId('chat-upgrade-card');
-    expect(card.getAttribute('data-out')).toBe('true');
-    expect(card.textContent).toContain('chat.upgrade.whyOut');
-  });
-
-  it('没有余额提示时不渲染这张卡', () => {
-    renderChat({ amrBalanceCardUsd: null });
-    expect(screen.queryByTestId('chat-upgrade-card')).toBeNull();
-  });
-
-  // D4「不阻塞」:卡在流水里,发送不受影响。
-  it('卡出现时发送依然可用(D4 不阻塞)', () => {
-    renderChat({ amrBalanceCardUsd: 0 });
-    expect(screen.getByTestId('chat-upgrade-card')).toBeTruthy();
-    // 卡本身不是遮罩/弹窗,也不带任何 aria-modal。
-    expect(document.querySelector('[aria-modal="true"]')).toBeNull();
   });
 });

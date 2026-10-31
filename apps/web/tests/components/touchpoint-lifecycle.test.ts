@@ -1,8 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { mountTouchpoint, REQUEST_TIMEOUT_MS, TEST_MAX_AUTHORIZATION_MS, touchpointLeaseValue, resolveAuthorizationDeadline, RETRY_BACKOFF_MS, useTouchpointLifecycle, type TouchpointLifecycleLoad, type TouchpointLifecycleOptions } from "../../src/components/touchpoint-lifecycle";
 import * as host from "../../src/components/touchpoint-component";
 
@@ -295,19 +293,6 @@ describe("resolveAuthorizationDeadline", () => {
 		const credential = { serverTime: "2020-01-01T00:00:00.000Z", endsAt: "2099-01-01T00:00:00.000Z", authorizationExpiresAt: "2020-01-01T00:01:00.000Z" };
 		expect(resolveAuthorizationDeadline(credential)! - Date.parse(credential.serverTime)).toBe(60_000);
 		expect(resolveAuthorizationDeadline({ serverTime: "2030-01-01T00:00:00.000Z", endsAt: "2029-12-31T23:59:00.000Z", authorizationExpiresAt: "2030-01-01T00:01:00.000Z" })).toBeNull();
-	});
-	// Three copies of a cap is exactly how the Badge and the Hover kept a
-	// five-minute lease after the Modal was fixed. There is no shared cap left
-	// to drift now, so the invariant is stronger: production hands this helper a
-	// timing and nothing else. A second argument in any of these files is a
-	// fourth attempt at the number the docblock explains away.
-	it("passes no lease bound from any of the three production placements", () => {
-		for (const file of ["ProductionCampaignModal.tsx", "ProductionCampaignBadge.tsx", "ProductionCampaignHover.tsx"]) {
-			const source = readFileSync(resolve(process.cwd(), "src/components", file), "utf8");
-			expect(source, `${file} must not redeclare a local lease cap`).not.toMatch(/const\s+\w*MAX_LEASE\w*\s*=/u);
-			expect(source, `${file} must not resurrect the shared production cap`).not.toContain("PRODUCTION_MAX_LEASE_MS");
-			expect(source, `${file} must call resolveAuthorizationDeadline with no maximum`).not.toMatch(/resolveAuthorizationDeadline\([^()]*,/u);
-		}
 	});
 });
 

@@ -21,6 +21,87 @@ const target: EmbeddedBrowserTarget = {
 };
 
 describe('embedded browser control relay', () => {
+  it.each([false, true])('terminates rejected registration updates after the bounded policy (transient=%s)', async (transient) => {
+    vi.useFakeTimers();
+    const states: string[] = [];
+    const hostBridge = {
+      registerTarget: vi.fn().mockResolvedValueOnce({ ok: true }).mockResolvedValue({ ok: false,
+        reason: transient ? 'browser target URL does not match the attached guest' : 'browser guest is already registered to another tab' }),
+      unregisterTarget: vi.fn(async () => ({ ok: true })), execute: vi.fn(),
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      if (String(input).endsWith('/commands/next')) return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+      return jsonResponse(String(input).endsWith('/register') ? { leaseId: 'lease-rejected' } : { accepted: true });
+    });
+    const session = createEmbeddedBrowserControlSession({ target, fetchImpl, hostBridge, onStatus: (status) => states.push(status) });
+    try {
+      await session.ready;
+      session.updateTarget({ ...target, url: 'https://example.com/next' });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(states).toEqual(['connecting', 'connected', 'error']);
+      expect(hostBridge.registerTarget).toHaveBeenCalledTimes(transient ? 21 : 2);
+      expect(hostBridge.unregisterTarget).toHaveBeenCalledTimes(1);
+    } finally { await session.stop(); vi.useRealTimers(); }
+  });
+  it('keeps its lease across a transient navigation URL mismatch and registers the latest target', async () => {
+    vi.useFakeTimers();
+    const states: string[] = [];
+    const seen: Array<{ url: string; active?: boolean }> = [];
+    const hostBridge = {
+      registerTarget: vi.fn(async (value: { url: string; active?: boolean }) => {
+        seen.push(value);
+        return seen.length === 2 ? { ok: false, reason: 'browser target URL does not match the attached guest' } : { ok: true };
+      }),
+      unregisterTarget: vi.fn(async () => ({ ok: true })), execute: vi.fn(),
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      if (String(input).endsWith('/commands/next')) return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+      return jsonResponse(String(input).endsWith('/register') ? { leaseId: 'lease-navigation' } : { accepted: true });
+    });
+    const session = createEmbeddedBrowserControlSession({ target, fetchImpl, hostBridge, onStatus: (status) => states.push(status) });
+    try {
+      await session.ready;
+      session.updateTarget({ ...target, url: 'https://example.com/next', active: false });
+      await vi.advanceTimersByTimeAsync(0);
+      session.updateTarget({ ...target, url: 'https://example.com/redirected', active: true });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(states).toEqual(['connecting', 'connected']);
+      expect(hostBridge.unregisterTarget).not.toHaveBeenCalled();
+      expect(seen.slice(2)).toEqual([
+        expect.objectContaining({ url: 'https://example.com/redirected', active: false }),
+        expect.objectContaining({ url: 'https://example.com/redirected', active: true }),
+      ]);
+    } finally { await session.stop(); vi.useRealTimers(); }
+  });
+  it('forwards every rapid inactive and active transition to the host', async () => {
+    const seen: unknown[] = [];
+    const hostBridge = {
+      registerTarget: vi.fn(async (value: unknown) => { seen.push(value); return { ok: true }; }),
+      unregisterTarget: vi.fn(async () => ({ ok: true })), execute: vi.fn(),
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      if (String(input).endsWith('/commands/next')) return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+      return jsonResponse(String(input).endsWith('/register') ? { leaseId: 'lease-visibility' } : { accepted: true });
+    });
+    const session = createEmbeddedBrowserControlSession({ target, fetchImpl, hostBridge });
+    await session.ready;
+    try {
+      session.updateTarget({ ...target, active: false });
+      session.updateTarget({ ...target, active: true });
+      await vi.waitFor(() => expect(seen).toHaveLength(3));
+      expect(seen).toEqual([
+        expect.objectContaining({ active: true }),
+        expect.objectContaining({ active: false }),
+        expect.objectContaining({ active: true }),
+      ]);
+    } finally { await session.stop(); }
+  });
   it.each(['applied', 'failed', 'unmeasured', 'expired', 'unapproved', 'missing'] as const)(
     'handles %s typed style patches without host page execution', async (outcome) => {
       let polls = 0;
@@ -235,6 +316,7 @@ describe('embedded browser control relay', () => {
     await expect(session.ready).resolves.toBe(true);
     await vi.waitFor(() => expect(hostBridge.execute).toHaveBeenCalledTimes(1));
     expect(hostBridge.registerTarget).toHaveBeenCalledWith({
+      active: target.active,
       projectId: target.projectId,
       tabId: target.tabId,
       title: target.title,

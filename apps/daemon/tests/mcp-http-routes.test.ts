@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
+import { z } from 'zod';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { McpCredentialStore } from '../src/mcp-http/credentials.js';
@@ -20,12 +21,13 @@ describe('MCP HTTP endpoint (/mcp)', () => {
   let base: string;
   let toolTokenRegistry: ToolTokenRegistry;
   let credentialStore: McpCredentialStore;
+  let registry: McpToolRegistry;
 
   beforeEach(async () => {
     toolTokenRegistry = new ToolTokenRegistry();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-mcp-http-'));
     credentialStore = new McpCredentialStore({ filePath: path.join(dir, 'credentials.json') });
-    const registry = new McpToolRegistry();
+    registry = new McpToolRegistry();
     registerCoreMcpTools(registry);
 
     const app = express();
@@ -121,6 +123,20 @@ describe('MCP HTTP endpoint (/mcp)', () => {
     expect(result.structuredContent.error.code).toBe('INVALID_ARGS');
   });
 
+  it('keeps image content authoritative on the wire and retains its envelope in metadata', async () => {
+    registry.register({ name: 'fixture_image', operation: 'fixture/image', version: 1,
+      description: 'Synthetic image.', schema: z.object({}).strict(),
+      handler: async () => ({ content: [{ type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' }],
+        structuredContent: { ok: true, data: { mimeType: 'image/png' }, meta: { ms: 0 } } }) });
+    const { token } = credentialStore.create({ name: 'image', allowedOperations: ['fixture/image'] });
+    const call = await mcpRequest('tools/call', { name: 'fixture_image', arguments: {} }, token, 1);
+    expect(call.result).toMatchObject({ content: [{ type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' }],
+      _meta: { 'open-design/result': { ok: true, data: { mimeType: 'image/png' }, meta: { toolVersion: 1 } } } });
+    // Codex prefers structuredContent over content. Image results must use
+    // the standard image block rather than offer a competing metadata object.
+    expect(call.result).not.toHaveProperty('structuredContent');
+  });
+
   it('filters tools/list and denies calls for scoped credentials', async () => {
     const { token } = credentialStore.create({ name: 'scoped', allowedOperations: ['other/*'] });
     const list = await mcpRequest('tools/list', {}, token, 1);
@@ -137,10 +153,25 @@ describe('MCP HTTP endpoint (/mcp)', () => {
       runId: 'run-1',
       projectId: 'p1',
       allowedOperations: ['mcp:ping'],
+      allowedEndpoints: ['/mcp'],
     });
     const call = await mcpRequest('tools/call', { name: 'od_ping', arguments: {} }, runToken.token, 1);
     const result = call.result as { structuredContent: { data: { caller: { kind: string; runId: string; projectId: string } } } };
     expect(result.structuredContent.data.caller).toMatchObject({ kind: 'run', runId: 'run-1', projectId: 'p1' });
+  });
+
+  it('rejects a run token without MCP endpoint authority even when its operation matches', async () => {
+    const runToken = toolTokenRegistry.mint({
+      runId: 'run-without-mcp',
+      projectId: 'p1',
+      allowedEndpoints: ['/api/tools/live-artifacts/list'],
+      allowedOperations: ['mcp:ping'],
+    });
+    const response = await mcpPost(
+      { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+      runToken.token,
+    );
+    expect(response.status).toBe(401);
   });
 
   it('rejects missing and invalid tokens with 401', async () => {

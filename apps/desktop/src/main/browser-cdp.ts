@@ -22,6 +22,7 @@ import {
   executeDevtoolsAction,
   onDevtoolsEvent,
   parseDevtoolsOperation,
+  updateDevtoolsHostActivity,
   type DevtoolsState,
 } from "./browser-devtools.js";
 
@@ -44,10 +45,13 @@ const MAX_URL_LENGTH = 8_192;
 const MAX_SCREENSHOT_DATA_URL_LENGTH = 3 * 1024 * 1024;
 const REDACTED = "[redacted]";
 const SENSITIVE_FIELD = /(?:authorization|cookie|credential|password|passwd|secret|session|token|api[_-]?key|access[_-]?key|client[_-]?secret)/i;
+const SENSITIVE_AUTH_FIELD = /^(?:code|state)$/i;
+const URL_HEADER = /^(?:location|content-location|referer)$/i;
 
 type UnknownRecord = Record<string, unknown>;
 
 type AttachedGuest = {
+  navigationGeneration: number;
   consoleEntries: OpenDesignHostBrowserConsoleEntry[];
   devtools: DevtoolsState;
   guest: WebContents;
@@ -111,7 +115,7 @@ export function redactBrowserHeaders(headers: unknown): Record<string, string> {
     redacted[name] = SENSITIVE_FIELD.test(name)
       ? REDACTED
       : typeof value === "string"
-        ? value
+        ? URL_HEADER.test(name) ? redactBrowserUrl(value) : value
         : JSON.stringify(value);
   }
   return redacted;
@@ -123,19 +127,34 @@ export function redactBrowserUrl(url: string): string {
     if (parsed.username) parsed.username = REDACTED;
     if (parsed.password) parsed.password = REDACTED;
     for (const key of [...parsed.searchParams.keys()]) {
-      if (SENSITIVE_FIELD.test(key)) parsed.searchParams.set(key, REDACTED);
+      if (SENSITIVE_FIELD.test(key) || SENSITIVE_AUTH_FIELD.test(key)) parsed.searchParams.set(key, REDACTED);
     }
+    parsed.hash = redactCallbackValues(parsed.hash);
     return parsed.href;
   } catch {
-    return url.replace(
+    return redactCallbackValues(url).replace(
       /((?:authorization|credential|password|passwd|secret|session|token|api[_-]?key)=)[^&\s]*/gi,
       `$1${REDACTED}`,
     );
   }
 }
 
+function redactCallbackValues(value: string): string {
+  return value.replace(/(^|[?&#])([^=&#?\s]+)=([^&#\s]*)/g, (match, prefix: string, key: string) => {
+    let decodedKey: string;
+    try {
+      decodedKey = decodeURIComponent(key.replace(/\+/g, " "));
+    } catch {
+      decodedKey = key;
+    }
+    return SENSITIVE_AUTH_FIELD.test(decodedKey) || SENSITIVE_FIELD.test(decodedKey)
+      ? `${prefix}${key}=${REDACTED}`
+      : match;
+  });
+}
+
 function redactStructuredBody(value: unknown, key = ""): unknown {
-  if (SENSITIVE_FIELD.test(key)) return REDACTED;
+  if (SENSITIVE_FIELD.test(key) || SENSITIVE_AUTH_FIELD.test(key)) return REDACTED;
   if (Array.isArray(value)) return value.map((entry) => redactStructuredBody(entry));
   if (!isRecord(value)) return value;
   return Object.fromEntries(
@@ -167,13 +186,25 @@ export function redactBrowserBody(body: unknown, contentType = ""): string | und
   if (lowerContentType.includes("x-www-form-urlencoded")) {
     const params = new URLSearchParams(body);
     for (const key of [...params.keys()]) {
-      if (SENSITIVE_FIELD.test(key)) params.set(key, REDACTED);
+      if (SENSITIVE_FIELD.test(key) || SENSITIVE_AUTH_FIELD.test(key)) params.set(key, REDACTED);
     }
     return boundBody(params.toString());
   }
   return boundBody(body.replace(
-    /((?:authorization|cookie|credential|password|passwd|secret|session|token|api[_-]?key|access[_-]?key|client[_-]?secret)\s*[:=]\s*)([^&,\s]+)/gi,
-    `$1${REDACTED}`,
+    /(^|[?&#,{\s])(["']?)([\w%+-]+)\2(\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|Bearer\s+[^\s,&}]+|[^&,\s}]+)/gi,
+    (match, prefix: string, quote: string, key: string, separator: string, value: string) => {
+      let decodedKey: string;
+      try {
+        decodedKey = decodeURIComponent(key.replace(/\+/g, " "));
+      } catch {
+        decodedKey = key;
+      }
+      if (!SENSITIVE_FIELD.test(decodedKey) && !SENSITIVE_AUTH_FIELD.test(decodedKey)) return match;
+      const valueQuote = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))
+        ? value[0]
+        : "";
+      return `${prefix}${quote}${key}${quote}${separator}${valueQuote}${REDACTED}${valueQuote}`;
+    },
   ));
 }
 
@@ -239,8 +270,10 @@ function parseTargetRegistration(value: unknown): OpenDesignHostBrowserTargetReg
     || (title?.length ?? 0) > MAX_TITLE_LENGTH
     || webContentsId === undefined
     || webContentsId <= 0
+    || (value.active !== undefined && typeof value.active !== "boolean")
   ) return null;
-  return { projectId, tabId, ...(title === undefined ? {} : { title }), url, webContentsId };
+  return { projectId, tabId, ...(title === undefined ? {} : { title }), url, webContentsId,
+    ...(typeof value.active === "boolean" ? { active: value.active } : {}) };
 }
 
 function parseTargetIdentity(value: unknown): OpenDesignHostBrowserTargetIdentity | null {
@@ -505,6 +538,8 @@ export type DesignBrowserCdpController = {
   close(): void;
   execute(value: unknown): Promise<OpenDesignHostBrowserExecuteResult>;
   listTargets(): OpenDesignHostBrowserListTargetsResult;
+  /** Main-only identity for scoped native grants; never exposed through renderer IPC. */
+  performanceTargetIdentity(projectId: string, tabId: string): { webContentsId: number; navigationGeneration: number } | null;
   registerTarget(value: unknown): OpenDesignHostBrowserRegisterTargetResult;
   unregisterTarget(value: unknown): OpenDesignHostActionResult;
 };
@@ -529,12 +564,14 @@ export async function executeDesignBrowserRequest(
 
 export function createDesignBrowserCdpController(
   designBrowserSession: Session,
+  consumePerformanceGrant?: (request: { approvalId: string; projectId: string; tabId: string; webContentsId: number; navigationGeneration: number; reportId: string; cpu: number }) => boolean,
 ): DesignBrowserCdpController {
   const trustedPopups = new Set<WebContents>();
   const approvedIdentity = (guest: WebContents) => guestHasApprovedIdentity(guest, designBrowserSession) || (trustedPopups.has(guest) && !guest.isDestroyed() && guest.session === designBrowserSession);
   const approved = (guest: WebContents) => approvedIdentity(guest) && isAllowedDesignBrowserUrl(guest.getURL() || "about:blank");
   const attached = new Map<number, AttachedGuest>();
   const registrations = new Map<string, OpenDesignHostBrowserTargetRegistration>();
+  let navigationGeneration = 0;
 
   const removeGuest = (webContentsId: number): void => {
     const state = attached.get(webContentsId);
@@ -564,6 +601,7 @@ export function createDesignBrowserCdpController(
     }
     if (attached.has(guest.id)) return;
     const state: AttachedGuest = {
+      navigationGeneration: ++navigationGeneration,
       consoleEntries: [],
       devtools: createDevtoolsState(),
       guest,
@@ -571,6 +609,9 @@ export function createDesignBrowserCdpController(
       networkOrder: [],
     };
     attached.set(guest.id, state);
+    guest.on("did-start-navigation", (_event, _url, _inPlace, mainFrame) => {
+      if (mainFrame && attached.get(guest.id) === state) state.navigationGeneration = ++navigationGeneration;
+    });
     guest.once("destroyed", () => removeGuest(guest.id));
     guest.debugger.on("detach", () => removeGuest(guest.id));
     guest.debugger.on("message", (_event, method, params) => {
@@ -701,6 +742,7 @@ export function createDesignBrowserCdpController(
       return failure("browser tab registration identity does not match");
     }
     registrations.set(registration.tabId, registration);
+    if (registration.active !== undefined) updateDevtoolsHostActivity(state.devtools, registration.active);
     return { ok: true, target: targetSnapshot(registration, state.guest) };
   };
 
@@ -747,6 +789,14 @@ export function createDesignBrowserCdpController(
     try {
       switch (operation.kind) {
         case "devtools": {
+          if (operation.action === "capture-throttle") {
+            const params = operation.params;
+            if (typeof params.nativeApprovalId !== "string" || typeof params.reportId !== "string" || typeof params.cpu !== "number" ||
+              !consumePerformanceGrant?.({ approvalId: params.nativeApprovalId, projectId: registration.projectId, tabId: request.tabId,
+                webContentsId: guest.id, navigationGeneration: state.navigationGeneration, reportId: params.reportId, cpu: params.cpu })) {
+              return failure("temporary capture CPU changes require a fresh native confirmation");
+            }
+          }
           const outcome = await executeDevtoolsAction(guest, state.devtools, operation);
           if (!outcome.ok) return failure(outcome.reason);
           const value = { action: operation.action, result: outcome.value };
@@ -992,6 +1042,12 @@ export function createDesignBrowserCdpController(
     },
     execute,
     listTargets,
+    performanceTargetIdentity: (projectId, tabId) => {
+      const registration = registrations.get(tabId);
+      const state = registration ? attached.get(registration.webContentsId) : undefined;
+      if (!registration || registration.projectId !== projectId || !state || !approved(state.guest) || !state.guest.debugger.isAttached()) return null;
+      return { webContentsId: state.guest.id, navigationGeneration: state.navigationGeneration };
+    },
     registerTarget,
     unregisterTarget,
   };

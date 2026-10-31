@@ -67,6 +67,7 @@ type HostBrowserControlBridge = {
     tabId: string;
   }): Promise<OpenDesignHostBrowserExecuteResult>;
   registerTarget(target: {
+    active?: boolean;
     projectId: string;
     tabId: string;
     title?: string;
@@ -250,18 +251,21 @@ export function createEmbeddedBrowserControlSession(
     }
   };
 
-  const registerHostTarget = async () => {
-    if (!host) return false;
+  const registerHostTarget = async (active?: boolean) => {
+    if (!host) return null;
     for (let attempt = 0; attempt < 20 && !stopped; attempt += 1) {
-      const result = await host.registerTarget(hostTarget(currentTarget));
-      if (!isRecord(result) || result.ok !== false) return true;
+      // Navigation metadata can lead the guest's committed URL. Retry against
+      // current metadata, while preserving every queued visibility transition.
+      const target = { ...currentTarget, ...(active === undefined ? {} : { active }) };
+      const result = await host.registerTarget(hostTarget(target));
+      if (!isRecord(result) || result.ok !== false) return target;
       const reason = typeof result.reason === 'string' ? result.reason : '';
       const transient = reason.includes('not an attached approved Design Browser guest')
         || reason.includes('URL does not match the attached guest');
       if (!transient || attempt === 19) assertHostSuccess(result, 'register target');
       await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
     }
-    return false;
+    return null;
   };
 
   const ready = (async () => {
@@ -270,6 +274,7 @@ export function createEmbeddedBrowserControlSession(
       return false;
     }
     options.onStatus?.('connecting');
+    let stage = 'host-register';
     try {
       if (!await registerHostTarget()) return false;
       hostRegistered = true;
@@ -277,6 +282,7 @@ export function createEmbeddedBrowserControlSession(
         await host.unregisterTarget({ tabId: currentTarget.tabId });
         return false;
       }
+      stage = 'daemon-register';
       const registration = await registerBrowserTarget(
         fetchImpl,
         currentTarget,
@@ -285,6 +291,7 @@ export function createEmbeddedBrowserControlSession(
       );
       leaseId = registration.leaseId;
       if (currentTarget.active) {
+        stage = 'active-select';
         await selectActiveBrowserTarget(fetchImpl, currentTarget, controller.signal, headers);
       }
       if (stopped) {
@@ -293,11 +300,17 @@ export function createEmbeddedBrowserControlSession(
       }
       options.onStatus?.('connected');
       void relayCommands().catch((error) => {
-        if (!isAbortError(error)) void fail();
+        if (!isAbortError(error)) {
+          logRegistrationFailure('command-relay', error);
+          void fail();
+        }
       });
       return true;
     } catch (error) {
-      if (!isAbortError(error)) await fail();
+      if (!isAbortError(error)) {
+        logRegistrationFailure(stage, error);
+        await fail();
+      }
       return false;
     }
   })();
@@ -306,33 +319,60 @@ export function createEmbeddedBrowserControlSession(
     ready,
     stop: cleanup,
     updateTarget(target) {
-      currentTarget = target;
+      currentTarget = { ...target };
+      const update = currentTarget;
       if (stopped) return;
       updateChain = updateChain.then(async () => {
         if (stopped || !host || !hostRegistered || !leaseId) return;
+        let stage = 'host-update';
         try {
-          assertHostSuccess(await host.registerTarget(hostTarget(currentTarget)), 'update target');
+          const registered = await registerHostTarget(update.active);
+          if (!registered || stopped) return;
+          stage = 'lease-renew';
           await renewBrowserTarget(
             fetchImpl,
             leaseId,
-            currentTarget,
+            registered,
             controller.signal,
             headers,
           );
-          if (currentTarget.active) {
+          if (update.active) {
+            stage = 'active-update';
             await selectActiveBrowserTarget(
               fetchImpl,
-              currentTarget,
+              registered,
               controller.signal,
               headers,
             );
           }
         } catch (error) {
-          if (!isAbortError(error)) await fail();
+          if (!isAbortError(error)) {
+            logRegistrationFailure(stage, error, {
+              queuedUrlCurrent: update.url === currentTarget.url,
+              queuedActive: update.active,
+              currentActive: currentTarget.active,
+            });
+            await fail();
+          }
         }
       });
     },
   };
+}
+
+let registrationFailureDiagnostics = 0;
+/** Bounded diagnostics deliberately exclude URLs, project identity and raw host/server messages. */
+function logRegistrationFailure(stage: string, error: unknown, state?: Record<string, boolean>): void {
+  if (registrationFailureDiagnostics++ >= 40) return;
+  const message = error instanceof Error ? error.message : '';
+  const reason = message.includes('URL does not match the attached guest') ? 'host-url-mismatch'
+    : message.includes('not an attached approved Design Browser guest') ? 'host-guest-unavailable'
+    : message.includes('already registered to another tab') ? 'host-tab-conflict'
+    : message.includes('returned no lease id') ? 'missing-lease'
+    : /failed \(\d{3}\)$/.test(message) ? 'http-request-failed' : 'unclassified';
+  const status = /failed \((\d{3})\)$/.exec(message)?.[1];
+  console.warn(JSON.stringify({ logger: 'browser.control.registration', event: 'failed', stage, reason,
+    ...(status ? { status: Number(status) } : {}), ...state }));
 }
 
 function readHostBrowserControlBridge(): HostBrowserControlBridge | null {
@@ -354,6 +394,7 @@ function readHostBrowserControlBridge(): HostBrowserControlBridge | null {
 
 function hostTarget(target: EmbeddedBrowserTarget) {
   return {
+    active: target.active,
     projectId: target.projectId,
     tabId: target.tabId,
     title: target.title,
@@ -740,18 +781,45 @@ async function requestJson(
 ): Promise<unknown> {
   const requestHeaders = new Headers(headers);
   requestHeaders.set('Content-Type', 'application/json');
-  const response = await fetchImpl(url, {
-    method,
-    headers: Object.fromEntries(requestHeaders.entries()),
-    body: JSON.stringify(body),
-    ...(signal ? { signal } : {}),
-  });
+  const startedAt = performance.now();
+  const requestId = ++browserControlRequestSequence;
+  const endpoint = url.endsWith('/commands/next') ? 'next-command'
+    : url.endsWith('/result') ? 'command-result'
+    : url.endsWith('/lease') ? (method === 'DELETE' ? 'lease-release' : 'lease-renew')
+    : url.endsWith('/register') ? 'register' : url.endsWith('/active-tab') ? 'active-tab' : 'command';
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      method,
+      headers: Object.fromEntries(requestHeaders.entries()),
+      body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
+    });
+  } catch (error) {
+    if (!isAbortError(error)) logBrowserControlHttp({ event: 'failed', requestId, endpoint, method,
+      elapsedMs: Math.round(performance.now() - startedAt), code: 'FETCH_FAILED' });
+    throw error;
+  }
   if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null);
+    const rawCode = isRecord(payload) && typeof payload.code === 'string' ? payload.code
+      : isRecord(payload) && isRecord(payload.error) && typeof payload.error.code === 'string' ? payload.error.code : '';
+    logBrowserControlHttp({ event: 'failed', requestId, endpoint, method, status: response.status,
+      elapsedMs: Math.round(performance.now() - startedAt), code: BROWSER_CONTROL_ERROR_CODES.has(rawCode) ? rawCode : 'OTHER' });
     throw new Error(`${method} ${url} failed (${response.status})`);
   }
-  if (response.status === 204) return null;
-  const text = await response.text();
+  const text = response.status === 204 ? '' : await response.text();
   return text ? JSON.parse(text) as unknown : null;
+}
+
+let browserControlRequestSequence = 0;
+let browserControlHttpDiagnostics = 0;
+const BROWSER_CONTROL_ERROR_CODES = new Set(['BROWSER_TAB_NOT_FOUND', 'BROWSER_LEASE_EXPIRED', 'BROWSER_LEASE_CONFLICT',
+  'BROWSER_COMMAND_NOT_FOUND', 'FORBIDDEN', 'UNAUTHORIZED', 'PROJECT_NOT_FOUND', 'BAD_REQUEST']);
+/** Bounded failure timing; endpoint categories never include user URLs or IDs. */
+function logBrowserControlHttp(fields: Record<string, string | number>): void {
+  if (browserControlHttpDiagnostics++ >= 160) return;
+  console.warn(JSON.stringify({ logger: 'browser.control.http', at: new Date().toISOString(), ...fields }));
 }
 
 function readLeaseId(value: unknown): string {

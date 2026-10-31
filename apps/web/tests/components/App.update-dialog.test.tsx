@@ -11,7 +11,6 @@ import type {
 import { installMockOpenDesignHost } from '@open-design/host/testing';
 
 import { App } from '../../src/App';
-import { fetchAmrModels, fetchVelaLoginStatus } from '../../src/providers/daemon';
 import {
   daemonIsLive,
   fetchAgentsStream,
@@ -61,9 +60,7 @@ vi.mock('../../src/components/SettingsDialog', () => ({
   SettingsDialog: () => null,
 }));
 
-vi.mock('../../src/components/AmrArtifactUpgradeGate', () => ({
-  AmrArtifactUpgradeGate: () => null,
-}));
+
 
 vi.mock('../../src/providers/registry', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/registry')>(
@@ -80,16 +77,6 @@ vi.mock('../../src/providers/registry', async () => {
   };
 });
 
-vi.mock('../../src/providers/daemon', async () => {
-  const actual = await vi.importActual<typeof import('../../src/providers/daemon')>(
-    '../../src/providers/daemon',
-  );
-  return {
-    ...actual,
-    fetchAmrModels: vi.fn(),
-    fetchVelaLoginStatus: vi.fn(),
-  };
-});
 
 vi.mock('../../src/state/projects', async () => {
   const actual = await vi.importActual<typeof import('../../src/state/projects')>(
@@ -126,8 +113,6 @@ const mockedFetchAppVersionInfo = vi.mocked(fetchAppVersionInfo);
 const mockedFetchDesignSystems = vi.mocked(fetchDesignSystems);
 const mockedFetchPromptTemplates = vi.mocked(fetchPromptTemplates);
 const mockedFetchSkills = vi.mocked(fetchSkills);
-const mockedFetchAmrModels = vi.mocked(fetchAmrModels);
-const mockedFetchVelaLoginStatus = vi.mocked(fetchVelaLoginStatus);
 const mockedListProjects = vi.mocked(listProjects);
 const mockedListTemplates = vi.mocked(listTemplates);
 const mockedLoadConfig = vi.mocked(loadConfig);
@@ -194,14 +179,6 @@ describe('App updater dialog integration', () => {
     mockedFetchDesignSystems.mockResolvedValue([]);
     mockedFetchPromptTemplates.mockResolvedValue([]);
     mockedFetchAppVersionInfo.mockResolvedValue(null);
-    mockedFetchAmrModels.mockResolvedValue({ source: 'preset', refreshing: false, models: [] });
-    mockedFetchVelaLoginStatus.mockResolvedValue({
-      loggedIn: false,
-      loginInFlight: false,
-      profile: 'prod',
-      user: null,
-      configPath: '/tmp/amr-config.json',
-    });
     mockedListProjects.mockResolvedValue([]);
     mockedListTemplates.mockResolvedValue([]);
     mockedLoadConfig.mockReturnValue({ ...baseConfig });

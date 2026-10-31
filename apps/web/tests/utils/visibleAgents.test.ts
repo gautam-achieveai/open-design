@@ -30,12 +30,12 @@ describe('availableVisibleAgentCount', () => {
     ];
 
     expect(agents.filter((a) => a.available).length).toBe(3);
-    expect(availableVisibleAgentCount(agents)).toBe(2);
+    expect(availableVisibleAgentCount(agents)).toBe(1);
   });
 
   it('ignores unavailable agents', () => {
     const agents = [
-      agent({ id: 'amr', available: true }),
+      agent({ id: 'claude', available: true }),
       agent({ id: 'codex', available: false }),
     ];
 
@@ -53,8 +53,9 @@ describe('availableVisibleAgentCount', () => {
 });
 
 describe('isVisibleLocalCliAgent', () => {
-  it('hides only the internal BYOK OpenCode runtime', () => {
+  it('hides the internal BYOK runtime and retired managed agent', () => {
     expect(isVisibleLocalCliAgent({ id: 'byok-opencode' })).toBe(false);
+    expect(isVisibleLocalCliAgent({ id: 'amr' })).toBe(false);
     expect(isVisibleLocalCliAgent({ id: 'opencode' })).toBe(true);
   });
 });

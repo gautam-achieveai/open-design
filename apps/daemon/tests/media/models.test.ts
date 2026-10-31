@@ -8,16 +8,15 @@ import {
 } from '../../src/media/models.js';
 
 describe('image model defaults', () => {
-  it('uses Vela as the only default image route', () => {
-    expect(IMAGE_MODELS.filter((model) => model.default).map((model) => model.id)).toEqual([
-      'vela/gpt-image-2',
-    ]);
-    expect(MEDIA_PROVIDERS.some((provider) => provider.id === 'codex')).toBe(false);
+  it('does not silently select a replacement paid image provider', () => {
+    expect(IMAGE_MODELS.filter((model) => model.default).map((model) => model.id)).toEqual([]);
+    expect(MEDIA_PROVIDERS.some((provider) => provider.id === 'vela')).toBe(false);
     expect(IMAGE_MODELS.some((model) => model.provider === 'codex')).toBe(false);
   });
 
-  it('migrates the removed Codex image model id to Vela', () => {
-    expect(canonicalMediaModelId('codex-gpt-image-2')).toBe('vela/gpt-image-2');
+  it.each(['vela/gpt-image-2', 'codex-gpt-image-2', 'nano-banana', 'nano-banana-2'])('rejects retired media choice %s without retargeting it', (id) => {
+    expect(canonicalMediaModelId(id)).toBe(id);
+    expect(findMediaModel(id)).toBeNull();
   });
 
   it('preserves explicit OpenAI BYOK model selection', () => {

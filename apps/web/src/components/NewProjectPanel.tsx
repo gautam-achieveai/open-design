@@ -44,6 +44,7 @@ import {
   DEFAULT_VIDEO_MODEL,
   findProvider,
   imageModelIdForPromptTemplate,
+  isRetiredMediaModel,
   IMAGE_MODELS,
   MEDIA_ASPECTS,
   type MediaModel,
@@ -578,7 +579,7 @@ export function NewProjectPanel({
     const m = normalizedModel;
     // Accept catalogued ids plus any live AIHubMix catalogue id (aihubmix-*),
     // which renders dynamically and won't appear in the static IMAGE_MODELS.
-    if (m && (IMAGE_MODELS.some((x) => x.id === m) || m.startsWith('aihubmix-'))) setImageModel(m);
+    if (m && (isRetiredMediaModel(m) || IMAGE_MODELS.some((x) => x.id === m) || m.startsWith('aihubmix-'))) setImageModel(m);
     const a = pick?.summary.aspect;
     if (a && (MEDIA_ASPECTS as readonly string[]).includes(a)) {
       setImageAspect(a as MediaAspect);
@@ -587,7 +588,7 @@ export function NewProjectPanel({
   function handleVideoPromptTemplate(pick: PromptTemplatePick | null) {
     setVideoPromptTemplate(pick);
     const m = pick?.summary.model;
-    if (m && VIDEO_MODELS.some((x) => x.id === m)) {
+    if (m && (isRetiredMediaModel(m) || VIDEO_MODELS.some((x) => x.id === m))) {
       setVideoModel(m);
       setVideoModelTouched(true);
     }
@@ -624,8 +625,10 @@ export function NewProjectPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, mediaSurface, skillIdForTab, videoModelTouched]);
 
+  const selectedMediaModel = mediaSurface === 'image' ? imageModel : mediaSurface === 'video' ? videoModel : audioModel;
   const canCreate =
-    !loading && (tab !== 'template' || templateId != null);
+    !loading && (tab !== 'template' || templateId != null)
+    && (tab !== 'media' || Boolean(selectedMediaModel) && !isRetiredMediaModel(selectedMediaModel));
 
   function updateTabScrollState() {
     const el = tabsRef.current;
@@ -2771,7 +2774,7 @@ function MediaProjectOptions(props:
 
 export function supportedModels(surface: 'image' | 'video' | 'audio', models: MediaModel[]): MediaModel[] {
   const supportedProviders: Record<'image' | 'video' | 'audio', Set<string>> = {
-    image: new Set(['vela', 'openai', 'volcengine', 'grok', 'nanobanana', 'openrouter', 'imagerouter', 'leonardo', 'custom-image', 'aihubmix', 'minimax']),
+    image: new Set(['openai', 'volcengine', 'grok', 'nanobanana', 'openrouter', 'imagerouter', 'leonardo', 'custom-image', 'aihubmix', 'minimax']),
     video: new Set(['volcengine', 'hyperframes', 'grok', 'openrouter', 'imagerouter', 'aihubmix']),
     audio: new Set(['minimax', 'fishaudio', 'senseaudio', 'elevenlabs', 'openai', 'volcengine', 'aihubmix']),
   };
@@ -2849,7 +2852,7 @@ function MediaModelCards({
   const firstAvailableModelId = groups[0]?.models[0]?.id ?? null;
 
   useEffect(() => {
-    if (selected) return;
+    if (selected || isRetiredMediaModel(value)) return;
     if (firstAvailableModelId) {
       onChange(firstAvailableModelId);
       return;
@@ -2909,7 +2912,7 @@ function MediaModelCards({
     setQuery('');
   }
 
-  const triggerTitle = selected?.model.label ?? t('newproj.modelMissingTitle');
+  const triggerTitle = selected?.model.label ?? t(isRetiredMediaModel(value) ? 'chat.runError.title.modelUnavailable' : 'newproj.modelMissingTitle');
   // The model.hint frequently leads with the provider name (e.g.
   // "OpenAI · 4K, native multimodal"), so emitting providerLabel as a
   // separate prefix would duplicate it. If the hint already opens with the

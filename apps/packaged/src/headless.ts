@@ -13,7 +13,6 @@ import { releaseChannelFromNamespace } from "@open-design/release";
 
 import {
   PACKAGED_NAMESPACE_ENV,
-  resolvePackagedAmrProfile,
   type PackagedConfig,
 } from "./config.js";
 import {
@@ -37,10 +36,6 @@ function resolveHeadlessNamespaceBaseRoot(): string {
   return join(dataBase, "open-design", "namespaces");
 }
 
-function resolveHeadlessAmrProfile(): PackagedConfig["amrProfile"] {
-  return resolvePackagedAmrProfile(process.env.OPEN_DESIGN_AMR_PROFILE);
-}
-
 function resolveHeadlessConfig(): PackagedConfig {
   const namespace = OPEN_DESIGN_SIDECAR_CONTRACT.normalizeNamespace(
     process.env[PACKAGED_NAMESPACE_ENV] ?? SIDECAR_DEFAULTS.namespace,
@@ -55,7 +50,6 @@ function resolveHeadlessConfig(): PackagedConfig {
     ?? join(__dirname, "..", "..", "..", "open-design");
 
   return {
-    amrProfile: resolveHeadlessAmrProfile(),
     appVersion: null,
     daemonCliEntry: null,
     daemonSidecarEntry: null,
@@ -68,14 +62,6 @@ function resolveHeadlessConfig(): PackagedConfig {
     updateMetadataUrl: process.env.OD_UPDATE_METADATA_URL?.trim() || null,
     posthogKey: process.env.POSTHOG_KEY?.trim() || null,
     posthogHost: process.env.POSTHOG_HOST?.trim() || null,
-    velaWebUrl: process.env.OD_VELA_WEB_URL?.trim() || null,
-    velaWebUrls: (() => {
-      try {
-        return JSON.parse(process.env.OD_VELA_WEB_URLS ?? '{}') as Record<string, string>;
-      } catch {
-        return {};
-      }
-    })(),
     webSidecarEntry: null,
     webStandaloneRoot: null,
     webOutputMode: "server",

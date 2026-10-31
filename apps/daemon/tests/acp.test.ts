@@ -48,17 +48,117 @@ test('ACP session params normalize explicit MCP servers to ACP stdio shape', () 
   });
 });
 
-test('ACP session params preserve caller-provided type and env fields', () => {
+test('ACP session params keep remote URL and headers in the ACP wire format', () => {
   const mcpServers = [
-    { type: 'http', name: 'http-server', url: 'http://localhost:3000', headers: {}, env: [{ key: 'TOKEN', value: 'secret' }] },
+    { type: 'http', name: 'http-server', url: 'http://localhost:3000', headers: { Authorization: 'Bearer fixture' } },
   ];
 
   const result = buildAcpSessionNewParams('/tmp/od-project', { mcpServers });
-  const server = result.mcpServers[0];
-  assert.ok(server);
-  assert.equal(server.type, 'http');
-  assert.equal(server.name, 'http-server');
-  assert.deepEqual(server.env, [{ key: 'TOKEN', value: 'secret' }]);
+  assert.deepEqual(result.mcpServers[0], {
+    type: 'http', name: 'http-server', url: 'http://localhost:3000',
+    headers: [{ name: 'Authorization', value: 'Bearer fixture' }],
+  });
+});
+
+test('ACP handshake sends only remote transports advertised by the connected agent', () => {
+  const scenarios = [
+    { capabilities: { http: true, sse: true }, names: ['local', 'remote', 'stream'] },
+    { capabilities: { http: true }, names: ['local', 'remote'] },
+    { capabilities: {}, names: ['local'] },
+  ];
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    for (const scenario of scenarios) {
+      const child = new FakeAcpChild();
+      const writes: Array<{ method: string; params: { mcpServers?: Array<Record<string, unknown>> } }> = [];
+      child.stdin.on('data', (chunk) => writes.push(JSON.parse(String(chunk))));
+      const session = attachAcpSession({
+        child: child as never, prompt: 'fixture', cwd: '/tmp/od-project',
+        mcpServers: [
+          { type: 'stdio', name: 'local', command: 'od', args: [], env: [] },
+          { type: 'http', name: 'remote', url: 'https://example.com/mcp',
+            headers: [{ name: 'Authorization', value: 'Bearer synthetic-token' }] },
+          { type: 'sse', name: 'stream', url: 'https://example.com/events', headers: [] },
+        ],
+        send: () => {},
+      });
+      writeAcpResult(child, 1, { agentCapabilities: { mcpCapabilities: scenario.capabilities } });
+      const servers = writes.find((frame) => frame.method === 'session/new')?.params.mcpServers;
+      assert.deepEqual(servers?.map((server) => server.name), scenario.names);
+      const remote = servers?.find((server) => server.name === 'remote');
+      if (remote) {
+        assert.deepEqual(remote, {
+          type: 'http', name: 'remote', url: 'https://example.com/mcp',
+          headers: [{ name: 'Authorization', value: 'Bearer synthetic-token' }],
+        });
+      }
+      session.abort();
+    }
+    assert.equal(JSON.stringify(warn.mock.calls).includes('synthetic-token'), false);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test('ACP session/load reattaches current MCP servers with transport capability checks', () => {
+  const cases = [
+    { capabilities: { http: true }, version: '0.36.0', names: ['local', 'remote'] },
+    { capabilities: {}, version: '0.38.0', names: [] },
+  ];
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    for (const scenario of cases) {
+      const child = new FakeAcpChild();
+      const writes: Array<{ method: string; params: { sessionId?: string; mcpServers?: Array<Record<string, unknown>> } }> = [];
+      child.stdin.on('data', (chunk) => writes.push(JSON.parse(String(chunk))));
+      const session = attachAcpSession({
+        child: child as never, prompt: 'fixture', cwd: '/tmp/od-project', resumeSessionId: 'previous',
+        stdioMcpRemovedInVersion: '0.37.0',
+        mcpServers: [
+          { type: 'stdio', name: 'local', command: 'od', args: [], env: [] },
+          { type: 'http', name: 'remote', url: 'https://example.com/mcp',
+            headers: [{ name: 'Authorization', value: 'Bearer current-token' }] },
+        ],
+        send: () => {},
+      });
+      try {
+        writeAcpResult(child, 1, {
+          agentInfo: { version: scenario.version },
+          agentCapabilities: { loadSession: true, mcpCapabilities: scenario.capabilities },
+        });
+        const load = writes.find((frame) => frame.method === 'session/load');
+        assert.equal(load?.params.sessionId, 'previous');
+        assert.deepEqual(load?.params.mcpServers?.map((server) => server.name), scenario.names);
+        const remote = load?.params.mcpServers?.find((server) => server.name === 'remote');
+        if (remote) assert.deepEqual(remote.headers, [{ name: 'Authorization', value: 'Bearer current-token' }]);
+      } finally {
+        session.abort();
+      }
+    }
+    assert.equal(JSON.stringify(warn.mock.calls).includes('current-token'), false);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test('ACP session/load accepts an empty result and prompts the requested session', () => {
+  const child = new FakeAcpChild();
+  const writes: Array<{ method: string; params: { sessionId?: string } }> = [];
+  const events: Array<{ event: string }> = [];
+  child.stdin.on('data', (chunk) => writes.push(JSON.parse(String(chunk))));
+  const session = attachAcpSession({
+    child: child as never, prompt: 'fixture', cwd: '/tmp/od-project',
+    resumeSessionId: 'previous', mcpServers: [],
+    send: (event) => events.push({ event }),
+  });
+  try {
+    writeAcpResult(child, 1, { agentCapabilities: { loadSession: true } });
+    writeAcpResult(child, 2, {});
+    assert.equal(writes.find((frame) => frame.method === 'session/prompt')?.params.sessionId, 'previous');
+    assert.equal(events.some((event) => event.event === 'error'), false);
+  } finally {
+    session.abort();
+  }
 });
 
 test('attachAcpSession emits exact bounded prompt_budget_v1 facts for a new session', () => {
@@ -3807,6 +3907,7 @@ test('attachAcpSession resumes via session/load when resumeSessionId is set', ()
   assert.deepEqual(loadReq?.params, {
     sessionId: 'oc-prev',
     cwd: path.resolve('/tmp/od-project'),
+    mcpServers: [],
   });
   assert.equal(requests.some((entry) => entry.method === 'session/new'), false);
 });

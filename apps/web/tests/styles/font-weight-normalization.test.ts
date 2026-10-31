@@ -25,9 +25,7 @@ const pendingNormalization = new Set([
   // bare buttons, record rows and pills (see `w77-bare-button-weight.test.ts`).
   // Reconciling that spec with the ladder is tracked with the chat module port
   // (OPEND-2553), not with the sync that brought the two side by side.
-  'apps/web/src/components/chat/AmrOwnerTopUpDialog.module.css',
   'apps/web/src/components/chat/PlanPill.module.css',
-  'apps/web/src/components/chat/UpgradeCard.module.css',
   'apps/web/src/components/chat/primitives/record.module.css',
   'apps/web/src/styles/chat.css',
   'apps/web/src/styles/viewer/composio.css',

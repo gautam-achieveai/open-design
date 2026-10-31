@@ -10,7 +10,6 @@ import type { ReactElement } from 'react';
 import { I18nProvider, type Locale } from '../../../src/i18n';
 import { Foldable } from '../../../src/components/chat/primitives/Foldable';
 import { StatusMark } from '../../../src/components/chat/primitives/StatusMark';
-import { UpgradeCard } from '../../../src/components/chat/UpgradeCard';
 import { ToolRow } from '../../../src/components/chat/primitives/ToolRow';
 import { SayText } from '../../../src/components/chat/primitives/SayText';
 import { FileButton } from '../../../src/components/chat/primitives/FileButton';
@@ -291,13 +290,6 @@ describe('SayText / FileButton', () => {
     expect(screen.getByText('card.html')).toBeTruthy();
     expect(container.querySelector('button')).toBeNull();
     expect(screen.queryByLabelText('打开 card.html')).toBeNull();
-  });
-});
-
-describe('UpgradeCard', () => {
-  it('升级按钮复用设置页的本地化文案', () => {
-    render(<UpgradeCard balanceUsd={1.2} onUpgrade={() => {}} />, 'fr');
-    expect(screen.getByRole('button', { name: 'Mettre à niveau' })).toBeTruthy();
   });
 });
 

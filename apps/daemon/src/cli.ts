@@ -3,9 +3,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { runDaemonCliStartup, startDaemonRuntime } from './daemon-startup.js';
-import { runLiveArtifactsMcpServer } from './mcp-live-artifacts-server.js';
+import { runLiveArtifactsMcpServer } from './mcp-live-artifacts.js';
 import { runArtifactsCli } from './artifacts-cli.js';
-import { runResource } from './resource-cli.js';
 import { runProjectHandoff } from './handoff-cli.js';
 import { runConnectorsToolCli } from './tools-connectors-cli.js';
 import { runDesignSystemsToolCli } from './tools-design-systems-cli.js';
@@ -26,6 +25,8 @@ import {
   AGENT_SLUGS,
   isAgentSlug,
   planAgentInstall,
+  planHttpAgentInstall,
+  httpMcpUrlFromDaemonOrigin,
   applyJsonInstall,
   removeJsonInstall,
 } from './mcp-agent-install.js';
@@ -105,6 +106,8 @@ const MCP_BOOLEAN_FLAGS = new Set([
   'help',
   'h',
 ]);
+const MCP_APPROVAL_STRING_FLAGS = new Set(['daemon-url', 'workspace', 'workspace-member']);
+const MCP_APPROVAL_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 
 // Hoisted next to MCP_*_FLAGS for the same TDZ reason as the MEDIA flags
 // above: `od mcp install <agent>` dispatches through SUBCOMMAND_MAP during
@@ -114,6 +117,8 @@ const MCP_BOOLEAN_FLAGS = new Set([
 const MCP_INSTALL_STRING_FLAGS = new Set([
   'daemon-url',
   'name',
+  'transport',
+  'bearer-token-env-var',
 ]);
 const MCP_INSTALL_CLI_PROBE_FLAG = 'open-design-cli-probe';
 const MCP_INSTALL_CLI_PROBE_TOKEN = 'open-design-cli:mcp-install:v1';
@@ -354,6 +359,15 @@ const BRAND_BOOLEAN_FLAGS = new Set([
 const AGENT_STRING_FLAGS = new Set(['daemon-url']);
 const AGENT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 const BROWSER_STRING_FLAGS = new Set([
+  'scenario-id',
+  'baseline',
+  'candidate',
+  'cpu',
+  'approval-request-id',
+  'max-ms',
+  'section',
+  'kind',
+  'cursor',
   'daemon-url',
   'project',
   'tab',
@@ -440,9 +454,6 @@ const SUBCOMMAND_MAP = {
   browser: runBrowser,
   media: runMedia,
   mcp: runMcp,
-  amr: runAmr,
-  collab: runCollab,
-  'message-center': runMessageCenter,
   research: runResearch,
   plugin: runPlugin,
   ui: runUi,
@@ -452,7 +463,6 @@ const SUBCOMMAND_MAP = {
   brands: runBrand,
   project: runProject,
   strategy: runStrategy,
-  workspace: runWorkspace,
   automation: runAutomation,
   automations: runAutomation,
   memory: runMemory,
@@ -469,7 +479,6 @@ const SUBCOMMAND_MAP = {
   skill: runSkills,
   skills: runSkills,
   'design-systems': runDesignSystems,
-  resource: runResource,
   craft: runCraft,
   diagnostics: runDiagnostics,
   export: runExport,
@@ -493,7 +502,6 @@ OD Next runs by default; this installation opts out of it here:
 
   od config set odNextStrategyMode off       Opt out; takes effect next run.
   od config set odNextStrategyMode active    Opt back in.
-  od config set cloudFeatures true           Offer OpenDesign Cloud (sign-in, invites, billing).
 
 Status names the authority in effect (env / app_config / default), which the
 mode alone does not: leaving it unset and saving 'off' produce opposite routes.
@@ -505,6 +513,13 @@ Options:
 
 function printBrowserHelp() {
   console.log(`Usage:
+  od browser performance start --project <id> [--tab <id>] [--max-ms <500..60000>] [--scenario-id <name>] [--json]
+  od browser performance stop --project <id> [--tab <id>] [--json]
+  od browser performance status --project <id> [--tab <id>] [--json]
+  od browser performance compare --project <id> --baseline <id,id,id> --candidate <id,id,id> [--json]
+  od browser performance override <reportId> --project <id> --cpu <1..20> [--tab <id>] [--approval-request-id <id>] [--json]
+  od browser performance list --project <id> [--cursor <cursor>] [--limit <n>] [--json]
+  od browser performance report <reportId> --project <id> [--section findings|evidence] [--kind request|lcp|task|...] [--cursor <cursor>] [--limit <n>] [--json]
   od browser tabs --project <id> [--json]
   od browser active <tabId|clear> --project <id> [--json]
   od browser snapshot --project <id> [--tab <id>] [--depth <n>] [--selector <css>] [--json]
@@ -714,6 +729,58 @@ async function runBrowser(args) {
       if (!response.ok) return structuredHttpFailure(response);
       const data = await response.json();
       process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      return;
+    }
+    if (sub === 'performance') {
+      const action = positional[1];
+      const endpoint = `${projectPath}/performance`;
+      const headers = { 'content-type': 'application/json', ...(workspaceHeadersFromExplicitFlags(flags) ?? {}) };
+      let url = endpoint;
+      let options: RequestInit = { headers };
+      if (action === 'start' || action === 'stop') {
+        url += `/${action}`;
+        options = { headers, method: 'POST', body: JSON.stringify({
+          ...(typeof flags.tab === 'string' ? { tabId: flags.tab } : {}),
+          ...(action === 'start' && flags['max-ms'] !== undefined ? { maxMs: browserNumberFlag(flags, 'max-ms', undefined) } : {}),
+          ...(action === 'start' && typeof flags['scenario-id'] === 'string' ? { scenarioId: flags['scenario-id'] } : {}),
+        }) };
+      } else if (action === 'compare') {
+        if (typeof flags.baseline !== 'string' || typeof flags.candidate !== 'string') throw new Error('compare requires --baseline and --candidate lists, at least 3 report IDs each');
+        url += '/compare';
+        options = { headers, method: 'POST', body: JSON.stringify({
+          baselineReportIds: flags.baseline.split(',').map((id) => id.trim()),
+          candidateReportIds: flags.candidate.split(',').map((id) => id.trim()),
+        }) };
+      } else if (action === 'override') {
+        if (!positional[2] || flags.cpu === undefined) throw new Error('override requires report ID and --cpu; approval is only available in the desktop native dialog');
+        url += '/override';
+        options = { headers, method: 'POST', body: JSON.stringify({ reportId: positional[2], cpu: browserNumberFlag(flags, 'cpu', undefined),
+          ...(typeof flags.tab === 'string' ? { tabId: flags.tab } : {}),
+          ...(typeof flags['approval-request-id'] === 'string' ? { approvalRequestId: flags['approval-request-id'] } : {}),
+        }) };
+      } else if (action === 'status') {
+        url += '/status';
+        if (typeof flags.tab === 'string') url += `?tabId=${encodeURIComponent(flags.tab)}`;
+      } else if (action === 'list' || action === 'report') {
+        const page = new URLSearchParams();
+        if (typeof flags.cursor === 'string') page.set('cursor', flags.cursor);
+        if (typeof flags.kind === 'string') page.set('kind', flags.kind);
+        if (flags.limit !== undefined) page.set('limit', String(flags.limit));
+        if (action === 'list') url += '/reports';
+        else {
+          const reportId = positional[2];
+          if (!reportId) throw new Error('performance report requires a report ID');
+          url += `/reports/${encodeURIComponent(reportId)}`;
+          if (typeof flags.section === 'string') {
+            url += '/pages';
+            page.set('section', flags.section);
+          } else if (page.size) throw new Error('--cursor and --limit require --section findings|evidence');
+        }
+        if (page.size) url += `?${page}`;
+      } else throw new Error('performance action must be start, stop, status, list, report, compare, or override');
+      const response = await fetch(url, options);
+      if (!response.ok) return structuredHttpFailure(response);
+      process.stdout.write(JSON.stringify(await response.json(), null, 2) + '\n');
       return;
     }
     if (sub === 'tabs') {
@@ -1548,18 +1615,10 @@ function printRootHelp() {
       schedule, trigger, or harvest results from a routine without
       opening the web UI.
 
-  od message-center <list|read|read-all> [args]
-      Read and acknowledge message-center inbox items through the same
-      daemon endpoints the bell UI uses.
-
   od comment <list|add|status|delete> [args]
       Numbered pins on a preview file or a reviewed browser page, same rows
       the canvas, in-app browser, and Clipper show. Stage them into a run
       with: od run start --comment <id,...>
-
-  od amr <login|status> [args]
-      Start Vela browser sign-in or inspect the current Vela account through
-      the local OpenDesign daemon.
 
   od memory tree <list|view|edit|move> [args]
       Inspect and edit the memory tree that is injected into agent prompts.
@@ -1626,122 +1685,7 @@ What the daemon does:
 }
 
 // ---------------------------------------------------------------------------
-// Subcommand: od amr …
-// ---------------------------------------------------------------------------
-
-async function runAmr(args) {
-  const sub = args[0];
-  if (!sub || sub === 'help' || args.includes('--help') || args.includes('-h')) {
-    console.log(`Usage:
-  od amr login [--json]
-  od amr logout [--json]
-  od amr status [--refresh] [--json]
-
-Options:
-  --daemon-url <url>   OpenDesign daemon HTTP base.
-  --refresh            Bypass the daemon's short wallet display cache.
-  --json               Emit raw JSON.`);
-    process.exit(sub === 'help' || args.includes('--help') || args.includes('-h') ? 0 : 2);
-  }
-  const rest = args.slice(1);
-  const flags = parseFlags(rest, { string: AMR_STRING_FLAGS, boolean: AMR_BOOLEAN_FLAGS });
-  const base = await cliDaemonBaseUrl(flags);
-  switch (sub) {
-    case 'logout': {
-      const logoutResp = await fetch(`${base}/api/integrations/vela/logout`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: '{}',
-      });
-      if (!logoutResp.ok) return structuredHttpFailure(logoutResp);
-      const result = await logoutResp.json();
-      if (flags.json) {
-        return process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-      }
-      console.log('AMR account\tsigned out');
-      return;
-    }
-    case 'login': {
-      const loginResp = await fetch(`${base}/api/integrations/vela/login`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: '{}',
-      });
-      if (!loginResp.ok) return structuredHttpFailure(loginResp);
-      const started = await loginResp.json();
-      const statusResp = await fetch(`${base}/api/integrations/vela/status`);
-      if (!statusResp.ok) return structuredHttpFailure(statusResp);
-      const status = await statusResp.json();
-      if (flags.json) {
-        return process.stdout.write(JSON.stringify({ started, status }, null, 2) + '\n');
-      }
-      console.log(`Vela login\tstarted`);
-      console.log(`Profile\t${status?.profile ?? started?.profile ?? '-'}`);
-      if (status?.loggedIn) {
-        console.log(`Status\tlogged in`);
-        return;
-      }
-      console.log(`Status\t${status?.loginInFlight ? 'waiting for browser authorization' : 'sign-in pending'}`);
-      if (status?.activationUrl) console.log(`Open\t${status.activationUrl}`);
-      if (status?.userCode) console.log(`Code\t${status.userCode}`);
-      if (status?.browserOpenFailed) {
-        console.log(`Note\tbrowser could not be opened automatically; use the link above`);
-      }
-      return;
-    }
-    case 'status': {
-      const query = flags.refresh ? '?refresh=1' : '';
-      const statusResp = await fetch(`${base}/api/integrations/vela/status`);
-      if (!statusResp.ok) return structuredHttpFailure(statusResp);
-      const status = await statusResp.json();
-      let wallet = null;
-      if (status?.loggedIn && (!status?.account?.balanceUsd || flags.refresh)) {
-        const walletResp = await fetch(`${base}/api/integrations/vela/wallet${query}`);
-        if (walletResp.ok) wallet = await walletResp.json();
-        else if (flags.refresh && !status?.account?.balanceUsd) return structuredHttpFailure(walletResp);
-      }
-      const merged = {
-        ...status,
-        user: status?.user ?? wallet?.user ?? null,
-        account:
-          status?.loggedIn && wallet?.status === 'available'
-            ? {
-                ...(status?.account ?? {}),
-                balanceUsd: status?.account?.balanceUsd ?? wallet.balanceUsd,
-              }
-            : status?.account,
-        wallet,
-      };
-      if (flags.json) return process.stdout.write(JSON.stringify(merged, null, 2) + '\n');
-      const account = merged?.user?.email ?? merged?.user?.id ?? '-';
-      console.log(`AMR account\t${account}`);
-      console.log(`Profile\t${merged?.profile ?? '-'}`);
-      // Only present when this build was given a vela web console origin
-      // (OD_VELA_WEB_URL); printing it makes "which backend is this app
-      // pointed at" answerable without reading the packaged config.
-      if (merged?.consoleOrigin) console.log(`Console\t${merged.consoleOrigin}`);
-      if (merged?.account?.plan) console.log(`Plan\t${merged.account.plan}`);
-      if (merged?.account?.balanceUsd) {
-        console.log(`Wallet balance\t$${merged.account.balanceUsd}`);
-        if (wallet?.updatedAt || wallet?.fetchedAt) {
-          console.log(`Updated\t${wallet.updatedAt ?? wallet.fetchedAt}`);
-        }
-        console.log(`Source\t${wallet?.source ?? 'status_account'}`);
-        return;
-      }
-      console.log(`Wallet balance\tunavailable`);
-      console.log(`Status\t${wallet?.status ?? (merged?.loggedIn ? 'logged_in' : 'signed_out')}`);
-      if (wallet?.error?.message) console.log(`Reason\t${wallet.error.message}`);
-      return;
-    }
-    default:
-      console.error(`unknown subcommand: od amr ${sub}`);
-      process.exit(2);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Subcommand: od collab …  (team-edition collaboration)
+// Explicit workspace identity for local project commands
 // ---------------------------------------------------------------------------
 
 function workspaceHeadersFromExplicitFlags(flags, required = false) {
@@ -1767,433 +1711,8 @@ function workspaceHeadersFromExplicitFlags(flags, required = false) {
   }
   return null;
 }
-
-function printCollabHelp() {
-  console.log(`Usage:
-  od collab status <projectId> --workspace <id> --workspace-member <id> [--json]
-  od collab presence <projectId> --workspace <id> --workspace-member <id> [--json]
-  od collab heartbeat <projectId> --workspace <id> --workspace-member <id> --member <id> [--client-id <id> --sequence <n>] [--name <name>] [--role owner|admin|member] [--json]
-  od collab leave <projectId> --workspace <id> --workspace-member <id> --member <id> [--client-id <id> --sequence <n>] [--json]
-  od collab changed <projectId> --workspace <id> --workspace-member <id> [--json]
-  od collab publish <projectId> --workspace <id> --workspace-member <id> [--json]
-  od collab share <projectId> --workspace <id> --workspace-member <id> [--json]
-  od collab pull <projectId> --workspace <id> --workspace-member <id> [--json]
-  od collab share-resource <design-systems|plugins|skills> <id> --workspace <id> --workspace-member <id> [--json]
-  od collab team-resources <design-systems|plugins|skills> --workspace <id> --workspace-member <id> [--json]
-  od collab share-design-system <designSystemId> --workspace <id> --workspace-member <id> [--json]
-  od collab team-design-systems --workspace <id> --workspace-member <id> [--json]
-
-Team-edition collaboration: presence overlay + sync trigger. The
-client is authoritative about whether it is in a shared context, so it drives
-the trigger; the daemon coalesces author edits and flushes at a run boundary,
-advancing the published head version members poll to learn when to pull.
-\`share\` is the team-share intent: it requests the project be published so
-members can pull it, and reports the sync state (local_only / pending_upload /
-synced / sync_failed). \`share-resource <kind> <id>\` promotes a personal design
-system, plugin, or skill into the team scope through the resource hub, and
-\`team-resources <kind>\` lists the ones already shared (the \`*-design-system\`
-forms are kept as aliases).
-
-Options:
-  --project <id>          Project id (alternative to the positional argument).
-  --design-system <id>    Design system id for share-design-system.
-  --workspace <id>        Explicit workspace id for request authorization.
-  --workspace-member <id> Explicit workspace member id for request authorization.
-  --member <id>           Member id for the presence heartbeat / leave.
-  --client-id <id>        Stable id for one presence session.
-  --sequence <n>          Positive monotonic operation number for --client-id.
-  --name <name>           Display name attached to a heartbeat.
-  --role <role>           owner | admin | member.
-  --json                  Emit raw JSON.
-  --daemon-url <url>      Override daemon URL.
-
-Examples:
-  od collab presence p1 --workspace team-1 --workspace-member m-42 --json
-  od collab heartbeat p1 --workspace team-1 --workspace-member m-42 --member m-42 --name "Ma Shu" --role member
-  od collab publish p1 --workspace team-1 --workspace-member m-42
-  od collab share-resource plugins my-plugin --workspace team-1 --workspace-member m-42 --json
-  od collab team-resources skills --workspace team-1 --workspace-member m-42 --json
-  od collab share-design-system user:palette-x --workspace team-1 --workspace-member m-42 --json
-  od collab status p1 --workspace team-1 --workspace-member m-42 --json`);
-}
-
-async function runCollab(args) {
-  const sub = args[0];
-  if (!sub || sub === 'help' || args.includes('--help') || args.includes('-h')) {
-    printCollabHelp();
-    process.exit(!sub ? 2 : 0);
-  }
-  const rest = args.slice(1);
-  let flags;
-  try {
-    flags = parseFlags(rest, { string: COLLAB_STRING_FLAGS, boolean: COLLAB_BOOLEAN_FLAGS });
-  } catch (err) {
-    console.error(err.message);
-    process.exit(2);
-  }
-  // Team resource sharing (design systems / plugins / skills) is workspace-scoped
-  // — it takes a resource id, not a project id — so it runs before the project-id
-  // requirement below. `share-resource <kind> <id>` / `team-resources <kind>` are
-  // the generic forms; the design-system aliases are kept for compatibility.
-  const RESOURCE_BASE_PATHS = new Set(['design-systems', 'plugins', 'skills']);
-  if (
-    sub === 'share-resource' ||
-    sub === 'team-resources' ||
-    sub === 'share-design-system' ||
-    sub === 'team-design-systems'
-  ) {
-    const base = await cliDaemonBaseUrl(flags);
-    const workspaceHeaders = workspaceHeadersFromExplicitFlags(flags, true);
-    const emit = (payload, plain) =>
-      flags.json ? process.stdout.write(JSON.stringify(payload, null, 2) + '\n') : plain();
-    const wsRequest = async (method, path, body) => {
-      let resp;
-      try {
-        resp = await fetch(`${base}${path}`, {
-          method,
-          headers: {
-            ...workspaceHeaders,
-            ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
-          },
-          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-        });
-      } catch (err) {
-        surfaceFetchError(err, base);
-        process.exit(3);
-      }
-      if (!resp.ok) return structuredHttpFailure(resp);
-      return resp.json();
-    };
-
-    // Resolve the resource kind (URL base path), whether this lists or shares,
-    // and the target id — from either the aliases or the generic <kind> <id>.
-    const positionals = positionalArgs(rest, COLLAB_STRING_FLAGS);
-    let basePath;
-    let isList;
-    let resourceId;
-    if (sub === 'team-design-systems') {
-      basePath = 'design-systems';
-      isList = true;
-    } else if (sub === 'share-design-system') {
-      basePath = 'design-systems';
-      isList = false;
-      resourceId = flags['design-system'] || positionals[0];
-    } else {
-      basePath = positionals[0];
-      if (!RESOURCE_BASE_PATHS.has(basePath)) {
-        console.error('kind must be one of: design-systems | plugins | skills');
-        process.exit(2);
-      }
-      isList = sub === 'team-resources';
-      resourceId = positionals[1];
-    }
-
-    if (isList) {
-      const body = await wsRequest('GET', `/api/workspace/${basePath}/team`);
-      return emit(body, () => {
-        const ids = Array.isArray(body?.ids) ? body.ids : [];
-        if (ids.length === 0) return console.log(`no shared ${basePath}`);
-        for (const id of ids) console.log(id);
-      });
-    }
-    if (!resourceId) {
-      console.error('missing <id>');
-      process.exit(2);
-    }
-    const body = await wsRequest(
-      'POST',
-      `/api/workspace/${basePath}/${encodeURIComponent(resourceId)}/share`,
-    );
-    return emit(body, () =>
-      console.log(`shared=${body?.shared ?? false}\tversion=${body?.version ?? '-'}`),
-    );
-  }
-
-  const projectId =
-    flags.project || positionalArgs(rest, COLLAB_STRING_FLAGS)[0] || process.env.OD_PROJECT_ID;
-  if (!projectId) {
-    console.error('missing <projectId> (positional, --project, or OD_PROJECT_ID)');
-    process.exit(2);
-  }
-  const base = await cliDaemonBaseUrl(flags);
-  const encoded = encodeURIComponent(projectId);
-  const workspaceHeaders = workspaceHeadersFromExplicitFlags(flags, true);
-
-  const request = async (method, path, body) => {
-    let resp;
-    try {
-      resp = await fetch(`${base}/api/projects/${encoded}${path}`, {
-        method,
-        headers: {
-          ...workspaceHeaders,
-          ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
-        },
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      });
-    } catch (err) {
-      surfaceFetchError(err, base);
-      process.exit(3);
-    }
-    if (!resp.ok) return structuredHttpFailure(resp);
-    return resp.json();
-  };
-
-  const emit = (payload, plain) => {
-    if (flags.json) return process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
-    return plain();
-  };
-
-  switch (sub) {
-    case 'status': {
-      const body = await request('GET', '/collab/status');
-      return emit(body, () => {
-        console.log(`publishedVersion\t${body?.publishedVersion ?? '-'}`);
-        console.log(`materializedVersion\t${body?.materializedVersion ?? '-'}`);
-        // Whether this daemon's local files are the project's content at all:
-        // true means it holds only an unmaterialized shared-project
-        // placeholder, so an `od files list` here would report an empty
-        // project that is really still downloading.
-        console.log(`awaitingFirstMaterialization\t${body?.awaitingFirstMaterialization === true}`);
-        console.log(`syncState\t${body?.syncState ?? '-'}`);
-      });
-    }
-    case 'share': {
-      // Team-share intent: request the project be published so members can pull.
-      const body = await request('POST', '/collab/sync-intent', {
-        event: 'project_team_share_requested',
-        projectId,
-      });
-      return emit(body, () => console.log(`ok\tsyncState=${body?.syncState ?? '-'}`));
-    }
-    case 'pull': {
-      // Member pull: fetch the published head (E extracts the bytes behind C's trigger).
-      const body = await request('POST', '/collab/pull');
-      return emit(body, () => console.log(`pulled\tversion=${body?.version ?? '-'}`));
-    }
-    case 'presence': {
-      const body = await request('GET', '/presence');
-      return emit(body, () => {
-        const present = Array.isArray(body?.present) ? body.present : [];
-        if (present.length === 0) return console.log('no members present');
-        for (const m of present) console.log(`${m.memberId}\t${m.name ?? '-'}\t${m.role ?? '-'}`);
-      });
-    }
-    case 'heartbeat': {
-      if (!flags.member) {
-        console.error('missing --member <id>');
-        process.exit(2);
-      }
-      const presenceSession = readCollabPresenceSessionFlags(flags);
-      const memberBody = {
-        memberId: flags.member,
-        ...presenceSession,
-        ...(flags.name ? { name: flags.name } : {}),
-        ...(flags.role ? { role: flags.role } : {}),
-      };
-      const body = await request('POST', '/presence/heartbeat', memberBody);
-      return emit(body, () => {
-        const present = Array.isArray(body?.present) ? body.present : [];
-        console.log(`ok\t${present.length} present`);
-      });
-    }
-    case 'leave': {
-      if (!flags.member) {
-        console.error('missing --member <id>');
-        process.exit(2);
-      }
-      const body = await request('POST', '/presence/leave', {
-        memberId: flags.member,
-        ...readCollabPresenceSessionFlags(flags),
-      });
-      return emit(body, () => console.log('left'));
-    }
-    case 'changed': {
-      const body = await request('POST', '/collab/changed');
-      return emit(body, () => console.log('change queued'));
-    }
-    case 'publish': {
-      const body = await request('POST', '/collab/publish');
-      return emit(body, () => console.log('publish requested'));
-    }
-    default:
-      console.error(`unknown subcommand: od collab ${sub}`);
-      process.exit(2);
-  }
-}
-
-function readCollabPresenceSessionFlags(flags) {
-  const clientId = typeof flags['client-id'] === 'string'
-    ? flags['client-id'].trim()
-    : '';
-  const rawSequence = typeof flags.sequence === 'string'
-    ? flags.sequence.trim()
-    : '';
-  if (!rawSequence) return clientId ? { clientId } : {};
-  if (!clientId) {
-    console.error('--sequence requires --client-id <id>');
-    process.exit(2);
-  }
-  const sequence = Number(rawSequence);
-  if (!Number.isSafeInteger(sequence) || sequence <= 0) {
-    console.error('--sequence must be a positive safe integer');
-    process.exit(2);
-  }
-  return { clientId, sequence };
-}
 // Subcommand: od message-center …
 // ---------------------------------------------------------------------------
-
-async function runMessageCenter(args) {
-  const sub = args[0];
-  if (!sub || sub === 'help' || args.includes('--help') || args.includes('-h')) {
-    printMessageCenterHelp();
-    process.exit(sub === 'help' || args.includes('--help') || args.includes('-h') ? 0 : 2);
-  }
-  const rest = args.slice(1);
-  let flags;
-  try {
-    flags = parseFlags(rest, {
-      string: MESSAGE_CENTER_STRING_FLAGS,
-      boolean: MESSAGE_CENTER_BOOLEAN_FLAGS,
-    });
-  } catch (err) {
-    console.error(err.message);
-    printMessageCenterHelp();
-    process.exit(2);
-  }
-  const base = await cliDaemonBaseUrl(flags);
-  switch (sub) {
-    case 'list':
-      return runMessageCenterList(rest, flags, base);
-    case 'read':
-      return runMessageCenterRead(rest, flags, base);
-    case 'read-all':
-      return runMessageCenterReadAll(flags, base);
-    default:
-      console.error(`unknown subcommand: od message-center ${sub}`);
-      printMessageCenterHelp();
-      process.exit(2);
-  }
-}
-
-async function runMessageCenterList(rawArgs, flags, base) {
-  const limit = flags.limit == null ? 100 : Number(flags.limit);
-  if (!Number.isInteger(limit) || limit <= 0) {
-    console.error('--limit must be a positive integer');
-    process.exit(2);
-  }
-  const filter = flags.filter == null ? 'all' : String(flags.filter);
-  if (filter !== 'all' && filter !== 'unread' && filter !== 'read') {
-    console.error('--filter must be one of: all | unread | read');
-    process.exit(2);
-  }
-  const query = new URLSearchParams({
-    locale: messageCenterApiLocale(flags.locale == null ? 'en' : String(flags.locale)),
-    filter,
-    limit: String(limit),
-  });
-  if (typeof flags.cursor === 'string' && flags.cursor.length > 0) query.set('cursor', flags.cursor);
-  let resp;
-  try {
-    resp = await fetch(`${base}/api/integrations/vela/message-center/messages?${query}`);
-  } catch (err) {
-    surfaceFetchError(err, base);
-    process.exit(3);
-  }
-  if (!resp.ok) return structuredHttpFailure(resp);
-  const payload = await resp.json();
-  if (flags.json) {
-    process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
-    return;
-  }
-  const messages = Array.isArray(payload?.messages) ? payload.messages : [];
-  if (messages.length === 0) {
-    console.log('No message-center messages.');
-    return;
-  }
-  for (const message of messages) {
-    const status = message?.readAt ? 'read' : 'unread';
-    const id = typeof message?.id === 'string' ? message.id : '(missing-id)';
-    const typeName = typeof message?.typeName === 'string' ? message.typeName : '-';
-    const publishedAt = typeof message?.publishedAt === 'string' ? message.publishedAt : '-';
-    const title = typeof message?.title === 'string' ? message.title : '';
-    console.log(`${id}\t${status}\t${typeName}\t${publishedAt}\t${title}`);
-  }
-  if (payload?.nextCursor) console.log(`nextCursor\t${payload.nextCursor}`);
-  if (typeof payload?.unreadCount === 'number') console.log(`unreadCount\t${payload.unreadCount}`);
-}
-
-async function runMessageCenterRead(rawArgs, flags, base) {
-  const id = positionalArgs(rawArgs, MESSAGE_CENTER_STRING_FLAGS)[0];
-  if (!id) {
-    console.error('Usage: od message-center read <id> [--json] [--daemon-url <url>]');
-    process.exit(2);
-  }
-  let resp;
-  try {
-    resp = await fetch(`${base}/api/integrations/vela/message-center/messages/${encodeURIComponent(id)}/read`, {
-      method: 'POST',
-    });
-  } catch (err) {
-    surfaceFetchError(err, base);
-    process.exit(3);
-  }
-  if (!resp.ok) return structuredHttpFailure(resp);
-  const bodyText = await resp.text();
-  const payload = bodyText ? safeJsonParse(bodyText) : null;
-  if (flags.json) {
-    process.stdout.write(
-      JSON.stringify(payload ?? { ok: true, id }, null, 2) + '\n',
-    );
-    return;
-  }
-  console.log(`Marked message as read\t${id}`);
-}
-
-async function runMessageCenterReadAll(flags, base) {
-  let resp;
-  try {
-    resp = await fetch(`${base}/api/integrations/vela/message-center/read-all`, {
-      method: 'POST',
-    });
-  } catch (err) {
-    surfaceFetchError(err, base);
-    process.exit(3);
-  }
-  if (!resp.ok) return structuredHttpFailure(resp);
-  const bodyText = await resp.text();
-  const payload = bodyText ? safeJsonParse(bodyText) : null;
-  if (flags.json) {
-    process.stdout.write(
-      JSON.stringify(payload ?? { ok: true }, null, 2) + '\n',
-    );
-    return;
-  }
-  console.log('Marked all message-center messages as read');
-}
-
-function printMessageCenterHelp() {
-  console.log(`Usage:
-  od message-center list [--locale <locale>] [--filter <all|unread|read>] [--limit <n>] [--cursor <token>] [--json] [--daemon-url <url>]
-  od message-center read <id> [--json] [--daemon-url <url>]
-  od message-center read-all [--json] [--daemon-url <url>]
-
-Mirrors the message-center inbox surface exposed in the web UI through the
-same /api/integrations/vela/message-center daemon routes.
-
-Options:
-  --locale <locale>     Defaults to en. Mapped to the daemon API locale shape.
-  --filter <value>      all | unread | read (default: all).
-  --limit <n>           Positive integer page size (default: 100).
-  --cursor <token>      Forward a server pagination cursor for list.
-  --json                Emit raw JSON for scripts and external agents.
-  --daemon-url <url>    OpenDesign daemon HTTP base.`);
-}
-
-function messageCenterApiLocale(locale) {
-  const mapping = { en: 'en-US', 'es-ES': 'es', 'pt-BR': 'pt' };
-  return mapping[locale] ?? locale;
-}
 
 function safeJsonParse(text) {
   try {
@@ -2402,10 +1921,7 @@ async function runMediaGenerate(rawArgs) {
     process.exit(2);
   }
   const images = repeatableFlagValues(rawArgs, 'image');
-  if (flags.model.startsWith('vela/') && images.length > 5) {
-    console.error(`Vela media accepts at most 5 --image values; received ${images.length}`);
-    process.exit(2);
-  }
+
 
   // Long-form media prompts (detailed image/video descriptions, program-
   // generated prompts) arrive via --prompt-file <path|-> (stdin) per the CLI
@@ -2821,13 +2337,6 @@ Common options:
   --prompt-file <path|->     Read the prompt from a file, or - for stdin (for long-form prompts).
   --output <filename>       File to write under the project. Auto-named if omitted.
   --aspect 1:1|16:9|9:16|4:3|3:4
-  --quality <tier>          OpenDesign Cloud images only: published quality tier
-                            (gpt-image-2 accepts low|medium|high). Omit to let the
-                            model's own default tier decide — tiers are priced
-                            differently, so this is a billing choice.
-  --resolution <res>        OpenDesign Cloud images only: published output resolution
-                            (e.g. 1K, 2K). Must name a resolution the model publishes
-                            for --aspect. Omit to use the model's default profile.
   --length <seconds>        Video length.
   --duration <seconds>      Audio duration.
   --prompt-influence <0-1>  ElevenLabs SFX prompt adherence. Higher values follow the prompt more closely.
@@ -2841,7 +2350,7 @@ Common options:
                             create it; the daemon renders it with its pinned
                             HyperFrames runtime.
   --image <path>            Project-relative reference image; repeat up to 5
-                            times for Vela image editing or video references.
+                            times for supported image editing or video references.
                             The first video image is the first frame; the rest
                             are references. Existing providers still receive
                             the first image through the legacy single-image field.
@@ -2887,6 +2396,9 @@ async function runMcp(args) {
   }
   if (args[0] === 'token') {
     return runMcpToken(args.slice(1));
+  }
+  if (['approvals', 'approve', 'deny'].includes(args[0])) {
+    return runMcpApproval(args[0], args.slice(1));
   }
   let flags;
   try {
@@ -2980,7 +2492,62 @@ To register this server into a coding agent's own config automatically:
 Local HTTP MCP credentials (for agents connecting over http://127.0.0.1:<port>/mcp):
   od mcp token create <name> [--ops <tag[,tag...]>] [--ttl-days <n>] [--json]
   od mcp token list [--json]
-  od mcp token revoke <id> [--json]`);
+  od mcp token revoke <id> [--json]
+
+Browser action requests:
+  od mcp approvals [--workspace <id> --workspace-member <id>] [--json]
+  od mcp approve <id> [--workspace <id> --workspace-member <id>] [--json]
+  od mcp deny <id> [--workspace <id> --workspace-member <id>] [--json]
+
+Local apps and agents can make these decisions too.`);
+}
+
+async function runMcpApproval(sub, args) {
+  let flags;
+  try {
+    flags = parseFlags(args, { string: MCP_APPROVAL_STRING_FLAGS, boolean: MCP_APPROVAL_BOOLEAN_FLAGS });
+  } catch (err) {
+    console.error(err.message);
+    process.exit(2);
+  }
+  if (flags.help || flags.h) {
+    console.log(`Usage: od mcp ${sub}${sub === 'approvals' ? '' : ' <id>'} [--workspace <id> --workspace-member <id>] [--json] [--daemon-url <url>]
+
+Local apps and agents can make this decision too.`);
+    return;
+  }
+  const positions = positionalArgs(args, MCP_APPROVAL_STRING_FLAGS);
+  if ((sub === 'approvals' && positions.length !== 0) || (sub !== 'approvals' && positions.length !== 1)) {
+    console.error(`usage: od mcp ${sub}${sub === 'approvals' ? '' : ' <id>'} [--workspace <id> --workspace-member <id>] [--json]`);
+    process.exit(2);
+  }
+  const workspaceHeaders = workspaceHeadersFromExplicitFlags(flags) ?? {};
+  const base = await cliDaemonBaseUrl(flags);
+  const path = sub === 'approvals'
+    ? '/api/mcp/approvals'
+    : `/api/mcp/approvals/${encodeURIComponent(positions[0])}/${sub}`;
+  const resp = await fetch(`${base}${path}`, {
+    method: sub === 'approvals' ? 'GET' : 'POST',
+    headers: workspaceHeaders,
+  });
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const payload = await resp.json();
+  if (flags.json) {
+    console.log(JSON.stringify(payload));
+    return;
+  }
+  console.log('Local apps and agents can make this decision too.');
+  const approvals = sub === 'approvals' ? payload.approvals ?? [] : [payload.approval];
+  if (approvals.length === 0) console.log('No pending browser action requests.');
+  for (const approval of approvals) {
+    if (!approval) continue;
+    console.log(`${approval.id}  ${approval.status}  ${approval.operation}`);
+    console.log(`  Project: ${approval.projectId}  Tab: ${approval.tabId}`);
+    console.log(`  Requester: ${approval.principal.kind} ${approval.principal.id}`);
+    console.log(`  Page: ${approval.location}`);
+    console.log(`  Action: ${approval.preview}${approval.partial ? ' (partial details)' : ''}`);
+    console.log(`  Expires: ${approval.expiresAt}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3116,14 +2683,14 @@ async function runMcpToken(args) {
 // ---------------------------------------------------------------------------
 // Subcommand: od mcp install <agent>
 //
-// Wires this daemon's stdio MCP server into a coding agent's own config.
+// Registers the local HTTP endpoint; explicit stdio remains compatibility.
 // The pure planner (mcp-agent-install.ts) maps a resolved launch spec onto
 // one of three strategies — drive the agent's own `mcp add/remove` CLI,
 // deep-merge a JSON config file, or (for unverified formats) print a
 // ready-to-paste snippet. This executor performs the IO the planner avoids.
 // ---------------------------------------------------------------------------
 
-// Resolve the canonical launch spec from the running daemon's
+// Resolve the compatibility stdio launch spec from the running daemon's
 // /api/mcp/install-info (the same payload the Settings → MCP panel and the
 // Codex one-click install use), so every install path configures byte-for-
 // byte the same command. Falls back to a minimal `od mcp --daemon-url`
@@ -3159,22 +2726,40 @@ function emitInstallResult(useJson, result) {
   }
   if (result.ok) {
     console.log(`✓ ${result.message}`);
+    if (result.next) console.log(result.next);
   } else {
     console.error(`✗ ${result.message}`);
   }
 }
 
+// Parsing can fail on a later flag. Keep its output mode without echoing input,
+// and skip string-flag values so they cannot be mistaken for JSON switches.
+function mcpInstallWantsJson(args) {
+  let useJson = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--json') useJson = true;
+    else if (arg.startsWith('--json=')) {
+      const value = arg.slice('--json='.length);
+      useJson = Boolean(value) && value !== 'false';
+    } else if (arg.startsWith('--') && !arg.includes('=') && MCP_INSTALL_STRING_FLAGS.has(arg.slice(2))) i++;
+  }
+  return useJson;
+}
+
 async function runMcpInstall(args) {
+  const useJson = mcpInstallWantsJson(args);
   let flags;
   try {
     flags = parseFlags(args, {
       string: MCP_INSTALL_STRING_FLAGS,
       boolean: MCP_INSTALL_BOOLEAN_FLAGS,
     });
-  } catch (err) {
-    console.error(err.message);
-    printMcpInstallHelp();
-    process.exit(2);
+  } catch {
+    emitInstallResult(useJson, { ok: false,
+      message: 'Invalid MCP install arguments. Run od mcp install --help.' });
+    process.exitCode = 2;
+    return;
   }
   if (flags[MCP_INSTALL_CLI_PROBE_FLAG]) {
     console.log(MCP_INSTALL_CLI_PROBE_TOKEN);
@@ -3186,49 +2771,82 @@ async function runMcpInstall(args) {
   }
 
   const slug = positionalArgs(args, MCP_INSTALL_STRING_FLAGS)[0];
-  const useJson = Boolean(flags.json);
   if (!slug) {
-    console.error('missing agent slug');
-    printMcpInstallHelp();
-    process.exit(2);
+    emitInstallResult(useJson, { ok: false, message: 'An agent slug is required. Run od mcp install --help.' });
+    process.exitCode = 2;
+    return;
   }
   if (!isAgentSlug(slug)) {
-    const msg = `unknown agent: ${slug} (expected one of: ${AGENT_SLUGS.join(' ')})`;
-    emitInstallResult(useJson, { ok: false, agent: slug, message: msg });
-    process.exit(2);
+    const msg = `unknown agent (expected one of: ${AGENT_SLUGS.join(' ')})`;
+    emitInstallResult(useJson, { ok: false, message: msg });
+    process.exitCode = 2;
+    return;
   }
 
   const uninstall = Boolean(flags.uninstall || flags.remove);
+  if (positionalArgs(args, MCP_INSTALL_STRING_FLAGS).length !== 1) {
+    emitInstallResult(useJson, { ok: false, message: 'Exactly one agent slug is required.' });
+    process.exitCode = 2;
+    return;
+  }
   const dryRun = Boolean(flags.print || flags['dry-run']);
   const serverName = flags.name || 'open-design';
+  const transport = flags.transport || 'http';
+  if (!['http', 'stdio'].includes(transport)) {
+    emitInstallResult(useJson, { ok: false, message: 'transport must be http or stdio' });
+    process.exitCode = 2;
+    return;
+  }
 
   const os = await import('node:os');
-  const spec = await resolveMcpLaunchSpec(flags);
-  const plan = planAgentInstall(slug, spec, {
-    home: os.homedir(),
-    platform: process.platform,
-    serverName,
-  });
+  let spec;
+  let plan;
+  try {
+    // Removal does not use or store an endpoint and works while the daemon is
+    // offline. The placeholder only selects the same per-client target.
+    spec = transport === 'http' ? {
+      url: uninstall ? 'http://127.0.0.1/mcp' : httpMcpUrlFromDaemonOrigin(await resolveDaemonUrl({
+        flagUrl: flags['daemon-url'], allowLegacyDefault: false,
+      })),
+      bearerTokenEnvVar: flags['bearer-token-env-var'] || 'OD_MCP_TOKEN',
+    } : await resolveMcpLaunchSpec(flags);
+    const context = { home: os.homedir(), platform: process.platform, serverName,
+      ...(process.env.KIMI_CODE_HOME ? { kimiCodeHome: process.env.KIMI_CODE_HOME } : {}) };
+    plan = transport === 'http' ? planHttpAgentInstall(slug, spec, context) : planAgentInstall(slug, spec, context);
+  } catch (error) {
+    emitInstallResult(useJson, { ok: false, agent: slug, message: error.message });
+    process.exitCode = 1;
+    return;
+  }
+  const setupNote = transport === 'http' && !uninstall
+    ? `Set ${spec.bearerTokenEnvVar} in the agent's environment to an existing scoped MCP credential. This command does not set its value. Manage expiry and revocation with od mcp token. Reload the client. If the daemon port changes, remove this registration and install it again for the intended --daemon-url.${slug === 'kiro' ? ' Approve this environment reference in Kiro when requested.' : ''}`
+    : undefined;
 
   if (plan.kind === 'manual') {
     const result = {
       ok: false,
       agent: slug,
       kind: 'manual',
+      transport,
       ...(dryRun ? { launchSpec: spec } : {}),
       configPath: plan.configPath,
       format: plan.format,
       snippet: plan.snippet,
       message: `${slug}: manual setup required. ${plan.reason}`,
+      ...(setupNote ? { next: setupNote } : {}),
     };
     if (useJson) {
       console.log(JSON.stringify(result));
     } else {
       console.error(`› ${result.message}`);
       if (plan.configPath) console.error(`  Config: ${plan.configPath}`);
-      console.error(`  Add this ${plan.format} block:\n`);
-      console.log(plan.snippet);
+      if (plan.snippet) {
+        console.error(`  Add this ${plan.format} block:\n`);
+        console.log(plan.snippet);
+      }
+      if (setupNote) console.error(setupNote);
     }
+    if (transport === 'http') process.exitCode = 1;
     return;
   }
 
@@ -3239,10 +2857,38 @@ async function runMcpInstall(args) {
         ok: true,
         agent: slug,
         kind: 'cli',
+        transport,
         launchSpec: spec,
-        command: `${plan.bin} ${argv.join(' ')}`,
-        message: `would run: ${plan.bin} ${argv.join(' ')}`,
+        ...(transport === 'http' ? { command: plan.bin, args: argv,
+          message: `would ${uninstall ? 'remove' : 'register'} ${serverName} with ${slug}` }
+          : { command: `${plan.bin} ${argv.join(' ')}`, message: `would run: ${plan.bin} ${argv.join(' ')}` }),
+        ...(setupNote ? { next: setupNote } : {}),
       });
+      return;
+    }
+    if (transport === 'http') {
+      if (!uninstall) {
+        const existing = await runMcpInstallAgentCommand(plan, plan.getArgv);
+        if (existing.code === 0) {
+          emitInstallResult(useJson, { ok: false, agent: slug,
+            message: 'MCP server name is already configured; remove it explicitly or choose --name. No registration changed.' });
+          process.exitCode = 1;
+          return;
+        }
+        // A failure to inspect config is not evidence that the name is free.
+        if (existing.code !== 1 || !existing.output.includes(`No MCP server named '${serverName}'`)
+          && !existing.output.includes(`No MCP server named "${serverName}"`)) {
+          emitInstallResult(useJson, { ok: false, agent: slug, message: 'Could not inspect the client MCP registration. No registration changed.' });
+          process.exitCode = 1;
+          return;
+        }
+      }
+      const installed = await runMcpInstallAgentCommand(plan, argv);
+      emitInstallResult(useJson, { ok: installed.code === 0, agent: slug, kind: 'cli', transport,
+        message: installed.code === 0 ? `${uninstall ? 'removed' : 'installed'} ${serverName} ${uninstall ? 'from' : 'into'} ${slug}`
+          : `Client MCP ${uninstall ? 'removal' : 'registration'} failed; inspect the client configuration.`,
+        ...(installed.code === 0 && setupNote ? { next: setupNote } : {}) });
+      if (installed.code !== 0) process.exitCode = 1;
       return;
     }
     const { spawn } = await import('node:child_process');
@@ -3275,25 +2921,66 @@ async function runMcpInstall(args) {
   }
 
   // plan.kind === 'json'
-  const fs = await import('node:fs/promises');
-  const path = await import('node:path');
-  let existing = null;
   try {
-    existing = await fs.readFile(plan.configPath, 'utf8');
-  } catch (err) {
-    if (err && err.code !== 'ENOENT') throw err;
-  }
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    if (transport === 'http' && slug === 'kimi' && !dryRun && !uninstall) {
+      const identity = await runMcpInstallAgentCommand({ ...plan, bin: 'kimi' }, ['--help']);
+      if (identity.code !== 0 || !identity.output.includes('moonshotai.github.io/kimi-code/')) {
+        emitInstallResult(useJson, { ok: false, agent: slug,
+          message: 'Automatic HTTP setup requires Kimi Code. The older kimi-cli uses a different config; no configuration changed.' });
+        process.exitCode = 1;
+        return;
+      }
+    }
+    let existing = null;
+    try {
+      existing = await fs.readFile(plan.configPath, 'utf8');
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') throw err;
+    }
 
-  if (uninstall) {
-    const next = removeJsonInstall(existing, plan);
-    if (next == null) {
+    if (uninstall) {
+      const next = removeJsonInstall(existing, plan);
+      if (next == null) {
+        emitInstallResult(useJson, {
+          ok: true,
+          agent: slug,
+          kind: 'json',
+          configPath: plan.configPath,
+          message: `${serverName} not present in ${plan.configPath} — nothing to remove`,
+        });
+        return;
+      }
+      if (dryRun) {
+        emitInstallResult(useJson, {
+          ok: true,
+          agent: slug,
+          kind: 'json',
+          configPath: plan.configPath,
+          ...(transport === 'http' ? { remove: serverName } : { preview: next }),
+          message: `would update ${plan.configPath}`,
+        });
+        return;
+      }
+      if (transport === 'http') await writeMcpInstallConfig(plan.configPath, next, existing);
+      else await fs.writeFile(plan.configPath, next, 'utf8');
       emitInstallResult(useJson, {
         ok: true,
         agent: slug,
         kind: 'json',
         configPath: plan.configPath,
-        message: `${serverName} not present in ${plan.configPath} — nothing to remove`,
+        message: `removed ${serverName} from ${plan.configPath}`,
       });
+      return;
+    }
+
+    let next;
+    try { next = applyJsonInstall(existing, plan); }
+    catch {
+      emitInstallResult(useJson, { ok: false, agent: slug,
+        message: 'MCP configuration is invalid or its server name conflicts. No registration changed.' });
+      process.exitCode = 1;
       return;
     }
     if (dryRun) {
@@ -3301,66 +2988,95 @@ async function runMcpInstall(args) {
         ok: true,
         agent: slug,
         kind: 'json',
+        launchSpec: spec,
         configPath: plan.configPath,
-        preview: next,
-        message: `would update ${plan.configPath}`,
+        ...(transport === 'http' ? { keyPath: plan.keyPath, serverName, entry: plan.entry } : { preview: next }),
+        message: `would write ${plan.configPath}`,
+        ...(setupNote ? { next: setupNote } : {}),
       });
       return;
     }
-    await fs.writeFile(plan.configPath, next, 'utf8');
+    if (transport === 'http') await writeMcpInstallConfig(plan.configPath, next, existing);
+    else {
+      await fs.mkdir(path.dirname(plan.configPath), { recursive: true });
+      await fs.writeFile(plan.configPath, next, 'utf8');
+    }
     emitInstallResult(useJson, {
       ok: true,
       agent: slug,
       kind: 'json',
       configPath: plan.configPath,
-      message: `removed ${serverName} from ${plan.configPath}`,
+      transport,
+      message: `installed ${serverName} into ${plan.configPath}`,
+      ...(setupNote ? { next: setupNote } : {}),
     });
-    return;
+  } catch {
+    emitInstallResult(useJson, { ok: false, agent: slug, kind: 'json', transport,
+      message: 'Could not complete the MCP configuration update. Check its format, permissions and links before retrying.' });
+    process.exitCode = 1;
   }
+}
 
-  const next = applyJsonInstall(existing, plan);
-  if (dryRun) {
-    emitInstallResult(useJson, {
-      ok: true,
-      agent: slug,
-      kind: 'json',
-      launchSpec: spec,
-      configPath: plan.configPath,
-      preview: next,
-      message: `would write ${plan.configPath}`,
-    });
-    return;
+/** Capture native output privately: config diagnostics may contain credentials. */
+async function runMcpInstallAgentCommand(plan, args) {
+  const { execFile } = await import('node:child_process');
+  const { resolveAgentBin } = await import('./runtimes/resolution.js');
+  const { createCommandInvocation } = await import('@open-design/platform');
+  const invocation = createCommandInvocation({ command: resolveAgentBin(plan.slug) || plan.bin, args });
+  return new Promise((resolve) => execFile(invocation.command, invocation.args, {
+    env: process.env, windowsHide: true, windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    timeout: 15_000, maxBuffer: 1024 * 1024,
+  }, (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === 'number' ? error.code : -1) : 0,
+    output: String(stdout) + String(stderr) })));
+}
+
+/** Replace complete JSON only after validation, using an owned sibling. */
+async function writeMcpInstallConfig(target, text, expected) {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const { randomUUID } = await import('node:crypto');
+  const previous = await fs.lstat(target).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
+  if (previous?.isSymbolicLink()) throw new Error('MCP config is a symbolic link; update its target explicitly. No configuration changed.');
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const temporary = path.join(path.dirname(target), `.open-design-mcp-${randomUUID()}.tmp`);
+  let owned = false;
+  try {
+    const handle = await fs.open(temporary, 'wx', previous ? previous.mode & 0o777 : 0o600);
+    owned = true;
+    try { await handle.writeFile(text, 'utf8'); } finally { await handle.close(); }
+    let current = null;
+    try { current = readFileSync(target, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (current !== expected) throw new Error('MCP configuration changed during setup; retry. No configuration changed.');
+    await fs.rename(temporary, target);
+  } finally {
+    if (owned) await fs.unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; });
   }
-  await fs.mkdir(path.dirname(plan.configPath), { recursive: true });
-  await fs.writeFile(plan.configPath, next, 'utf8');
-  emitInstallResult(useJson, {
-    ok: true,
-    agent: slug,
-    kind: 'json',
-    configPath: plan.configPath,
-    message: `installed ${serverName} into ${plan.configPath}`,
-  });
 }
 
 function printMcpInstallHelp() {
   console.log(`Usage: od mcp install <agent> [options]
 
-Register OpenDesign's stdio MCP server into a coding agent's own config.
+Register OpenDesign's local HTTP MCP server into a coding agent's own config.
 
 Agents:
   ${AGENT_SLUGS.join(' ')}
+Automatic HTTP: codex, claude, kimi (Kimi Code), opencode, kiro.
+Other clients receive manual guidance when their native auth format is unverified.
 
 Options:
   --uninstall, --remove   Remove the OpenDesign MCP server instead.
   --print, --dry-run      Show what would change; write nothing.
   --json                  Machine-readable result (dry runs include launchSpec).
   --name <name>           MCP server name in the agent config (default: open-design).
-  --daemon-url <url>      Daemon URL used to resolve the launch command.
+  --daemon-url <url>      Current numeric-loopback daemon origin; no guessed port.
+  --bearer-token-env-var <name>  Credential variable in the agent environment (default: OD_MCP_TOKEN).
+  --transport <http|stdio>       HTTP by default; stdio is compatibility only.
 
-The launch command is resolved from the running daemon's
-/api/mcp/install-info, so the installed entry matches the Settings → MCP
-panel snippet byte-for-byte. Start the daemon first for an exact match;
-otherwise a minimal \`od mcp --daemon-url <url>\` command is used.`);
+Create a scoped credential with Settings or od mcp token create first. Set its
+value in the agent's environment; this installer only stores its variable name.
+Reload the client after installation. The URL is a snapshot: if the daemon port
+changes, explicitly remove the old registration and install it again. Removing
+a registration does not revoke its credential; use od mcp token revoke.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -7815,7 +7531,7 @@ Common options:
       // and routing to GET /api/workspaces/:id/projects; mirror that here.
       // BOTH the implicit signed-in path AND an explicit
       // --workspace/--workspace-member pair route to the workspace-scoped
-      // catalog. The signed-out / non-vela / no-directory cases fall back to
+      // catalog. The unscoped local cases fall back to
       // the original headerless catalog so `od project list` still returns
       // unbound projects there. Passing --workspace to /api/projects does
       // NOT scope it (#6679 repro), so the explicit path needs the same
@@ -8239,294 +7955,6 @@ Common options:
   }
 }
 
-async function runWorkspace(args) {
-  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
-    console.log(`Usage:
-  od workspace invite --workspace <id> --member <id> --email <addr> [--role admin|member] [--json]
-  od workspace projects team --workspace <id> --member <id> [--json]
-  od workspace projects list --workspace <id> --member <id> [--view recent|drafts|team|all] [--json]
-  od workspace projects move <projectId> --workspace <id> --member <id> --visibility personal|team [--json]
-  od workspace projects batch-delete --workspace <id> --member <id> --project <id> [--project <id> ...] [--json]
-  od workspace projects batch-move --workspace <id> --member <id> --visibility personal|team --project <id> [--project <id> ...] [--json]
-  od workspace members list --workspace <id> --member <id> [--json]
-  od workspace billing [--workspace-type personal|team --workspace <id>] [--model <id>] [--json]
-
-Common options:
-  --daemon-url <url>   OpenDesign daemon HTTP base.
-  --member <id>        Workspace member id for route-level authorization.
-  --role <role>        Workspace role: owner, admin, or member.
-  --workspace-type <t> personal or team. A team share is refused in a personal
-                       workspace, which has no team plane to share into.
-  --json               Emit raw JSON.`);
-    process.exit(args.length === 0 ? 2 : 0);
-  }
-  const area = args[0];
-  if (!['invite', 'projects', 'members', 'billing'].includes(area)) {
-    console.error(`unknown subcommand: od workspace ${area}`);
-    process.exit(2);
-  }
-  const sub = args[1] ?? 'list';
-  const rest = area === 'invite' || area === 'billing' ? args.slice(1) : args.slice(2);
-  const flags = parseFlags(rest, { string: WORKSPACE_STRING_FLAGS, boolean: WORKSPACE_BOOLEAN_FLAGS });
-  const base = (await projectDaemonUrl(flags)).replace(/\/$/, '');
-
-  async function workspaceContextRequest(path, init) {
-    const needsExplicitWorkspace =
-      path === '/api/workspace/invite'
-      || path === '/api/workspace/members'
-      || path === '/api/workspace/projects/team';
-    const workspaceHeaders = needsExplicitWorkspace
-      ? workspaceHeadersFromExplicitFlags(flags, true)
-      : {};
-    const resp = await fetch(`${base}${path}`, {
-      ...init,
-      headers: {
-        ...workspaceHeaders,
-        ...(init?.headers ?? {}),
-      },
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      console.error(`${init?.method ?? 'GET'} ${path} failed: ${resp.status} ${JSON.stringify(data)}`);
-      process.exit(1);
-    }
-    return data;
-  }
-
-  if (area === 'invite') {
-    const emails = repeatableFlagValues(rest, 'email');
-    const role = String(flags.role ?? 'member');
-    if (emails.length === 0 || !['admin', 'member'].includes(role)) {
-      console.error('Usage: od workspace invite --email <addr> [--role admin|member] [--json]');
-      process.exit(2);
-    }
-    const body = emails.length === 1
-      ? { email: emails[0], role }
-      : { invites: emails.map((email) => ({ email, role })) };
-    const data = await workspaceContextRequest('/api/workspace/invite', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-    const results = Array.isArray(data?.results) ? data.results : [];
-    for (const result of results) {
-      console.log(`${result.email}\t${result.ok ? 'invited' : `failed:${result.error ?? 'unknown'}`}`);
-    }
-    return;
-  }
-
-  // Dual-track parity for the account menu's credits card. Billing scope is an
-  // explicit CLI argument, never daemon active-workspace state: account is the
-  // compatibility default; team requires both type + workspace id.
-  if (area === 'billing') {
-    const workspaceType =
-      typeof flags['workspace-type'] === 'string'
-        ? flags['workspace-type'].trim().toLowerCase()
-        : '';
-    const workspaceId =
-      typeof flags.workspace === 'string' ? flags.workspace.trim() : '';
-    if (
-      (workspaceType && workspaceType !== 'personal' && workspaceType !== 'team') ||
-      (workspaceType && !workspaceId) ||
-      (!workspaceType && workspaceId) ||
-      (flags.model && !workspaceId)
-    ) {
-      console.error(
-        'Usage: od workspace billing [--workspace-type personal|team --workspace <id>] [--model <id>] [--json]',
-      );
-      process.exit(2);
-    }
-    const billingPath =
-      workspaceType
-        ? `/api/workspace/billing?scope=workspace&workspaceId=${encodeURIComponent(workspaceId)}&includePreflight=1${typeof flags.model === 'string' ? `&modelId=${encodeURIComponent(flags.model)}` : ''}`
-        : '/api/workspace/billing?scope=account';
-    const data = await workspaceContextRequest(billingPath);
-    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-    const summary = data?.summary ?? null;
-    const workspaceBalance = data?.workspaceBalance ?? null;
-    if (!summary && !workspaceBalance) {
-      console.log('No billing summary (no vela session or CLI unavailable).');
-      return;
-    }
-    if (workspaceBalance) {
-      console.log(`Workspace:\t${workspaceBalance.workspaceId}`);
-    }
-    if (summary) {
-      console.log(`Account plan:\t${summary.membershipTier || 'free'}`);
-      console.log(`Subscription:\t${summary.subscriptionStatus || 'none'}`);
-      console.log(`Account credits:\t${summary.totalAvailableCredits}`);
-      console.log(`  Account plan credits:\t${summary.subscriptionCredits}`);
-      console.log(`  Account top-up credits:\t${summary.rechargeCredits}`);
-    }
-    if (data?.preflight) {
-      console.log(`Expected funding: ${data.preflight.funding} (gateway decides final admission)`);
-      for (const window of data.preflight.codingPlan.windows) {
-        console.log(`Coding Plan ${window.durationSeconds}s: ${window.remainingCredits}/${window.limitCredits} credits remaining; resets ${window.resetsAt ?? 'not started yet'}`);
-      }
-    }
-    const balanceUsd = workspaceBalance?.balanceUsd ?? summary?.balanceUsd;
-    if (balanceUsd != null) {
-      console.log(`${workspaceBalance ? 'Workspace' : 'Account'} balance (USD):\t${balanceUsd}`);
-    }
-    return;
-  }
-
-  if (area === 'members') {
-    if (sub !== 'list') {
-      console.error(`unknown subcommand: od workspace members ${sub}`);
-      process.exit(2);
-    }
-    const data = await workspaceContextRequest('/api/workspace/members');
-    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-    const members = Array.isArray(data?.members) ? data.members : [];
-    if (members.length === 0) {
-      console.log('No workspace members.');
-      return;
-    }
-    for (const member of members) {
-      console.log(`${member.memberId}\t${member.displayName ?? '-'}\t${member.role ?? '-'}`);
-    }
-    return;
-  }
-
-  if (sub === 'team') {
-    const data = await workspaceContextRequest('/api/workspace/projects/team');
-    if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-    const projects = Array.isArray(data?.projects) ? data.projects : [];
-    if (projects.length === 0) {
-      console.log('No shared team projects.');
-      return;
-    }
-    for (const project of projects) {
-      console.log(`${project.projectId ?? project.id}\t${project.displayName ?? project.name ?? '-'}`);
-    }
-    return;
-  }
-
-  const workspaceId = typeof flags.workspace === 'string' && flags.workspace.trim() ? flags.workspace.trim() : '';
-  if (!workspaceId) {
-    console.error('--workspace <id> is required');
-    process.exit(2);
-  }
-  const projectIds = repeatableFlagValues(rest, 'project');
-  const workspaceMemberId = typeof flags.member === 'string' && flags.member.trim() ? flags.member.trim() : '';
-  if (!workspaceMemberId) {
-    console.error('--member <id> is required');
-    process.exit(2);
-  }
-  const workspaceHeaders = {
-    'x-od-workspace-id': workspaceId,
-    // Only sent when the caller actually says which kind of workspace this is.
-    // The daemon reads an explicit `personal` as the caller ASSERTING there is
-    // no team plane here and refuses a team share on the strength of it (see
-    // collab/team-share-scope.ts), so defaulting the header to 'personal' would
-    // have made `--visibility team` impossible from the CLI. Absent still reads
-    // as personal everywhere it only affects view filtering.
-    ...(typeof flags['workspace-type'] === 'string' && flags['workspace-type'].trim()
-      ? { 'x-od-workspace-type': flags['workspace-type'].trim() }
-      : {}),
-    'x-od-workspace-member-id': workspaceMemberId,
-    ...(typeof flags.role === 'string' && flags.role.trim() ? { 'x-od-workspace-role': flags.role.trim() } : {}),
-    ...(typeof flags['app-user'] === 'string' && flags['app-user'].trim() ? { 'x-od-app-user-id': flags['app-user'].trim() } : {}),
-    ...(typeof flags['lifecycle-state'] === 'string' && flags['lifecycle-state'].trim()
-      ? { 'x-od-workspace-lifecycle-state': flags['lifecycle-state'].trim() }
-      : {}),
-    ...(typeof flags['member-status'] === 'string' && flags['member-status'].trim()
-      ? { 'x-od-workspace-member-status': flags['member-status'].trim() }
-      : {}),
-    ...(typeof flags['can-share-projects'] === 'string' && flags['can-share-projects'].trim()
-      ? { 'x-od-workspace-can-share-projects': flags['can-share-projects'].trim() }
-      : {}),
-    ...(typeof flags['can-write-synced-files'] === 'string' && flags['can-write-synced-files'].trim()
-      ? { 'x-od-workspace-can-write-synced-files': flags['can-write-synced-files'].trim() }
-      : {}),
-  };
-  async function request(path, init) {
-    const resp = await fetch(`${base}${path}`, {
-      ...init,
-      headers: {
-        ...workspaceHeaders,
-        ...(init?.headers ?? {}),
-      },
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      console.error(`${init?.method ?? 'GET'} ${path} failed: ${resp.status} ${JSON.stringify(data)}`);
-      process.exit(1);
-    }
-    return data;
-  }
-  switch (sub) {
-    case 'list': {
-      const params = new URLSearchParams();
-      if (flags.view) params.set('view', String(flags.view));
-      if (flags.visibility) params.set('visibility', String(flags.visibility));
-      if (flags.owner) params.set('owner', String(flags.owner));
-      const suffix = params.toString() ? `?${params}` : '';
-      const data = await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/projects${suffix}`);
-      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-      const projects = data?.projects ?? [];
-      if (projects.length === 0) {
-        console.log('No workspace projects.');
-        return;
-      }
-      for (const p of projects) {
-        console.log(`${p.id}\t${p.visibility}\t${p.resourceState}\t${p.name}`);
-      }
-      return;
-    }
-    case 'move': {
-      const projectId = positionalArgs(rest, WORKSPACE_STRING_FLAGS)[0];
-      const visibility = String(flags.visibility ?? '');
-      if (!projectId || !['personal', 'team'].includes(visibility)) {
-        console.error('Usage: od workspace projects move <projectId> --workspace <id> --visibility personal|team [--json]');
-        process.exit(2);
-      }
-      const data = await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectId)}/move`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ visibility }),
-      });
-      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-      console.log(`[workspace] moved ${projectId} to ${visibility}`);
-      return;
-    }
-    case 'batch-delete': {
-      if (projectIds.length === 0) {
-        console.error('Usage: od workspace projects batch-delete --workspace <id> --project <id> [--project <id> ...] [--json]');
-        process.exit(2);
-      }
-      const data = await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/projects/batch-delete`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectIds }),
-      });
-      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-      console.log(`[workspace] deleted ${projectIds.length} project(s)`);
-      return;
-    }
-    case 'batch-move': {
-      const visibility = String(flags.visibility ?? '');
-      if (projectIds.length === 0 || !['personal', 'team'].includes(visibility)) {
-        console.error('Usage: od workspace projects batch-move --workspace <id> --visibility personal|team --project <id> [--project <id> ...] [--json]');
-        process.exit(2);
-      }
-      const data = await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/projects/batch-move`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectIds, visibility }),
-      });
-      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-      console.log(`[workspace] moved ${projectIds.length} project(s) to ${visibility}`);
-      return;
-    }
-    default:
-      console.error(`unknown subcommand: od workspace projects ${sub}`);
-      process.exit(2);
-  }
-}
-
 async function runRun(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage:
@@ -8908,38 +8336,51 @@ async function streamRunEvents(base, initialRunId, workspaceHeaders = {}) {
     let buffer = '';
     let nextRunId = null;
     let ended = false;
-    while (!ended) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const blocks = buffer.split('\n\n');
-      buffer = blocks.pop() ?? '';
-      for (const block of blocks) {
-        const lines = block.split('\n');
-        const eventLine = lines.find((l) => l.startsWith('event: '));
-        const dataLines = lines
-          .filter((line) => line.startsWith('data: '))
-          .map((line) => line.slice('data: '.length));
-        const event = eventLine ? eventLine.slice('event: '.length) : 'message';
-        const dataRaw = dataLines.join('\n');
-        let parsed;
-        try { parsed = JSON.parse(dataRaw); } catch { parsed = dataRaw; }
-        process.stdout.write(JSON.stringify({ event, data: parsed }) + '\n');
-        if (event !== 'end') continue;
-        const task = parsed?.strategyTask;
-        if (task && task.terminal !== true) {
-          const candidate = task.activeRunId !== runId
-            ? task.activeRunId
-            : task.nextRunId;
-          if (typeof candidate === 'string' && candidate.length > 0 && candidate !== runId) {
-            nextRunId = candidate;
+    try {
+      while (!ended) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() ?? '';
+        for (const block of blocks) {
+          const lines = block.split('\n');
+          const eventLine = lines.find((l) => l.startsWith('event: '));
+          const dataLines = lines
+            .filter((line) => line.startsWith('data: '))
+            .map((line) => line.slice('data: '.length));
+          const event = eventLine ? eventLine.slice('event: '.length) : 'message';
+          const dataRaw = dataLines.join('\n');
+          let parsed;
+          try { parsed = JSON.parse(dataRaw); } catch { parsed = dataRaw; }
+          process.stdout.write(JSON.stringify({ event, data: parsed }) + '\n');
+          if (event !== 'end') continue;
+          const task = parsed?.strategyTask;
+          if (task && task.terminal !== true) {
+            const candidate = task.activeRunId !== runId
+              ? task.activeRunId
+              : task.nextRunId;
+            if (typeof candidate === 'string' && candidate.length > 0 && candidate !== runId) {
+              nextRunId = candidate;
+            }
           }
+          ended = true;
+          break;
         }
-        ended = true;
-        break;
       }
+    } finally {
+      // An end event can precede HTTP EOF. Release each stream before
+      // following its next Run; otherwise the CLI exits with open readers.
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
     }
-    if (!nextRunId) return;
+    if (!nextRunId) {
+      // The command dispatcher exits explicitly. Await the HTTP pools too,
+      // after releasing the readers, so native handles have finished closing.
+      const { getGlobalDispatcher } = await import('undici');
+      await getGlobalDispatcher().close();
+      return;
+    }
     runId = nextRunId;
   }
 }

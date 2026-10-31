@@ -846,12 +846,13 @@ function imageLines(
       out.push(`- **referenceTemplate**: ${metadata.promptTemplate.title}`);
     }
     out.push('');
-    out.push(
-      'This is an **image** project. Plan the prompt carefully, then dispatch via the **media generation contract** using `"$OD_NODE_BIN" "$OD_BIN" media generate --surface image --model <imageModel>`. Do NOT emit `<artifact>` HTML for media surfaces.',
-    );
     if (metadata.imageModel?.startsWith('vela/')) {
       out.push(
-        'This OpenDesign Cloud `vela/*` model must go through the OD media dispatcher. Do not invoke the `vela` CLI or the remote media API directly; the daemon owns Workspace attribution, downloads, and final project-file placement.',
+        'The selected media model is unavailable. Choose a configured media model before generation. Do not substitute another provider automatically.',
+      );
+    } else {
+      out.push(
+        'This is an **image** project. Plan the prompt carefully, then dispatch via the **media generation contract** using `"$OD_NODE_BIN" "$OD_BIN" media generate --surface image --model <imageModel>`. Do NOT emit `<artifact>` HTML for media surfaces.',
       );
     }
   }
@@ -876,12 +877,13 @@ function videoLines(
       out.push(`- **referenceTemplate**: ${metadata.promptTemplate.title}`);
     }
     out.push('');
-    out.push(
-      'This is a **video** project. Plan the shotlist and motion, then dispatch via the **media generation contract** using `"$OD_NODE_BIN" "$OD_BIN" media generate --surface video --model <videoModel> --length <seconds> --aspect <ratio>`. Do NOT emit `<artifact>` HTML.',
-    );
     if (metadata.videoModel?.startsWith('vela/')) {
       out.push(
-        'This OpenDesign Cloud `vela/*` model must go through the OD media dispatcher. Do not invoke the `vela` CLI or the remote media API directly; the daemon owns Workspace attribution, polling, downloads, and final project-file placement.',
+        'The selected media model is unavailable. Choose a configured media model before generation. Do not substitute another provider automatically.',
+      );
+    } else {
+      out.push(
+        'This is a **video** project. Plan the shotlist and motion, then dispatch via the **media generation contract** using `"$OD_NODE_BIN" "$OD_BIN" media generate --surface video --model <videoModel> --length <seconds> --aspect <ratio>`. Do NOT emit `<artifact>` HTML.',
       );
     }
     if (metadata.videoModel === 'hyperframes-html') {
@@ -1007,12 +1009,13 @@ function promptTemplateReferenceLines(
     out.push(`### Reference prompt template — "${tpl.title}"`);
     const meta: string[] = [];
     if (tpl.category) meta.push(`category: ${tpl.category}`);
-    const suggestedModel =
-      metadata.kind === 'image' &&
-      !metadata.imageModel?.trim() &&
-      tpl.model === 'gpt-image-2'
-        ? 'vela/gpt-image-2'
-        : tpl.model;
+    const selectedModel = metadata.kind === 'image' ? metadata.imageModel : metadata.videoModel;
+    const retiredTemplateDefault = tpl.model?.startsWith('vela/')
+      || (!selectedModel?.trim() && metadata.kind === 'image' && tpl.model === 'gpt-image-2');
+    const suggestedModel = retiredTemplateDefault ? undefined : tpl.model;
+    if (retiredTemplateDefault && !selectedModel?.trim()) {
+      out.push('Choose a configured media model before generation; this template does not select an available provider. Do not substitute another provider automatically.');
+    }
     if (suggestedModel) meta.push(`suggested model: ${suggestedModel}`);
     if (tpl.aspect) meta.push(`aspect: ${tpl.aspect}`);
     if (tpl.tags && tpl.tags.length > 0) {

@@ -10,7 +10,26 @@
 // no-name create path (`handleCreateProjectFromDesignSystem`, the New Project
 // panel's blank pick), which already tag `nameSource: 'generated'`.
 
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+// @vitest-environment jsdom
+//
+// recvpZCr4MAqNQ: a project's name stayed "未命名" forever, even after its
+// first prompt ran and produced real content. Root cause: the Drafts / All-
+// projects empty-state "New project" CTA (`EntryShell.startBlankProjectFromRail`)
+// created a project with the literal placeholder name and NO `nameSource`
+// metadata at all. `canAutoRenameProjectFromPrompt` (utils/projectName.ts)
+// only re-engages for `nameSource: 'generated' | 'prompt'` — a project
+// missing the field entirely fails closed forever, unlike every other blank/
+// no-name create path (`handleCreateProjectFromDesignSystem`, the New Project
+// panel's blank pick), which already tag `nameSource: 'generated'`.
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import {
   buildWorkspacePermissions,
   buildWorkspaceSeatSummary,
@@ -27,11 +46,7 @@ import {
   resetWorkspaceContextCache,
 } from '../../src/collab/useWorkspaceContext';
 import { workspaceDirectoryFixture } from '../helpers/workspace-context';
-import {
-  fetchProjectFiles,
-  invalidateProjectFilesCache,
-} from '../../src/providers/registry';
-
+import { fetchProjectFiles, invalidateProjectFilesCache } from '../../src/providers/registry';
 
 const originalFetch = globalThis.fetch;
 const originalResizeObserver = globalThis.ResizeObserver;
@@ -175,7 +190,7 @@ function renderAt(path: string, overrides: Partial<React.ComponentProps<typeof E
     onRefreshAgents: vi.fn(() => [cliAgent()]),
     onCreateProject: vi.fn(() => Promise.resolve(true)),
     onBeginProjectCreation: () => ({ projectId: 'optimistic-project', rollback: () => undefined }),
-    onAmrBalanceGateBlockChange: () => undefined,
+
     onCreatePluginShareProject: vi.fn(),
     onImportClaudeDesign: vi.fn(),
     onOpenProject: vi.fn(),

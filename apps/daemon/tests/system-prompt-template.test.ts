@@ -111,7 +111,7 @@ describe('composeSystemPrompt — metadata.promptTemplate', () => {
     expect(out).not.toContain('1:1 (default');
   });
 
-  it('normalizes a legacy template recommendation to Cloud when no image model is explicit', () => {
+  it('requires an explicit provider choice for a retired Cloud template default', () => {
     const out = composeSystemPrompt({
       metadata: {
         kind: 'image',
@@ -120,8 +120,17 @@ describe('composeSystemPrompt — metadata.promptTemplate', () => {
     });
 
     expect(out).toContain('**imageModel**: (not provided)');
-    expect(out).toContain('suggested model: vela/gpt-image-2');
+    expect(out).toContain('Choose a configured media model before generation');
+    expect(out).not.toContain('suggested model: vela/gpt-image-2');
     expect(out).not.toContain('suggested model: gpt-image-2');
+  });
+
+  it('does not inject managed Cloud media defaults for a historical AMR identity', () => {
+    const out = composeSystemPrompt({ agentId: 'amr', metadata: { kind: 'prototype' },
+      byokMediaDefaults: { imageModel: 'custom-image/model' } });
+    expect(out).not.toContain('vela/');
+    expect(out).not.toContain('OpenDesign Cloud media defaults');
+    expect(out).toContain('custom-image/model');
   });
 
   it('inlines the prompt body for video projects too', () => {
@@ -574,4 +583,12 @@ describe('composeSystemPrompt — metadata.promptTemplate', () => {
     expect(out).not.toContain('<question-form id="elevenlabs-voice"');
   });
 
+  it.each(['image', 'video'] as const)('requires replacement of a saved Cloud %s model', (kind) => {
+    const prompt = composeSystemPrompt({
+      agentId: 'claude',
+      metadata: { kind, [`${kind}Model`]: 'vela/retired-model' },
+    });
+    expect(prompt).toContain('The selected media model is unavailable');
+    expect(prompt).toContain('Do not substitute another provider automatically');
+  });
 });

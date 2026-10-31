@@ -11,6 +11,7 @@ import { applyAgentLaunchEnv, resolveAgentLaunch } from './launch.js';
 import { spawnEnvForAgent } from './env.js';
 import { probeAgentAuthStatus } from './auth.js';
 import { agentCapabilities } from './capabilities.js';
+import { resolveCodexTransport, withCodexTransport } from './defs/codex.js';
 import { installMetaForAgent } from './metadata.js';
 import {
   forgetUnusableExecutables,
@@ -465,7 +466,7 @@ function unavailableAgent(
   configuredEnv: Record<string, string> = {},
 ): DetectedAgent {
   return {
-    ...stripFns(def),
+    ...stripFns(def, detected?.version ?? null),
     models: def.fallbackModels ?? [DEFAULT_MODEL_OPTION],
     modelsSource: 'fallback',
     available: false,
@@ -765,7 +766,7 @@ async function probe(
     );
   }
   return {
-    ...stripFns(def),
+    ...stripFns(def, outcome.version),
     models: surfacedModelResult.models,
     modelsSource: surfacedModelResult.source,
     available: true,
@@ -790,6 +791,7 @@ async function probe(
 
 function stripFns(
   def: RuntimeAgentDef,
+  version: string | null,
 ): Omit<DetectedAgent, 'models' | 'modelsSource' | 'available' | 'path' | 'version'> {
   // Drop the buildArgs / listModels closures but keep declarative metadata
   // (reasoningOptions, streamFormat, name, bin, etc.). `models` is
@@ -817,7 +819,9 @@ function stripFns(
     firstOutputTimeoutMs,
     authProbe,
     ...rest
-  } = def;
+  // Reuse this detection's version; Settings must reflect the selected
+  // transport without launching another native client or changing the base def.
+  } = withCodexTransport(def, resolveCodexTransport({ env: process.env, version }));
   return rest;
 }
 

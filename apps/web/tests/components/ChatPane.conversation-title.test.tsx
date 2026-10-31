@@ -189,7 +189,7 @@ describe('ChatPane session switcher', () => {
 
   // 上一条的另一半:余额那条失败**故意**不再报这个 surface_view。
   // 写出来是为了让这次口径变化有据可查 —— 埋点少了一条不能只在数据看板上发现。
-  it('no longer reports a run_failed_toast for the balance failure — the card is gone', async () => {
+  it('preserves the historical balance error without Cloud actions', async () => {
     render(
       <ChatPane
         messages={[
@@ -217,7 +217,9 @@ describe('ChatPane session switcher', () => {
     );
 
     await waitFor(() => expect(screen.getByTestId('chat-log')).toBeTruthy());
-    expect(trackRunFailedToastSurfaceView).not.toHaveBeenCalled();
+    await waitFor(() => expect(trackRunFailedToastSurfaceView).toHaveBeenCalledOnce());
+    expect(screen.getByTestId('chat-run-error-card')).toBeTruthy();
+    expect(screen.queryByTestId('chat-upgrade-card')).toBeNull();
   });
 
   // G16 removes the recharge action from error cards. Preserve the Cloud
@@ -253,51 +255,10 @@ describe('ChatPane session switcher', () => {
 
     const card = screen.getByTestId('chat-run-error-card');
     expect(within(card).getAllByRole('button').map((button) => button.textContent?.trim())).toEqual([
-      'chat.runError.contactSupportCta', 'chat.runError.exportLogsCta', 'promptTemplates.retry',
+      'chat.runError.contactSupportCta', 'chat.runError.exportLogsCta',
     ]);
-    fireEvent.click(within(card).getByRole('button', { name: 'promptTemplates.retry' }));
-    expect(onRetry).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-amr-credits' }), 'manual_retry');
+    expect(onRetry).not.toHaveBeenCalled();
     expect(openSpy).not.toHaveBeenCalled();
-    openSpy.mockRestore();
-  });
-
-  it('keeps the profile-scoped plan URL on the separate zero-balance UpgradeCard', () => {
-    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
-    render(
-      <ChatPane
-        messages={[]}
-        amrBalanceCardUsd={0}
-        streaming={false}
-        error={null}
-        projectId="project-1"
-        projectFiles={[]}
-        onEnsureProject={async () => 'project-1'}
-        onSend={vi.fn()}
-        onStop={vi.fn()}
-        onRetry={vi.fn()}
-        conversations={[conversation({ id: 'conv-1', title: 'Current' })]}
-        activeConversationId="conv-1"
-        onSelectConversation={vi.fn()}
-        onDeleteConversation={vi.fn()}
-        config={{ agentCliEnv: { amr: { OPEN_DESIGN_AMR_PROFILE: 'test' } } } as unknown as AppConfig}
-      />,
-    );
-
-    expect(screen.queryByTestId('chat-run-error-card')).toBeNull();
-    fireEvent.click(within(screen.getByTestId('chat-upgrade-card')).getByRole('button', { name: 'settings.amrUpgrade' }));
-
-    const [plansUrl, target, features] = openSpy.mock.calls[0] ?? [];
-    expect(target).toBe('_blank');
-    expect(features).toBe('noopener,noreferrer');
-    // The rendered profile is `test`, and T54 (2026-09-06) made the plans link
-    // honor it: this used to assert the PRODUCTION Pricing URL, which is how a
-    // non-prod build sent people to production checkout.
-    const parsedPlansUrl = new URL(String(plansUrl));
-    expect(`${parsedPlansUrl.origin}${parsedPlansUrl.pathname}`).toBe(
-      'https://open-design.powerformer.net/cloud/dashboard',
-    );
-    expect(parsedPlansUrl.searchParams.get('billing')).toBe('plan');
-    expect(parsedPlansUrl.searchParams.get('od_entry_source')).toBe('chat_upgrade_card');
     openSpy.mockRestore();
   });
 });

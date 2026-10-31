@@ -10,6 +10,7 @@ import {
 import {
   buildLiveArtifactRefreshCandidate,
   executeLocalDaemonRefreshSource,
+  LiveArtifactRefreshAbortError,
   liveArtifactRefreshRunRegistry,
   normalizeLiveArtifactRefreshTimeouts,
   withLiveArtifactRefreshRun,
@@ -23,6 +24,7 @@ export interface RefreshLiveArtifactOptions {
   projectId: string;
   artifactId: string;
   now?: Date;
+  signal?: AbortSignal;
   onStarted?: (event: { refreshId: string; artifact: LiveArtifactStoreRecord['artifact'] }) => void | Promise<void>;
 }
 
@@ -108,6 +110,11 @@ async function executeRefreshSource(options: {
 export async function refreshLiveArtifact(options: RefreshLiveArtifactOptions): Promise<RefreshLiveArtifactResult> {
   return withLiveArtifactRefreshLock(options, async (lock) => {
     const refreshId = lock.metadata.refreshId;
+    const scope = { projectId: options.projectId, artifactId: options.artifactId, refreshId };
+    const checkCancelled = () => {
+      if (options.signal?.aborted) throw new LiveArtifactRefreshAbortError('live artifact refresh cancelled', { ...scope, kind: 'cancelled' });
+    };
+    checkCancelled();
     let sequence = 0;
 
     const appendLog = async (entry: {
@@ -147,6 +154,7 @@ export async function refreshLiveArtifact(options: RefreshLiveArtifactOptions): 
     await options.onStarted?.({ refreshId, artifact: running.artifact });
 
     try {
+      checkCancelled();
       const record = await getLiveArtifact(options);
       const artifact = record.artifact;
       const currentDataJson = artifact.document?.dataJson ?? {};
@@ -172,42 +180,50 @@ export async function refreshLiveArtifact(options: RefreshLiveArtifactOptions): 
           now: refreshStartedAt,
         },
         async (run) => {
-          let documentOutput: { output: BoundedJsonObject } | undefined;
-          if (hasDocumentSource) {
-            const step = 'document';
-            const sourceMetadata = documentSourceMetadata(documentSource);
-            const documentStartedAt = nowDate();
-            await appendLog({ step, status: 'running', startedAt: documentStartedAt, source: sourceMetadata });
-            try {
-              const output = await withLiveArtifactRefreshSourceTimeout(
-                run,
-                { step, source: sourceMetadata, sourceTimeoutMs: timeouts.sourceTimeoutMs },
-                async (signal) => executeRefreshSource({
-                  projectsRoot: options.projectsRoot,
-                  projectId: options.projectId,
-                  source: documentSource,
-                  signal,
-                }),
-              );
-              const documentFinishedAt = nowDate();
-              await appendLog({ step, status: 'succeeded', startedAt: documentStartedAt, finishedAt: documentFinishedAt, source: sourceMetadata });
-              documentOutput = { output };
-            } catch (error) {
-              const documentFinishedAt = nowDate();
-              await appendLog({ step, status: 'failed', startedAt: documentStartedAt, finishedAt: documentFinishedAt, source: sourceMetadata, error });
-              throw error;
+          const cancel = () => { liveArtifactRefreshRunRegistry.cancelRun(scope); };
+          if (options.signal?.aborted) cancel();
+          else options.signal?.addEventListener('abort', cancel, { once: true });
+          try {
+            let documentOutput: { output: BoundedJsonObject } | undefined;
+            if (hasDocumentSource) {
+              const step = 'document';
+              const sourceMetadata = documentSourceMetadata(documentSource);
+              const documentStartedAt = nowDate();
+              await appendLog({ step, status: 'running', startedAt: documentStartedAt, source: sourceMetadata });
+              try {
+                const output = await withLiveArtifactRefreshSourceTimeout(
+                  run,
+                  { step, source: sourceMetadata, sourceTimeoutMs: timeouts.sourceTimeoutMs },
+                  async (signal) => executeRefreshSource({
+                    projectsRoot: options.projectsRoot,
+                    projectId: options.projectId,
+                    source: documentSource,
+                    signal,
+                  }),
+                );
+                const documentFinishedAt = nowDate();
+                await appendLog({ step, status: 'succeeded', startedAt: documentStartedAt, finishedAt: documentFinishedAt, source: sourceMetadata });
+                documentOutput = { output };
+              } catch (error) {
+                const documentFinishedAt = nowDate();
+                await appendLog({ step, status: 'failed', startedAt: documentStartedAt, finishedAt: documentFinishedAt, source: sourceMetadata, error });
+                throw error;
+              }
             }
-          }
 
-          return buildLiveArtifactRefreshCandidate({
-            artifact,
-            currentDataJson,
-            ...(documentOutput === undefined ? {} : { documentOutput }),
-            now: nowDate(),
-          });
+            return buildLiveArtifactRefreshCandidate({
+              artifact,
+              currentDataJson,
+              ...(documentOutput === undefined ? {} : { documentOutput }),
+              now: nowDate(),
+            });
+          } finally {
+            options.signal?.removeEventListener('abort', cancel);
+          }
         },
       );
 
+      checkCancelled();
       const refreshedSourceCount = hasDocumentSource ? 1 : 0;
 
       const committed = await commitLiveArtifactRefreshCandidate({

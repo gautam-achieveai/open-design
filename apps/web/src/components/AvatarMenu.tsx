@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { getResolvedDeviceId } from '../analytics/client';
-import { amrHandoffDeviceId, attributedAmrUrl, recordAmrEntry } from '../analytics/amr-attribution';
+
 import { useAnalytics } from '../analytics/provider';
 import { useT } from '../i18n';
 import { AgentIcon } from './AgentIcon';
@@ -12,40 +11,16 @@ import {
   defaultAgentModelId,
   effectiveAgentModelChoice,
 } from './agentModelSelection';
-import {
-  modelVersionLabel,
-  orderModelOptionsByAvailability,
-} from './modelOptions';
-import {
-  mergeProviderModelOptions,
-  providerModelsCacheKey,
-} from './providerModelsCache';
+import { modelVersionLabel } from './modelOptions';
+import { mergeProviderModelOptions, providerModelsCacheKey } from './providerModelsCache';
 import { KNOWN_PROVIDERS } from '../state/config';
 import { SUGGESTED_MODELS_BY_PROTOCOL } from '../state/apiProtocols';
 import { fetchProviderModels } from '../providers/provider-models';
-import {
-  canReachWorkspaceBillingEntrance,
-  workspaceBillingAuthorityContext,
-} from '@open-design/contracts';
+import { isVisibleLocalCliAgent } from '../utils/visibleAgents';
+
 import type { AgentInfo, AppConfig, ExecMode, ProviderModelOption } from '../types';
-import {
-  canUpgradeVelaPlan,
-  fetchVelaLoginStatus,
-  type VelaLoginStatus,
-} from '../providers/daemon';
-import { openExternalUrl } from '../providers/registry';
-import { amrPlansUrlForWorkspace } from '../runtime/amr-guidance';
-import { isMacPlatform } from '../utils/platform';
-import {
-  useWorkspaceBillingResponse,
-  useWorkspaceContext,
-  workspaceBillingSummaryForContext,
-} from '../collab/useWorkspaceContext';
-import {
-  projectWorkspaceContext,
-  projectWorkspaceScopeReady,
-  type ProjectWorkspaceScopeState,
-} from '../collab/useProjectWorkspaceScope';
+
+import { type ProjectWorkspaceScopeState } from '../collab/useProjectWorkspaceScope';
 
 interface Props {
   config: AppConfig;
@@ -85,8 +60,8 @@ interface Props {
 }
 
 /**
- * Compact runtime control. Click opens a dropdown with the OpenDesign account
- * and the model picker for the active agent. Execution wiring that is not a
+ * Compact runtime control. Click opens the model picker for the active agent.
+ * Execution wiring that is not a
  * per-message choice (execution mode, which CLI agent, PATH rescan, BYOK
  * provider setup) lives in Settings → Execution; this popover keeps the
  * active agent's model and reasoning choices close to the composer.
@@ -107,31 +82,6 @@ export function AvatarMenu({
 }: Props) {
   const t = useT();
   const analytics = useAnalytics();
-  // recvqfYKutwWlQ: gate the AMR upgrade entry on billing permission below,
-  // not just plan tier — a team member without `canManageBilling` (owner-only)
-  // can't act on an upgrade even when the tier itself is upgradeable.
-  const {
-    context: ambientWorkspaceContext,
-    loading: ambientWorkspaceContextLoading,
-  } = useWorkspaceContext();
-  const workspaceContext = projectWorkspaceScope
-    ? projectWorkspaceContext(projectWorkspaceScope.scope)
-    : ambientWorkspaceContext;
-  const workspaceContextLoading = projectWorkspaceScope
-    ? projectWorkspaceScope.loading ||
-      !projectWorkspaceScopeReady(projectWorkspaceScope.scope)
-    : ambientWorkspaceContextLoading;
-  const workspaceBillingResponse = useWorkspaceBillingResponse(
-    projectWorkspaceScope
-      ? {
-          context: workspaceContext,
-          loading: workspaceContextLoading,
-          revision: `${projectWorkspaceScope.scope?.projectId ?? 'unknown'}:${
-            projectWorkspaceScope.scope?.workspaceId ?? 'unbound'
-          }`,
-        }
-      : undefined,
-  );
   const [open, setOpen] = useState(false);
   // Toggle that reports the closed→open transition (for analytics) without
   // firing on close.
@@ -257,154 +207,12 @@ export function AvatarMenu({
   }, [open, placement]);
 
   const currentAgent = useMemo(
-    () => agents.find((a) => a.id === config.agentId) ?? null,
+    () => agents.find((a) => a.id === config.agentId && isVisibleLocalCliAgent(a)) ?? null,
     [agents, config.agentId],
   );
   const currentAgentModelOptions = useMemo(() => {
-    const models = currentAgent?.models ?? [];
-    if (currentAgent?.id !== 'amr') return models;
-    return orderModelOptionsByAvailability(models);
+    return currentAgent?.models ?? [];
   }, [currentAgent]);
-
-  const amrAgent = useMemo(
-    () => agents.find((a) => a.id === 'amr' && a.available) ?? null,
-    [agents],
-  );
-  const amrAvailable = amrAgent !== null;
-  const amrProfile = config.agentCliEnv?.amr?.OPEN_DESIGN_AMR_PROFILE;
-
-  // Fetch the live login status when the popover opens so plan-gated model
-  // rows route to the signed-in profile's workspace-scoped plans page (see
-  // openAmrUpgrade).
-  const [amrAccount, setAmrAccount] = useState<VelaLoginStatus | null>(null);
-  useEffect(() => {
-    if (!open || !amrAvailable) {
-      setAmrAccount(null);
-      return;
-    }
-    let cancelled = false;
-    setAmrAccount(null);
-    void fetchVelaLoginStatus()
-      .then((status) => {
-        if (!cancelled) setAmrAccount(status);
-      })
-      .catch(() => {
-        if (!cancelled) setAmrAccount(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, amrAvailable]);
-  /*
-   * The plan tier of the workspace in scope, read through the ONE projection
-   * that is allowed to answer that question.
-   *
-   * This used to read the exact billing SNAPSHOT directly, which is the same
-   * source `workspaceBillingSummaryForContext` consults first — but only the
-   * first. The projection also carries a fallback that was approved and is
-   * load-bearing: when a TEAM workspace has no authorized snapshot, a
-   * team-namespaced account tier may stand in for it (a personal tier may not,
-   * because it describes the account's own subscription and cannot name a team
-   * workspace's plan). Reading the snapshot directly walked around that
-   * fallback, and there was no third source to catch the fall.
-   *
-   * The snapshot goes missing for reasons that have nothing to do with the
-   * viewer's entitlements: A answers the snapshot route 409
-   * `billing_workspace_snapshot_unsupported` while `/wallet/balance` still
-   * answers 200; a rolling deploy leaves an old API pod 404/405-ing the route
-   * for a few minutes; a local vela CLI predates `--workspace-id`. The daemon
-   * then omits the `workspaceSnapshot` key entirely. On this surface that
-   * turned into `scopedPlanId: null`, `canUpgradeVelaPlan(null) === false`, and
-   * a veto landing BEFORE `canReachWorkspaceBillingEntrance` ever got asked —
-   * so a team owner clicked a plan-gated model and nothing happened at all.
-   *
-   * Ordering is unchanged where it matters: the projection consults the
-   * snapshot FIRST, so a present snapshot still outranks the account tier.
-   *
-   * It is a pure function of the response this component already holds, so the
-   * corrected tier lands on the same render frame — there is no second async
-   * hop that would paint the wrong identity first and fix it later.
-   */
-  const scopedWorkspaceBilling = workspaceBillingSummaryForContext(
-    workspaceBillingResponse,
-    workspaceContext,
-  );
-  const scopedPlanId =
-    workspaceContext?.workspaceType === 'team'
-      ? scopedWorkspaceBilling?.membershipTier?.trim() || null
-      : workspaceContext?.workspaceType === 'personal'
-        ? workspaceBillingResponse?.summary?.membershipTier?.trim() || null
-        : null;
-  const amrPlanId = projectWorkspaceScope
-    ? scopedPlanId
-    : scopedPlanId ?? (amrAccount?.loggedIn
-      ? amrAccount.account?.plan?.trim() || null
-      : null);
-  const amrResolvedProfile = amrAccount?.profile ?? amrProfile;
-  const financialWorkspaceId =
-    !workspaceContextLoading && workspaceContext?.workspaceId.trim()
-      ? workspaceContext.workspaceId
-      : null;
-  const amrPlansUrl = amrPlansUrlForWorkspace(
-    amrResolvedProfile,
-    financialWorkspaceId,
-  );
-  /*
-   * Whether the viewer may be shown a billing entrance at all.
-   *
-   * This asked `workspaceContext.permissions.canManageBilling` directly, and got
-   * both halves of the question wrong on a project page:
-   *
-   *  - It bypassed {@link canReachWorkspaceBillingEntrance}, whose FIRST line
-   *    exempts a non-team workspace. `canManageBilling` is `readable && isOwner`
-   *    — a TEAM question about spending money that is not only yours. A personal
-   *    workspace has no second member, so asking it there only deletes the
-   *    person's own way to pay. (The comment that used to sit here claimed
-   *    personal workspaces were unaffected. They were affected from the day it
-   *    landed, because of the second half.)
-   *  - On a project page `workspaceContext` is the project's SCOPE, and the
-   *    daemon's scope fast path publishes a placeholder `role: 'member'` for
-   *    every caller — see `resolveLocalProjectWorkspaceScope`. So
-   *    `canManageBilling` was false even for the workspace owner, and
-   *    `openAmrUpgrade` returned early: a plan-gated model kept its "upgrade to
-   *    use this" tooltip and did nothing at all when clicked.
-   *
-   * `workspaceBillingAuthorityContext` is the one sanctioned way to answer a
-   * money question from a scope context: it adopts the real role, and ONLY the
-   * role, from the shell's authority when that authority names the same
-   * principal — never a different workspace's, and never anything else about it.
-   */
-  const billingEntranceContext = projectWorkspaceScope
-    ? workspaceBillingAuthorityContext(workspaceContext, ambientWorkspaceContext)
-    : workspaceContext;
-  const amrCanUpgrade =
-    !!amrAccount?.loggedIn &&
-    canUpgradeVelaPlan(amrPlanId?.replace(/^team[_-]/i, '')) &&
-    billingEntranceContext !== null &&
-    canReachWorkspaceBillingEntrance(billingEntranceContext) &&
-    amrPlansUrl !== null;
-  const openAmrTarget = (
-    targetUrl: string | null,
-    source: 'avatar_amr_upgrade',
-  ) => {
-    if (!targetUrl) return;
-    const attribution = recordAmrEntry(analytics.track, source, new Date(), {
-      metricsConsent: config.telemetry?.metrics === true,
-    });
-    const deviceId = amrHandoffDeviceId({
-      metricsConsent: config.telemetry?.metrics === true,
-      resolvedDeviceId: getResolvedDeviceId(),
-      installationId: config.installationId,
-    });
-    setOpen(false);
-    void openExternalUrl(attributedAmrUrl(targetUrl, attribution, deviceId));
-  };
-  // Plan-gated models stay visible but are not selectable; clicking one routes
-  // to the plans page instead of silently choosing a model the run would reject.
-  const openAmrUpgrade = () => {
-    if (!amrCanUpgrade) return;
-    openAmrTarget(amrPlansUrl, 'avatar_amr_upgrade');
-  };
 
   // Resolve the user's model + reasoning pick for the active agent. Falls
   // back to the agent's declared default when the saved effort is absent or
@@ -631,18 +439,12 @@ export function AvatarMenu({
                               role="radio"
                               aria-checked={active}
                               aria-disabled={locked ? 'true' : undefined}
-                              title={
-                                locked
-                                  ? t('settings.amrModelUpgradeHint')
-                                  : undefined
-                              }
                               className={`avatar-model-option${active ? ' is-active' : ''}${
                                 locked ? ' is-locked' : ''
                               }`}
                               data-testid={`avatar-model-option-${model.id}`}
                               onClick={() => {
                                 if (locked) {
-                                  openAmrUpgrade();
                                   return;
                                 }
                                 onAgentModelChange(currentAgent.id, {

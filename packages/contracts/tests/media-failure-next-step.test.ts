@@ -75,10 +75,10 @@ describe('mediaFailureNextStep', () => {
       expect(mediaFailureNextStep({ code: 'STUB_PROVIDER_DISABLED' })).toBe('open-settings');
     });
 
-    it('separates an expired Open Design session from a wrong BYOK key', () => {
+    it('requires a replacement for a retired Cloud model and settings for a wrong BYOK key', () => {
       expect(
         mediaFailureNextStep({ message: 'vela image 401: unauthorized', model: 'vela/gpt-image-2' }),
-      ).toBe('sign-in');
+      ).toBe('switch-model');
       expect(
         mediaFailureNextStep({ message: 'senseaudio tts 401: unauthorized', model: 'senseaudio-tts' }),
       ).toBe('open-settings');
@@ -110,7 +110,8 @@ describe('mediaFailureNextStep', () => {
     it('separates spent credit from a transient wobble', () => {
       expect(mediaFailureNextStep({ message: 'openai image 402: insufficient funds' }))
         .toBe('add-credit');
-      expect(mediaFailureNextStep({ code: 'AMR_INSUFFICIENT_BALANCE' })).toBe('add-credit');
+      expect(mediaFailureNextStep({ code: 'AMR_INSUFFICIENT_BALANCE' })).toBe('switch-model');
+      expect(mediaFailureNextStep({ code: 'AMR_AUTH_REQUIRED' })).toBe('switch-model');
     });
 
     it('names an outdated local runtime instead of a generic failure', () => {

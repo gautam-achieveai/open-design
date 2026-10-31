@@ -227,7 +227,6 @@ function ruleBody(css: string, selector: RegExp): string {
 }
 
 const chatCss = () => readFileSync(resolve(SRC, 'styles/chat.css'), 'utf-8');
-const upgradeCss = () => readFileSync(resolve(SRC, 'components/chat/UpgradeCard.module.css'), 'utf-8');
 
 describe('W96 · 流水里的行不许被 flex 压扁', () => {
   /**
@@ -259,62 +258,6 @@ describe('W96 · 流水里的行不许被 flex 压扁', () => {
    */
   it('流水的任意直接子元素收缩系数为 0 —— 连没见过的类名也算', () => {
     expect(effectiveFlexShrink(mountLogChild('some-card-nobody-has-written-yet'))).toBe('0');
-  });
-
-  /** ★ 正向(点名症状):被报上来的那张余额卡自己也在这条不变量之下。 */
-  it('升级卡挂进流水时收缩系数为 0', () => {
-    expect(effectiveFlexShrink(mountLogChild('up'))).toBe('0');
-  });
-
-  /**
-   * ★ 结构(不嗅类名,按 §5 断 `data-testid` 的父子关系):
-   * 上面那条不变量只覆盖**直接子元素**。所以必须证明升级卡真的挂在流水下面 ——
-   * 它要是哪天被包进一层壳,或者被挪成绝对定位的浮层(那就偏离 T51 的
-   * 「流水里的一张卡,不是弹窗」),这条不变量就够不着它了。
-   */
-  it('`ChatPane` 把升级卡渲染成流水的直接子元素(T51:它是一行,不是浮层)', () => {
-    render(
-      <ChatPane
-        messages={[]}
-        streaming={false}
-        error={null}
-        projectId="project-1"
-        projectFiles={[]}
-        onEnsureProject={async () => 'project-1'}
-        onSend={vi.fn()}
-        onStop={vi.fn()}
-        onRetry={vi.fn()}
-        amrBalanceCardUsd={0.33}
-        onOpenSettings={vi.fn() as never}
-        conversations={[
-          { projectId: 'project-1', id: 'conv-1', title: 'Current', createdAt: 1, updatedAt: 1 },
-        ]}
-        activeConversationId="conv-1"
-        onSelectConversation={vi.fn()}
-        onDeleteConversation={vi.fn()}
-        config={{ agentId: 'amr', agentCliEnv: {} } as unknown as AppConfig}
-      />,
-    );
-    expect(screen.getByTestId('chat-upgrade-card').parentElement)
-      .toBe(screen.getByTestId('chat-log'));
-  });
-
-  /**
-   * ★ 反向 1:**不许靠删掉 `overflow: hidden` 来「修好」高度。**
-   * 那样确实不再被压扁,但右上角那枚 `::after` 辉光和 16px 圆角就一起漏出去了 ——
-   * 换一个缺陷交差。裁自己的溢出是这张卡的正当需求,兜底该在流水那一侧。
-   */
-  it('升级卡仍旧自己裁溢出 —— 修的是流水,不是把卡的圆角/辉光放跑', () => {
-    expect(/overflow:\s*hidden/.test(ruleBody(upgradeCss(), /\.up\s*\{([^}]*)\}/))).toBe(true);
-  });
-
-  /**
-   * ★ 反向 2:**Module 自己不许把收缩再打开。**
-   * `.up` 那条规则里一个 `flex` / `flex-shrink` 都不该有 —— 有的话这笔账就变成
-   * 两处说了算,而两处的胜负要看打包器怎么排 Module 与全局表的顺序。
-   */
-  it('`UpgradeCard.module.css` 的 `.up` 不自带 flex 声明 —— 这笔账只有一个出处', () => {
-    expect(flexShrinkOf(ruleBody(upgradeCss(), /\.up\s*\{([^}]*)\}/))).toBeNull();
   });
 
   /**

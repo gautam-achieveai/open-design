@@ -95,11 +95,13 @@ import { Icon } from './Icon';
 import { BoardComposerPopover } from './BoardComposerPopover';
 import { CommentSideDock } from './FileViewer';
 import { EdgeAnnotationsPanel } from './EdgeAnnotationsPanel';
+import { McpBrowserApprovals } from './McpBrowserApprovals';
+import { BrowserPerformancePanel } from './BrowserPerformancePanel';
 import { PreviewDrawOverlay } from './PreviewDrawOverlay';
 import { RemixIcon } from './RemixIcon';
 import { CustomSelect } from './CustomSelect';
 import { useProjectCollabContext } from '../collab/collab-context';
-import { workspaceProjectHeaders } from '../collab/workspace-identity';
+import { workspaceIdentityCacheKey, workspaceProjectHeaders } from '../collab/workspace-identity';
 
 export {
   removeDesignBrowserProjectCache,
@@ -1025,6 +1027,7 @@ export function DesignBrowserPanel({
   const [browserUseOpen, setBrowserUseOpen] = useState(false);
   const [edgeAnnotationsOpen, setEdgeAnnotationsOpen] = useState(false);
   const [browserDiagnosticsOpen, setBrowserDiagnosticsOpen] = useState(false);
+  const [performanceOpen, setPerformanceOpen] = useState<boolean | null>(null);
   const [browserDiagnosticsLoading, setBrowserDiagnosticsLoading] = useState(false);
   const [browserDiagnosticsError, setBrowserDiagnosticsError] = useState<string | null>(null);
   const [browserDiagnostics, setBrowserDiagnostics] = useState<BrowserDiagnostics>({
@@ -3289,6 +3292,21 @@ export function DesignBrowserPanel({
               onOpenExternal={() => void openCurrentExternally()}
             />
           ) : null}
+          {desktopHostAvailable ? (
+            <button
+              type="button"
+              className="db-performance-entry"
+              data-testid="browser-performance-open"
+              aria-expanded={!!performanceOpen}
+              onClick={() => {
+                setPerformanceOpen((open) => !open);
+                setMenuOpen(false);
+                setBrowserDiagnosticsOpen(false);
+              }}
+            >
+              {t('designBrowser.performance.title')}
+            </button>
+          ) : null}
           {browserControlStatus === 'connected' ? (
             <IconTooltipButton
               label={`AI · ${t(browserTabActive ? 'common.active' : 'common.inactive')}`}
@@ -3459,6 +3477,19 @@ export function DesignBrowserPanel({
           ) : null}
         </div>
       </div>
+      <McpBrowserApprovals projectId={projectId} tabId={browserTabId} workspaceContext={workspaceContext} />
+      {desktopHostAvailable && performanceOpen !== null && (
+        <div hidden={!performanceOpen}>
+          <BrowserPerformancePanel
+            key={`${projectId}:${browserTabId}:${workspaceIdentityCacheKey(workspaceContext)}`}
+            projectId={projectId}
+            tabId={browserTabId}
+            workspaceContext={workspaceContext}
+            connected={browserControlStatus === 'connected'}
+            onClose={() => setPerformanceOpen(false)}
+          />
+        </div>
+      )}
       {downloadAttentionNonce != null ? (
         <div className="db-download-assist" role="status">
           <span className="db-download-assist-icon" aria-hidden>

@@ -1,18 +1,25 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+// @vitest-environment jsdom
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { useEffect } from 'react';
 
 import { navigate } from '../../src/router';
 import {
   buildWorkspacePermissions,
-  type ProjectWorkspaceScope,
   type WorkspaceCollabContext,
 } from '@open-design/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../../src/App';
-import { notifyAmrLoginStatusChanged } from '../../src/components/amrLoginPolling';
+
 import type {
   ProjectNameAuthorityResolution,
   ProjectRenameFenceToken,
@@ -62,9 +69,7 @@ import {
   resetTeamProjectsCache,
   resetWorkspaceContextCache,
   currentWorkspaceAccountGeneration,
-  workspaceIdentityCacheKey,
 } from '../../src/collab/useWorkspaceContext';
-import { runWorkspaceIdentity } from '../../src/collab/useProjectWorkspaceScope';
 import { resetCoalescedGet } from '../../src/lib/coalesced-get';
 import {
   projectDisplaySnapshotKey,
@@ -72,7 +77,6 @@ import {
   resetProjectDisplaySnapshots,
   writeProjectDisplaySnapshot,
 } from '../../src/state/project-display-cache';
-import type { AmrAuthRetryContinuation } from '../../src/runtime/amr-auth-retry-continuation';
 import type { VelaLoginStatus } from '../../src/providers/daemon';
 import { workspaceDirectoryFixture } from '../helpers/workspace-context';
 
@@ -88,16 +92,6 @@ const iframePoolHarness = vi.hoisted(() => ({
 
 const projectViewRenameFenceHarness = vi.hoisted(() => ({
   token: null as ProjectRenameFenceToken | null,
-}));
-
-const projectViewRetryScopeHarness = vi.hoisted(() => ({
-  scope: null as ProjectWorkspaceScope | null,
-  armedWorkspaceKey: null as string | null,
-  latest: null as {
-    context: WorkspaceCollabContext | null;
-    continuation: AmrAuthRetryContinuation | null;
-    consume: ((continuation: AmrAuthRetryContinuation) => boolean) | undefined;
-  } | null,
 }));
 
 const workspaceTabsHarness = vi.hoisted(() => ({
@@ -139,7 +133,6 @@ vi.mock('../../src/components/EntryView', () => ({
     onOpenSettings,
     onRefreshAgents,
     agents,
-    amrLoggedIn,
     projects,
     projectsLoading,
   }: {
@@ -169,13 +162,11 @@ vi.mock('../../src/components/EntryView', () => ({
     onOpenSettings: () => void;
     onRefreshAgents: () => void | Promise<void>;
     agents: AgentInfo[];
-    amrLoggedIn?: boolean | null;
     projects: Project[];
     projectsLoading?: boolean;
   }) => (
     <main>
       <div data-testid="entry-home-surface" />
-      <div data-testid="amr-login-status">{String(amrLoggedIn)}</div>
       <div data-testid="entry-projects-loading">{String(Boolean(projectsLoading))}</div>
       <button
         type="button"
@@ -401,10 +392,6 @@ vi.mock('../../src/components/ProjectView', () => ({
     authoritativeProjectName,
     projectAuthorizationKey,
     resolveAuthoritativeProjectName,
-    amrAuthRetryContinuation,
-    onArmAmrAuthRetryContinuation,
-    onConsumeAmrAuthRetryContinuation,
-    onOpenAmrSettings,
     onOpenSettings,
     workspaceContextOverride,
     onCreationHandoffSettled,
@@ -434,14 +421,6 @@ vi.mock('../../src/components/ProjectView', () => ({
       projectId: string,
       expectedAuthorizationKey: string,
     ) => Promise<ProjectNameAuthorityResolution>;
-    amrAuthRetryContinuation?: AmrAuthRetryContinuation | null;
-    onArmAmrAuthRetryContinuation?: (
-      continuation: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
-    ) => void;
-    onConsumeAmrAuthRetryContinuation?: (
-      continuation: AmrAuthRetryContinuation,
-    ) => boolean;
-    onOpenAmrSettings?: () => void;
     onOpenSettings?: () => void;
     workspaceContextOverride?: WorkspaceCollabContext | null;
     onCreationHandoffSettled?: (projectId: string) => void;
@@ -451,11 +430,6 @@ vi.mock('../../src/components/ProjectView', () => ({
     useEffect(() => {
       onCreationHandoffSettled?.(project.id);
     }, [onCreationHandoffSettled, project.id]);
-    projectViewRetryScopeHarness.latest = {
-      context: workspaceContextOverride ?? null,
-      continuation: amrAuthRetryContinuation ?? null,
-      consume: onConsumeAmrAuthRetryContinuation,
-    };
     return (
     <main data-testid="project-view">
       <span data-testid="project-title">{project.name}</span>
@@ -467,9 +441,6 @@ vi.mock('../../src/components/ProjectView', () => ({
           : 'none'}
       </span>
       <span data-testid="project-route-conversation">{routeConversationId ?? 'none'}</span>
-      <span data-testid="project-auth-continuation">
-        {amrAuthRetryContinuation?.assistantId ?? 'none'}
-      </span>
       <button type="button" onClick={onBack}>
         Back to projects
       </button>
@@ -543,61 +514,6 @@ vi.mock('../../src/components/ProjectView', () => ({
       >
         Refresh catalog title
       </button>
-      <button
-        type="button"
-        onClick={() => onArmAmrAuthRetryContinuation?.({
-          projectId: project.id,
-          conversationId: routeConversationId ?? 'conv-auth',
-          assistantId: 'assistant-auth-failure',
-          originMountId: 'origin-mount',
-          workspaceIdentityKey: workspaceIdentityCacheKey(workspaceContextOverride),
-        })}
-      >
-        Arm auth continuation
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          const runContext = projectViewRetryScopeHarness.scope
-            ? runWorkspaceIdentity(
-                { loading: false, scope: projectViewRetryScopeHarness.scope },
-                workspaceContextOverride ?? null,
-                project.workspaceId,
-              )
-            : workspaceContextOverride;
-          const continuation = {
-            projectId: project.id,
-            conversationId: routeConversationId ?? 'conv-auth',
-            assistantId: 'assistant-auth-failure',
-            originMountId: 'origin-mount',
-            // ProjectView arms from its resolved project scope, which has a
-            // least-privilege role. App's directory context is a different
-            // projection of the same principal; don't silently substitute it.
-            workspaceIdentityKey: workspaceIdentityCacheKey(runContext),
-            workspacePrincipal: runContext ? {
-              workspaceId: runContext.workspaceId,
-              workspaceType: runContext.workspaceType,
-              workspaceMemberId: runContext.workspaceMemberId,
-            } : null,
-          };
-          projectViewRetryScopeHarness.armedWorkspaceKey = continuation.workspaceIdentityKey;
-          onArmAmrAuthRetryContinuation?.(continuation);
-          onOpenAmrSettings?.();
-        }}
-      >
-        Authorize in settings
-      </button>
-      <button
-        type="button"
-        disabled={!amrAuthRetryContinuation}
-        onClick={() => {
-          if (amrAuthRetryContinuation) {
-            onConsumeAmrAuthRetryContinuation?.(amrAuthRetryContinuation);
-          }
-        }}
-      >
-        Consume auth continuation
-      </button>
     </main>
     );
   },
@@ -606,12 +522,15 @@ vi.mock('../../src/components/ProjectView', () => ({
 vi.mock('../../src/components/WorkspaceTabsBar', () => ({
   WorkspaceTabsBar: ({
     activeProjectWorkspaceId,
+    identityScopeKey,
     projects,
   }: {
     activeProjectWorkspaceId?: string | null;
+    identityScopeKey?: string | null;
     projects: Project[];
   }) => (
     <>
+      <span data-testid="workspace-tabs-identity">{identityScopeKey ?? 'pending'}</span>
       <span data-testid="workspace-tabs-active-project-workspace">
         {activeProjectWorkspaceId === undefined
           ? 'unresolved'
@@ -850,9 +769,6 @@ describe('App project creation routing', () => {
     workspaceInvalidationHarness.handlers.length = 0;
     workspaceInvalidationHarness.onActive.length = 0;
     projectViewRenameFenceHarness.token = null;
-    projectViewRetryScopeHarness.scope = null;
-    projectViewRetryScopeHarness.armedWorkspaceKey = null;
-    projectViewRetryScopeHarness.latest = null;
     workspaceTabsHarness.projectIds.clear();
     window.history.replaceState(null, '', '/');
     mockedDaemonIsLive.mockResolvedValue(true);
@@ -1685,7 +1601,7 @@ describe('App project creation routing', () => {
       );
 
       render(<App />);
-      await screen.findByText('null', { selector: '[data-testid="amr-login-status"]' });
+      await screen.findByTestId('entry-home-surface');
       fireEvent.click(await screen.findByRole('button', { name: 'Create project' }));
 
       await waitFor(() => {
@@ -1703,7 +1619,7 @@ describe('App project creation routing', () => {
     mockedLoadConfig.mockReturnValue({
       ...baseConfig,
       mode: 'daemon',
-      agentId: 'amr',
+      agentId: 'codex',
     });
     mockedListProjects.mockResolvedValue([]);
     vi.stubGlobal(
@@ -1736,7 +1652,7 @@ describe('App project creation routing', () => {
     );
 
     render(<App />);
-    await screen.findByText('true', { selector: '[data-testid="amr-login-status"]' });
+      await screen.findByTestId('entry-home-surface');
     fireEvent.click(await screen.findByRole('button', { name: 'Create project' }));
 
     await waitFor(() => {
@@ -1783,7 +1699,7 @@ describe('App project creation routing', () => {
       );
 
       render(<App />);
-      await screen.findByText('true', { selector: '[data-testid="amr-login-status"]' });
+      await screen.findByTestId('entry-home-surface');
       fireEvent.click(await screen.findByRole('button', { name: 'Create project' }));
 
       await waitFor(() => {
@@ -1795,48 +1711,7 @@ describe('App project creation routing', () => {
     },
   );
 
-  it('allows an unbound local AMR project while workspace discovery is loading', async () => {
-    mockedLoadConfig.mockReturnValue({
-      ...baseConfig,
-      mode: 'daemon',
-      agentId: 'amr',
-    });
-    mockedListProjects.mockResolvedValue([]);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const pathname = new URL(String(input), 'http://d.local').pathname;
-        if (pathname.endsWith('/integrations/vela/status')) {
-          return new Response(JSON.stringify({
-            loggedIn: false,
-            profile: 'default',
-            user: null,
-            configPath: '/test/vela.json',
-          }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          });
-        }
-        if (pathname.endsWith('/workspace/directory')) {
-          return new Promise<Response>(() => {});
-        }
-        return new Response('{}', {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-      }),
-    );
 
-    render(<App />);
-    await screen.findByText('false', { selector: '[data-testid="amr-login-status"]' });
-    fireEvent.click(await screen.findByRole('button', { name: 'Create project' }));
-
-    await waitFor(() => {
-      expect(mockedCreateProject).toHaveBeenCalledWith(
-        expect.objectContaining({ workspaceContext: null }),
-      );
-    });
-  });
 
   it('routes "create with this design system" through the default design router, not a prototype', async () => {
     mockedListProjects.mockResolvedValue([existingProject]);
@@ -1913,10 +1788,13 @@ describe('App project creation routing', () => {
           ok: true,
           json: async () =>
             pathname.endsWith('/workspace/directory')
-              ? workspaceDirectoryFixture([
-                  workspaceContext('ws-source', 'member-source'),
-                  workspaceContext('ws-ambient', 'member-ambient'),
-                ])
+              ? {
+                  ...workspaceDirectoryFixture([
+                    workspaceContext('ws-source', 'member-source'),
+                    workspaceContext('ws-ambient', 'member-ambient'),
+                  ]),
+                  activeWorkspaceId: 'ws-ambient',
+                }
               : pathname.endsWith('/workspace/context')
                 ? workspaceContextPayload('ws-ambient', 'member-ambient')
                 : {},
@@ -1952,10 +1830,13 @@ describe('App project creation routing', () => {
           ok: true,
           json: async () =>
             pathname.endsWith('/workspace/directory')
-              ? workspaceDirectoryFixture([
-                  workspaceContext('ws-source', 'member-source'),
-                  workspaceContext('ws-ambient', 'member-ambient'),
-                ])
+              ? {
+                  ...workspaceDirectoryFixture([
+                    workspaceContext('ws-source', 'member-source'),
+                    workspaceContext('ws-ambient', 'member-ambient'),
+                  ]),
+                  activeWorkspaceId: 'ws-ambient',
+                }
               : pathname.endsWith('/workspace/context')
                 ? workspaceContextPayload('ws-ambient', 'member-ambient')
                 : {},
@@ -3765,236 +3646,6 @@ describe('App project creation routing', () => {
     });
   });
 
-  it('owns one AMR auth continuation above ProjectView and clears it after consume, cancel, or route exit', async () => {
-    stubWorkspaceContext('ws-1', 'wm-1');
-    mockedListProjects.mockResolvedValue([{
-      ...existingProject,
-      workspaceId: 'ws-1',
-    }]);
-
-    render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
-    await screen.findByTestId('project-view');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Arm auth continuation' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('project-auth-continuation').textContent).toBe(
-        'assistant-auth-failure',
-      );
-    });
-
-    const refreshedIdentity = deferred<void>();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const pathname = new URL(String(input), 'http://d.local').pathname;
-        if (
-          pathname.endsWith('/workspace/directory')
-          || pathname.endsWith('/workspace/context')
-        ) {
-          await refreshedIdentity.promise;
-        }
-        return {
-          ok: true,
-          json: async () =>
-            pathname.endsWith('/workspace/directory')
-              ? workspaceDirectoryFixture([workspaceContext('ws-1', 'wm-1')])
-              : pathname.endsWith('/workspace/context')
-                ? workspaceContextPayload('ws-1', 'wm-1')
-                : {},
-        } as Response;
-      }),
-    );
-    act(() => notifyWorkspaceContextRefresh());
-    await waitFor(() => expect(screen.queryByTestId('project-view')).toBeNull());
-    await act(async () => {
-      refreshedIdentity.resolve();
-      await refreshedIdentity.promise;
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId('project-auth-continuation').textContent).toBe(
-        'assistant-auth-failure',
-      );
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Consume auth continuation' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('project-auth-continuation').textContent).toBe('none');
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Arm auth continuation' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('project-auth-continuation').textContent).toBe(
-        'assistant-auth-failure',
-      );
-    });
-    act(() => notifyAmrLoginStatusChanged('login-canceled'));
-    await waitFor(() => {
-      expect(screen.getByTestId('project-auth-continuation').textContent).toBe('none');
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Arm auth continuation' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('project-auth-continuation').textContent).toBe(
-        'assistant-auth-failure',
-      );
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Back to projects' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('project-auth-continuation').textContent).toBe('none');
-    });
-  });
-
-  it('preserves an exact retry through Settings and returns to its project after sign-in', async () => {
-    mockedListProjects.mockResolvedValue([{
-      ...existingProject,
-      workspaceId: 'ws-1',
-    }]);
-    let loginStatus: VelaLoginStatus = {
-      loggedIn: false,
-      profile: 'test',
-      user: null,
-      configPath: '',
-    };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const pathname = new URL(String(input), 'http://d.local').pathname;
-        return {
-          ok: true,
-          json: async () =>
-            pathname.endsWith('/workspace/directory')
-              ? workspaceDirectoryFixture([workspaceContext('ws-1', 'wm-1')])
-              : pathname.endsWith('/workspace/context')
-                ? workspaceContextPayload('ws-1', 'wm-1')
-                : pathname.endsWith('/integrations/vela/status')
-                  ? loginStatus
-                  : {},
-        } as Response;
-      }),
-    );
-
-    render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
-    await screen.findByTestId('project-view');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Authorize in settings' }));
-    await screen.findByTestId('settings-surface');
-    expect(window.location.pathname).toBe('/settings');
-
-    loginStatus = {
-      loggedIn: true,
-      profile: 'test',
-      user: { id: 'account-a', email: 'account-a@example.com', plan: 'free' },
-      configPath: '',
-    };
-    act(() => notifyAmrLoginStatusChanged());
-
-    await waitFor(() => {
-      expect(window.location.pathname).toBe('/projects/project-existing/conversations/conv-auth');
-      expect(screen.getByTestId('project-auth-continuation').textContent).toBe(
-        'assistant-auth-failure',
-      );
-    });
-  });
-
-  it('retains a Cloud retry across Settings when local scope is member and the same caller is owner', async () => {
-    const scopeContext = workspaceContext('ws-1', 'wm-1');
-    const accountContext: WorkspaceCollabContext = {
-      ...scopeContext,
-      role: 'owner',
-      permissions: buildWorkspacePermissions({ role: 'owner', lifecycleState: 'active' }),
-    };
-    // This is the ordinary daemon projection from
-    // resolveLocalProjectWorkspaceScope: member protects creator-only writes.
-    // The routing test owns App; use the real runWorkspaceIdentity helper at
-    // the mocked ProjectView callback boundary to preserve that input shape.
-    projectViewRetryScopeHarness.scope = {
-      kind: 'team',
-      projectId: existingProject.id,
-      workspaceId: 'ws-1',
-      visibility: 'personal',
-      context: scopeContext,
-    };
-    expect(workspaceIdentityCacheKey(scopeContext)).not.toBe(
-      workspaceIdentityCacheKey(accountContext),
-    );
-    mockedListProjects.mockResolvedValue([{ ...existingProject, workspaceId: 'ws-1' }]);
-    const loginStatus: VelaLoginStatus = {
-      loggedIn: true,
-      profile: 'test',
-      user: { id: 'account-a', email: 'account-a@example.com', plan: 'free' },
-      configPath: '',
-    };
-    let settingsStatusResponse: ReturnType<typeof deferred<VelaLoginStatus>> | null = null;
-    const settingsStatusRequested = deferred<void>();
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const pathname = new URL(String(input), 'http://d.local').pathname;
-      return {
-        ok: true,
-        json: async () => {
-          if (pathname.endsWith('/integrations/vela/status') && settingsStatusResponse) {
-            settingsStatusRequested.resolve();
-            return settingsStatusResponse.promise;
-          }
-          return pathname.endsWith('/workspace/directory')
-            ? workspaceDirectoryFixture([accountContext])
-            : pathname.endsWith('/workspace/context')
-              ? { context: accountContext }
-              : pathname.endsWith('/integrations/vela/status')
-                ? loginStatus
-                : {};
-        },
-      } as Response;
-    }));
-
-    render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
-    await screen.findByTestId('project-view');
-    fireEvent.click(screen.getByRole('button', { name: 'Authorize in settings' }));
-    await screen.findByTestId('settings-surface');
-    expect(window.location.pathname).toBe('/settings');
-
-    expect(projectViewRetryScopeHarness.armedWorkspaceKey).toBe(
-      workspaceIdentityCacheKey(scopeContext),
-    );
-
-    // Own the real status-response boundary. A synchronous act + waitFor
-    // pending can succeed on the returning render before App's discard effect
-    // settles; resolve the request inside async act before inspecting it.
-    settingsStatusResponse = deferred<VelaLoginStatus>();
-    act(() => notifyAmrLoginStatusChanged());
-    await settingsStatusRequested.promise;
-    await act(async () => {
-      settingsStatusResponse!.resolve(loginStatus);
-      await settingsStatusResponse!.promise;
-    });
-    await waitFor(() => expect(screen.getByTestId('project-route-conversation').textContent).toBe('conv-auth'));
-    expect(window.location.pathname).toBe('/projects/project-existing/conversations/conv-auth');
-    // Confirm the fixture actually crossed the two production projections,
-    // instead of accidentally letting App and ProjectView both use member.
-    expect(projectViewRetryScopeHarness.latest?.context).toMatchObject({
-      workspaceId: 'ws-1', workspaceMemberId: 'wm-1', role: 'owner',
-    });
-    const pending = projectViewRetryScopeHarness.latest?.continuation;
-    expect(pending).toMatchObject({
-      assistantId: 'assistant-auth-failure',
-      workspaceIdentityKey: workspaceIdentityCacheKey(scopeContext),
-    });
-    const consume = projectViewRetryScopeHarness.latest?.consume;
-    expect(consume).toBeTypeOf('function');
-    if (!pending || !consume) throw new Error('The Settings retry was discarded before consumption');
-    // This is App's real one-shot callback, not a retry spy. The exact saved
-    // object must remain consumable after effects, and then reject re-use.
-    const results: boolean[] = [];
-    act(() => {
-      results.push(consume(pending), consume(pending));
-    });
-    expect(results).toEqual([true, false]);
-    expect(screen.getByTestId('project-auth-continuation').textContent).toBe('none');
-  });
-
   it('returns from full-page Settings to the exact project conversation and file route', async () => {
     window.history.replaceState(
       null,
@@ -4139,4 +3790,116 @@ describe('App project creation routing', () => {
     });
     expect(window.location.pathname).toBe(`/projects/${brandProject.id}/conversations/conv-brand-acme`);
   });
+  function personalRouteServer(rows: Project[]) {
+    const context = {
+      ...workspaceContext('personal-local', 'local-creator'),
+      workspaceType: 'personal' as const,
+      providerMode: 'personal_byok' as const,
+    };
+    const denied = new Set<string>();
+    const held = new Map<string, ReturnType<typeof deferred<Response>>>();
+    const requests: Array<{ url: string; headers: Headers }> = [];
+    mockedListProjects.mockResolvedValue(rows);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, headers: new Headers(init?.headers) });
+      const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+      if (url.includes('/workspace/directory')) return reply(workspaceDirectoryFixture([]));
+      if (url.includes('/workspace/context')) return reply({ context: null });
+      const match = url.match(/^\/api\/projects\/([^/]+)(\/workspace-scope)?$/u);
+      if (match) {
+        const id = match[1]!;
+        if (match[2] && held.has(id)) return held.get(id)!.promise;
+        if (denied.has(id)) return reply({ error: 'forbidden' }, 403);
+        const project = rows.find((row) => row.id === id);
+        if (!project) return reply({}, 404);
+        return reply(match[2]
+          ? { scope: { projectId: id, workspaceId: project.workspaceId ?? null, context: project.workspaceId ? context : null, readOnly: false } }
+          : { project });
+      }
+      return reply({});
+    }));
+    return { context, requests, denied, held };
+  }
+
+  const personalRow: Project = { ...existingProject, id: 'personal-one', name: 'Personal one', workspaceId: 'personal-local' };
+
+  it('opens a listed Personal project under its proven binding and survives focus/pageshow', async () => {
+    const server = personalRouteServer([personalRow]);
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Personal one' }));
+    await waitFor(() => expect(screen.getByTestId('project-workspace-id').textContent).toBe('personal-local'));
+    expect(screen.getByTestId('project-route-workspace-context').textContent).toBe('personal-local:local-creator');
+    expect(screen.getByTestId('workspace-tabs-identity').textContent).toBe(`local:${currentWorkspaceAccountGeneration()}::personal-local`);
+    const before = server.requests.filter((r) => r.url.endsWith('/workspace-scope')).length;
+    act(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => expect(server.requests.filter((r) => r.url.endsWith('/workspace-scope')).length).toBeGreaterThan(before));
+    act(() => window.dispatchEvent(new Event('pageshow')));
+    await waitFor(() => expect(screen.getByTestId('project-workspace-id').textContent).toBe('personal-local'));
+    expect(server.requests.some((r) => r.url.includes('/integrations/vela'))).toBe(false);
+  });
+
+  it('proves a loaded catalog row reached through a direct route before mounting project resources', async () => {
+    const server = personalRouteServer([personalRow]);
+    render(<App />);
+    await screen.findByRole('button', { name: 'Open Personal one' });
+    act(() => navigate({ kind: 'project', projectId: personalRow.id, fileName: null }));
+    await waitFor(() => expect(screen.getByTestId('project-route-workspace-context').textContent).toBe('personal-local:local-creator'));
+    expect(server.requests.filter((r) => r.url.endsWith('/workspace-scope')).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('clears Personal route authority when focus revalidation is denied', async () => {
+    const server = personalRouteServer([personalRow]);
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Personal one' }));
+    await screen.findByTestId('project-view');
+    server.denied.add(personalRow.id);
+    act(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => expect(screen.queryByTestId('project-view')).toBeNull());
+    expect(screen.getByRole('alert')).toBeTruthy();
+  });
+
+  it('rejects a late open proof after a newer project wins the open epoch', async () => {
+    const second = { ...personalRow, id: 'personal-two', name: 'Personal two' };
+    const server = personalRouteServer([personalRow, second]);
+    const oldRead = deferred<Response>();
+    server.held.set(personalRow.id, oldRead);
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Personal one' }));
+    await waitFor(() => expect(server.requests.some((r) => r.url === '/api/projects/personal-one/workspace-scope')).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Personal two' }));
+    await waitFor(() => expect(screen.getByTestId('project-title').textContent).toBe('Personal two'));
+    server.held.delete(personalRow.id);
+    await act(async () => oldRead.resolve(new Response(JSON.stringify({ scope: { projectId: personalRow.id, workspaceId: 'personal-local', context: server.context, readOnly: false } }))));
+    expect(screen.getByTestId('project-title').textContent).toBe('Personal two');
+    expect(window.location.pathname).toContain('/personal-two');
+  });
+
+  it('does not open a denied bound project or retry it as unbound', async () => {
+    const team = { ...personalRow, id: 'team-denied', name: 'Denied team', workspaceId: 'team-local' };
+    const server = personalRouteServer([team]);
+    server.denied.add(team.id);
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Denied team' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(screen.queryByTestId('project-view')).toBeNull();
+    expect(server.requests.filter((r) => r.url === '/api/projects/team-denied')).toHaveLength(0);
+  });
+  it('does not borrow another project authority when switching within one Personal workspace', async () => {
+    const second = { ...personalRow, id: 'personal-two', name: 'Personal two' };
+    const server = personalRouteServer([personalRow, second]);
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Personal one' }));
+    await screen.findByTestId('project-view');
+    const pending = deferred<Response>();
+    server.held.set(second.id, pending);
+    act(() => navigate({ kind: 'project', projectId: second.id, fileName: null }));
+    await waitFor(() => expect(server.requests.some((r) => r.url === '/api/projects/personal-two/workspace-scope')).toBe(true));
+    expect(screen.queryByTestId('project-view')).toBeNull();
+    server.held.delete(second.id);
+    await act(async () => pending.resolve(new Response(JSON.stringify({ scope: { projectId: second.id, workspaceId: 'personal-local', context: server.context, readOnly: false } }))));
+    await waitFor(() => expect(screen.getByTestId('project-title').textContent).toBe('Personal two'));
+  });
+
+
 });

@@ -4,6 +4,8 @@ import type {
   AuthorizeProjectRequest,
   AuthorizeProjectToolRequest,
 } from '../collab/project-request-authority.js';
+import { listLiveArtifactsForTool } from '../services/live-artifact-tool-list.js';
+import { createLiveArtifactForTool, updateLiveArtifactForTool, refreshLiveArtifactForTool } from '../services/live-artifact-tool-write.js';
 
 export interface RegisterLiveArtifactRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'auth' | 'liveArtifacts' | 'projectStore'> {
   authorizeProjectRequest: AuthorizeProjectRequest;
@@ -17,6 +19,13 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
   const { authorizeToolRequest, requestProjectOverride, requestRunOverride } = ctx.auth;
   const { createLiveArtifact, listLiveArtifacts, updateLiveArtifact, refreshLiveArtifact, emitLiveArtifactEvent, emitLiveArtifactRefreshEvent, readLiveArtifactCode, setLiveArtifactCodeHeaders, ensureLiveArtifactPreview, setLiveArtifactPreviewHeaders, getLiveArtifact, listLiveArtifactRefreshLogEntries, deleteLiveArtifact } = ctx.liveArtifacts;
   const { getProject, updateProject } = ctx.projectStore;
+  const writeDeps = (res: any) => ({
+    projectsRoot: PROJECTS_DIR, createLiveArtifact, updateLiveArtifact, refreshLiveArtifact,
+    emitLiveArtifactEvent, emitLiveArtifactRefreshEvent,
+    authorizeProjectToolWrite: async (projectId: string) => Boolean(await ctx.authorizeProjectToolRequest(
+      res, projectId, { mode: 'write', capability: 'writeFiles' },
+    )),
+  });
   const authorizeProject = async (
     req: any,
     res: any,
@@ -143,22 +152,13 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
           details: { suppliedRunId: createdByRunId },
         });
       }
-      if (!await ctx.authorizeProjectToolRequest(
-        res,
-        toolGrant.projectId,
-        { mode: 'write', capability: 'writeFiles' },
-      )) return;
-
-      const record = await createLiveArtifact({
-        projectsRoot: PROJECTS_DIR,
-        projectId: toolGrant.projectId,
+      const result = await createLiveArtifactForTool(toolGrant, {
         input: input ?? {},
         templateHtml,
         provenanceJson,
-        createdByRunId: toolGrant.runId,
-      });
-      emitLiveArtifactEvent(toolGrant, 'created', record.artifact);
-      res.json({ artifact: record.artifact });
+      }, writeDeps(res));
+      if (!result.ok) return;
+      res.json({ artifact: result.artifact });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -174,17 +174,15 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
           details: { suppliedProjectId: projectId },
         });
       }
-      if (!await ctx.authorizeProjectToolRequest(
-        res,
-        toolGrant.projectId,
-        { mode: 'read' },
-      )) return;
-
-      const artifacts = await listLiveArtifacts({
+      const result = await listLiveArtifactsForTool(toolGrant, {
         projectsRoot: PROJECTS_DIR,
-        projectId: toolGrant.projectId,
+        authorizeProjectTool: async (projectId) => Boolean(await ctx.authorizeProjectToolRequest(
+          res, projectId, { mode: 'read' },
+        )),
+        listLiveArtifacts,
       });
-      res.json({ artifacts });
+      if (!result.ok) return;
+      res.json({ artifacts: result.artifacts });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -203,22 +201,14 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
       if (typeof artifactId !== 'string' || artifactId.length === 0) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'artifactId is required');
       }
-      if (!await ctx.authorizeProjectToolRequest(
-        res,
-        toolGrant.projectId,
-        { mode: 'write', capability: 'writeFiles' },
-      )) return;
-
-      const record = await updateLiveArtifact({
-        projectsRoot: PROJECTS_DIR,
-        projectId: toolGrant.projectId,
+      const result = await updateLiveArtifactForTool(toolGrant, {
         artifactId,
         input: input ?? {},
         templateHtml,
         provenanceJson,
-      });
-      emitLiveArtifactEvent(toolGrant, 'updated', record.artifact);
-      res.json({ artifact: record.artifact });
+      }, writeDeps(res));
+      if (!result.ok) return;
+      res.json({ artifact: result.artifact });
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }
@@ -237,38 +227,9 @@ export function registerLiveArtifactRoutes(app: Express, ctx: RegisterLiveArtifa
       if (typeof artifactId !== 'string' || artifactId.length === 0) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'artifactId is required');
       }
-      if (!await ctx.authorizeProjectToolRequest(
-        res,
-        toolGrant.projectId,
-        { mode: 'write', capability: 'writeFiles' },
-      )) return;
-
-      let result;
-      try {
-        result = await refreshLiveArtifact({
-          projectsRoot: PROJECTS_DIR,
-          projectId: toolGrant.projectId,
-          artifactId,
-          onStarted: ({ refreshId }: any) => {
-            emitLiveArtifactRefreshEvent(toolGrant, { phase: 'started', artifactId, refreshId });
-          },
-        });
-      } catch (refreshErr) {
-        emitLiveArtifactRefreshEvent(toolGrant, {
-          phase: 'failed',
-          artifactId,
-          error: refreshErr instanceof Error ? refreshErr.message : String(refreshErr),
-        });
-        throw refreshErr;
-      }
-      emitLiveArtifactRefreshEvent(toolGrant, {
-        phase: 'succeeded',
-        artifactId,
-        refreshId: result.refresh.id,
-        title: result.artifact.title,
-        refreshedSourceCount: result.refresh.refreshedSourceCount,
-      });
-      res.json(result);
+      const result = await refreshLiveArtifactForTool(toolGrant, artifactId, writeDeps(res));
+      if (!result.ok) return;
+      res.json(result.result);
     } catch (err: any) {
       sendLiveArtifactRouteError(res, err);
     }

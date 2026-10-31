@@ -31,7 +31,7 @@ function renderFailure(agentId: string, event: NonNullable<ChatMessage['events']
     streaming={false} error={null} projectId="exposure-project" projectFiles={[]}
     config={{ mode: 'daemon', agentId, agentCliEnv: {} } as AppConfig}
     onEnsureProject={async () => 'exposure-project'} onSend={vi.fn()} onStop={vi.fn()}
-    onRetry={vi.fn()} onSwitchToAmrAndRetry={vi.fn()}
+    onRetry={vi.fn()}
     conversations={[{ id: 'exposure-conversation', projectId: 'exposure-project', title: 'Current', createdAt: 0, updatedAt: 0 }]}
     activeConversationId="exposure-conversation" onSelectConversation={vi.fn()} onDeleteConversation={vi.fn()}
     {...extra}
@@ -46,19 +46,19 @@ describe('OPEND-2807 recovery exposure matches actual card actions', () => {
     expect(trackRunRecoveryActionSurfaceView).not.toHaveBeenCalled();
   });
 
-  it('does not report Retry when the real zero-balance card takes over', () => {
+  it('renders historical balance failure without a Cloud recovery action', () => {
     renderFailure('amr', { kind: 'status', label: 'error', code: 'AMR_INSUFFICIENT_BALANCE',
-      detail: 'Insufficient balance' }, { amrBalanceCardUsd: 0, amrBalanceCardUnavailable: false });
-    expect(screen.getByTestId('chat-upgrade-card')).toBeTruthy();
-    expect(screen.queryByTestId('chat-run-error-card')).toBeNull();
+      detail: 'Insufficient balance' }, { });
+    expect(screen.queryByTestId('chat-upgrade-card')).toBeNull();
+    expect(screen.getByTestId('chat-run-error-card')).toBeTruthy();
     expect(trackRunRecoveryActionSurfaceView).not.toHaveBeenCalled();
   });
 
   it.each([
     ['amr', 'manual_retry', 'promptTemplates.retry'],
-    ['claude', 'switch_runtime_retry', 'chat.amrCard.switchCta'],
+    ['claude', 'manual_retry', 'promptTemplates.retry'],
   ])('reports only the displayed %s recovery action', (agentId, action, label) => {
-    renderFailure(agentId, { kind: 'status', label: 'error', code: 'AMR_TIER_UPGRADE_REQUIRED', detail: 'Plan unavailable' });
+    renderFailure(agentId, { kind: 'status', label: 'error', code: 'AGENT_EXECUTION_FAILED', failureDetail: 'process_crashed', detail: 'Controlled failure' });
     expect(within(screen.getByTestId('chat-run-error-card')).getByRole('button', { name: label })).toBeTruthy();
     const surfaces = vi.mocked(trackRunRecoveryActionSurfaceView).mock.calls.map((call) => call[1]);
     expect(surfaces.map((surface) => surface.recovery_action_type)).toEqual([action]);

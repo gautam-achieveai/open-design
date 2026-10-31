@@ -11,10 +11,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProjectView } from '../../src/components/ProjectView';
 import { SideChatTab, type ActiveConversationChatState } from '../../src/components/workspace/SideChatTab';
 import { I18nProvider } from '../../src/i18n';
-import { checkAmrBalanceGate } from '../../src/runtime/amr-balance-gate';
 import type { RecoveryActionBlockReason } from '../../src/runtime/chat/recovery-gating';
 import type { ProjectWorkspaceScopeState } from '../../src/collab/useProjectWorkspaceScope';
-import { fetchChatRunStatus, fetchVelaLoginStatus, streamViaDaemon } from '../../src/providers/daemon';
+import { fetchChatRunStatus, streamViaDaemon } from '../../src/providers/daemon';
 import {
   createConversation,
   listConversations,
@@ -44,10 +43,6 @@ vi.mock('../../src/providers/daemon', async (importOriginal) => ({
   streamViaDaemon: vi.fn(),
 }));
 vi.mock('../../src/providers/project-events', () => ({ useProjectFileEvents: vi.fn() }));
-vi.mock('../../src/runtime/amr-balance-gate', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/runtime/amr-balance-gate')>()),
-  checkAmrBalanceGate: vi.fn().mockResolvedValue({ kind: 'allow' }),
-}));
 vi.mock('../../src/collab/useWorkspaceContext', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/collab/useWorkspaceContext')>()),
   useWorkspaceContext: () => ({ context: workspace.caller, loading: false }),
@@ -105,7 +100,6 @@ vi.mock('../../src/components/FileWorkspace', () => ({
     activeConversationChat?: ActiveConversationChatState;
     onSelectConversation: (id: string) => void;
     onDeleteConversation: (id: string) => void;
-    onSwitchConversationToCloud?: (conversationId: string, message: ChatMessage) => void;
     chatRecoveryActionsBlockedReason?: RecoveryActionBlockReason | null;
     onSendBoardCommentAttachments?: (comments: ChatCommentAttachment[]) => Promise<{ status: string; commentIds: string[] }>;
   }) => {
@@ -120,7 +114,7 @@ vi.mock('../../src/components/FileWorkspace', () => ({
         onSelectConversation={props.onSelectConversation}
         onDeleteConversation={props.onDeleteConversation}
         recoveryActionsBlockedReason={props.chatRecoveryActionsBlockedReason}
-        {...{ onSwitchConversationToCloud: props.onSwitchConversationToCloud }}
+        {...{ }}
       />
     </div>
   ) : <div />;
@@ -175,7 +169,7 @@ const history: ChatMessage = {
   id: 'persisted-message', role: 'user', content: 'Existing private conversation', createdAt: 1,
 };
 const config: AppConfig = {
-  mode: 'daemon', apiKey: '', baseUrl: '', model: 'deepseek-v4-flash', agentId: 'amr',
+  mode: 'daemon', apiKey: '', baseUrl: '', model: 'deepseek-v4-flash', agentId: 'codex',
   skillId: null, designSystemId: null,
 };
 
@@ -194,7 +188,7 @@ function projectView(extra: Partial<ComponentProps<typeof ProjectView>> = {}) {
     <ProjectView
       project={project} routeFileName={null} config={config}
       agents={[{
-        id: 'amr', name: 'amr', available: true,
+        id: 'codex', name: 'codex', available: true,
         models: [{ id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash', default: true }],
       }] as unknown as AgentInfo[]}
       skills={[]} designTemplates={[]} designSystems={[]} daemonLive
@@ -207,15 +201,6 @@ function projectView(extra: Partial<ComponentProps<typeof ProjectView>> = {}) {
   );
 }
 
-function insufficientWallet() {
-  return {
-    kind: 'hard' as const, reason: 'insufficient' as const,
-    snapshot: {
-      status: 'available' as const, profile: 'prod', user: { plan: 'free' }, balanceUsd: '0',
-      updatedAt: null, fetchedAt: '2026-09-16T00:00:00.000Z', stale: false, source: 'vela_api' as const,
-    },
-  };
-}
 
 describe('OPEND-3205 new send owns the current failure presentation', () => {
   beforeEach(() => {
@@ -230,8 +215,6 @@ describe('OPEND-3205 new send owns the current failure presentation', () => {
     vi.mocked(createConversation).mockReset().mockResolvedValue(conversation);
     vi.mocked(listMessages).mockReset().mockResolvedValue([history]);
     vi.mocked(streamViaDaemon).mockReset().mockResolvedValue(undefined);
-    vi.mocked(checkAmrBalanceGate).mockReset().mockResolvedValue({ kind: 'allow' });
-    vi.mocked(fetchVelaLoginStatus).mockReset().mockResolvedValue(null);
     vi.mocked(fetchChatRunStatus).mockReset().mockResolvedValue(null);
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
   });
@@ -244,10 +227,9 @@ describe('OPEND-3205 new send owns the current failure presentation', () => {
 
 
   it.each([
-    ['main balance preflight', false, true],
-    ['main new Cloud failure', false, false],
-    ['inactive side new Cloud failure', true, false],
-  ] as const)('%s keeps the old failed history but replaces its action card', async (_label, side, balanceBlocked) => {
+    ['main new local failure', false],
+    ['inactive side new local failure', true],
+  ] as const)('%s keeps the old failed history but replaces its action card', async (_label, side) => {
     const target = side ? { ...conversation, id: 'side-current-failure', sessionMode: 'chat' as const } : conversation;
     const oldFailure: ChatMessage = {
       id: 'old-local-failure', role: 'assistant', content: 'Original local failed history', createdAt: 2,
@@ -259,53 +241,28 @@ describe('OPEND-3205 new send owns the current failure presentation', () => {
     workspace.sideConversationId = side ? target.id : null;
     vi.mocked(listConversations).mockResolvedValue(side ? [conversation, target] : [conversation]);
     vi.mocked(listMessages).mockImplementation(async (_project, id) => id === target.id ? [history, oldFailure] : [history]);
-    if (balanceBlocked) {
-      vi.mocked(checkAmrBalanceGate).mockResolvedValue({
-        kind: 'hard', reason: 'insufficient',
-        snapshot: {
-          status: 'available', profile: 'prod', user: { plan: 'free' }, balanceUsd: '0',
-          updatedAt: null, fetchedAt: '2026-09-16T00:00:00.000Z', stale: false, source: 'vela_api',
-        },
-      });
-    } else {
-      vi.mocked(streamViaDaemon).mockImplementation(async (options) => {
-        options.onRunCreated?.('new-cloud-failed-run');
-        options.onRunStatus?.('failed');
-        options.handlers.onError(Object.assign(new Error('New Cloud authorization failed'), { code: 'AMR_AUTH_REQUIRED' }));
-      });
-    }
+    vi.mocked(streamViaDaemon).mockImplementation(async (options) => {
+      options.onRunCreated?.('new-local-failed-run');
+      options.onRunStatus?.('failed');
+      options.handlers.onError(Object.assign(new Error('New local failure'), { code: 'AGENT_EXECUTION_FAILED', failureDetail: 'process_crashed' }));
+    });
     function Owner() {
-      const [selectedConfig, setSelectedConfig] = useState<AppConfig>({ ...config, agentId: 'codex' });
       return <I18nProvider initial="zh-CN">{projectView({
-        config: selectedConfig, routeConversationId: conversation.id,
-        onSwitchToCloud: async () => setSelectedConfig((current) => ({ ...current, mode: 'daemon', agentId: 'amr' })),
+        config, routeConversationId: conversation.id,
       })}</I18nProvider>;
     }
     const view = render(<Owner />);
     const host = side ? await view.findByTestId('side-chat-recovery-host') : view.container;
     await within(host).findByText(oldFailure.content);
-    const oldCard = within(host).getByTestId('chat-run-error-card');
-    await act(async () => {
-      fireEvent.click(within(oldCard).getByRole('button', { name: '切换到 OpenDesign Cloud' }));
-    });
-    expect(await view.findByText('已切换到 OpenDesign Cloud，请重新发送任务。')).toBeVisible();
-    expect(streamViaDaemon).not.toHaveBeenCalled();
+    expect(within(host).getByTestId('chat-run-error-card')).toBeVisible();
     fireEvent.click(within(host).getByTestId('composer-fixture-send'));
-    if (balanceBlocked) {
-      expect(await within(host).findByTestId('chat-upgrade-card')).toBeVisible();
-      expect(checkAmrBalanceGate).toHaveBeenCalledOnce();
-      expect(streamViaDaemon).not.toHaveBeenCalled();
-      // Real regression: a rejected new Send restores the old transcript;
-      // that must not reactivate the obsolete local recovery action card.
-      expect(within(host).queryByTestId('chat-run-error-card')).toBeNull();
-    } else {
+
       await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledOnce());
       await waitFor(() => expect(within(host).getAllByTestId('chat-run-error-card')).toHaveLength(1));
       const currentCard = within(host).getByTestId('chat-run-error-card');
       expect(within(currentCard).getByRole('button', { name: '重试' })).toBeVisible();
       expect(within(currentCard).queryByRole('button', { name: '切换到 OpenDesign Cloud' })).toBeNull();
       expect(within(host).queryByTestId('chat-upgrade-card')).toBeNull();
-    }
     expect(within(host).getByText(oldFailure.content)).toBeVisible();
     expect(oldFailure).toEqual(originalFailure);
     for (const call of vi.mocked(saveMessage).mock.calls) {
@@ -322,29 +279,27 @@ describe('OPEND-3205 new send owns the current failure presentation', () => {
     };
     const original = structuredClone(oldFailure);
     vi.mocked(listMessages).mockResolvedValue([history, oldFailure]);
-    vi.mocked(checkAmrBalanceGate).mockResolvedValue(insufficientWallet());
     const host = () => <I18nProvider initial="zh-CN">{projectView({
-      config, routeConversationId: conversation.id, onSwitchToCloud: vi.fn().mockResolvedValue(undefined),
+      config, routeConversationId: conversation.id,
     })}</I18nProvider>;
     const first = render(host());
     await first.findByText(oldFailure.content);
     expect(first.getByTestId('chat-run-error-card')).toBeVisible();
-    fireEvent.click(first.getByTestId('composer-fixture-send'));
-    expect(await first.findByTestId('chat-upgrade-card')).toBeVisible();
+    fireEvent.click(first.getByTestId('chat-error-retry'));
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledOnce());
     expect(first.queryByTestId('chat-run-error-card')).toBeNull();
     first.unmount();
 
     // No seeding of the consumption store: remount reads the exact original
-    // failed history after the preceding real preflight wrote presentation state.
+    // failed history after the preceding real retry wrote presentation state.
     const restored = render(host());
     await restored.findByText(oldFailure.content);
     expect(restored.queryByTestId('chat-run-error-card')).toBeNull();
     // The pre-run quota cue has no durable run/message; do not claim it survives reload.
-    vi.mocked(checkAmrBalanceGate).mockResolvedValue({ kind: 'allow' });
-    vi.mocked(streamViaDaemon).mockImplementation(async (options) => {
+    vi.mocked(streamViaDaemon).mockClear().mockImplementation(async (options) => {
       options.onRunCreated?.('new-run-after-remount');
       options.onRunStatus?.('failed');
-      options.handlers.onError(Object.assign(new Error('New Cloud failure'), { code: 'AMR_AUTH_REQUIRED' }));
+      options.handlers.onError(Object.assign(new Error('New local failure'), { code: 'AGENT_EXECUTION_FAILED', failureDetail: 'process_crashed' }));
     });
     fireEvent.click(restored.getByTestId('composer-fixture-send'));
     await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledOnce());
@@ -399,9 +354,8 @@ describe('OPEND-3205 new send owns the current failure presentation', () => {
       } satisfies ChatRunStatusResponse;
     });
     vi.mocked(listMessages).mockResolvedValue([history, head, tail]);
-    vi.mocked(checkAmrBalanceGate).mockResolvedValue(insufficientWallet());
     const host = () => <I18nProvider initial="zh-CN">{projectView({
-      config, routeConversationId: conversation.id, onSwitchToCloud: vi.fn().mockResolvedValue(undefined),
+      config, routeConversationId: conversation.id,
     })}</I18nProvider>;
     const view = render(host());
     await view.findByText(/Planning history stays.*Physical failure history stays/s);
@@ -411,13 +365,13 @@ describe('OPEND-3205 new send owns the current failure presentation', () => {
     // without clearing its save history or relaxing the full-row assertion.
     await waitFor(() => expect(vi.mocked(saveMessage).mock.calls.some(([, , saved]) =>
       saved.id === head.id)).toBe(true));
-    expect(checkAmrBalanceGate).not.toHaveBeenCalled();
+    expect(streamViaDaemon).not.toHaveBeenCalled();
     for (const [, , saved] of vi.mocked(saveMessage).mock.calls) {
       const source = original.find((message) => message.id === saved.id);
       if (source) expect(saved).toEqual(source);
     }
-    fireEvent.click(view.getByTestId('composer-fixture-send'));
-    expect(await view.findByTestId('chat-upgrade-card')).toBeVisible();
+    fireEvent.click(view.getByTestId('chat-error-retry'));
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledOnce());
     expect(view.queryByTestId('chat-run-error-card')).toBeNull();
     expect(view.getByText(/Planning history stays.*Physical failure history stays/s)).toBeVisible();
     expect([head, tail]).toEqual(original);
@@ -429,10 +383,10 @@ describe('OPEND-3205 new send owns the current failure presentation', () => {
     const restored = render(host());
     await restored.findByText(/Planning history stays.*Physical failure history stays/s);
     expect(restored.queryByTestId('chat-run-error-card')).toBeNull();
-    expect(streamViaDaemon).not.toHaveBeenCalled();
+    expect(streamViaDaemon).toHaveBeenCalledOnce();
   });
 
-  it('does not consume another conversation failure when an old preflight finishes after navigation', async () => {
+  it('does not consume another conversation failure when an old local request finishes after navigation', async () => {
     const secondConversation: Conversation = { ...conversation, id: 'second-conversation' };
     const failure = (id: string): ChatMessage => ({
       id, role: 'assistant', content: `Failure history ${id}`, createdAt: 2,
@@ -444,27 +398,27 @@ describe('OPEND-3205 new send owns the current failure presentation', () => {
     const secondFailure = failure('failed-B');
     vi.mocked(listConversations).mockResolvedValue([conversation, secondConversation]);
     vi.mocked(listMessages).mockImplementation(async (_project, id) => [history, id === conversation.id ? firstFailure : secondFailure]);
-    let release!: (gate: ReturnType<typeof insufficientWallet>) => void;
-    const pending = new Promise<ReturnType<typeof insufficientWallet>>((resolve) => { release = resolve; });
-    vi.mocked(checkAmrBalanceGate).mockReturnValue(pending);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(streamViaDaemon).mockReturnValue(pending);
     const host = (id: string) => <I18nProvider initial="zh-CN">{projectView({
-      config, routeConversationId: id, onSwitchToCloud: vi.fn().mockResolvedValue(undefined),
+      config, routeConversationId: id,
     })}</I18nProvider>;
     const view = render(host(conversation.id));
     await view.findByText(firstFailure.content);
     try {
       fireEvent.click(view.getByTestId('composer-fixture-send'));
-      await waitFor(() => expect(checkAmrBalanceGate).toHaveBeenCalledOnce());
+      await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledOnce());
       view.rerender(host(secondConversation.id));
       await view.findByText(secondFailure.content);
-      await act(async () => { release(insufficientWallet()); await pending; });
+      await act(async () => { release(); await pending; });
       const secondCard = view.getByTestId('chat-run-error-card');
-      expect(within(secondCard).getByRole('button', { name: '切换到 OpenDesign Cloud' })).toBeVisible();
+      expect(within(secondCard).getByRole('button', { name: '重试' })).toBeVisible();
       expect(view.queryByTestId('chat-upgrade-card')).toBeNull();
       expect(view.getByText(secondFailure.content)).toBeVisible();
-      expect(streamViaDaemon).not.toHaveBeenCalled();
+      expect(streamViaDaemon).toHaveBeenCalledOnce();
     } finally {
-      await act(async () => { release(insufficientWallet()); await pending; });
+      await act(async () => { release(); await pending; });
     }
   });
 
@@ -480,9 +434,8 @@ describe('OPEND-3205 new send owns the current failure presentation', () => {
     workspace.sideConversationId = sideConversation.id;
     vi.mocked(listConversations).mockResolvedValue([conversation, sideConversation]);
     vi.mocked(listMessages).mockImplementation(async (_project, id) => id === sideConversation.id ? [history, sideFailure] : [history]);
-    vi.mocked(checkAmrBalanceGate).mockResolvedValue(insufficientWallet());
     const view = render(<I18nProvider initial="zh-CN">{projectView({
-      config, routeConversationId: conversation.id, onSwitchToCloud: vi.fn().mockResolvedValue(undefined),
+      config, routeConversationId: conversation.id,
     })}</I18nProvider>);
     const sideHost = await view.findByTestId('side-chat-recovery-host');
     await within(sideHost).findByText(sideFailure.content);
@@ -498,14 +451,14 @@ describe('OPEND-3205 new send owns the current failure presentation', () => {
       }]);
       expect(result).toEqual({ status: 'queued', commentIds: ['primary-board-note'] });
     });
-    await waitFor(() => expect(checkAmrBalanceGate).toHaveBeenCalled());
-    expect(await view.findByTestId('chat-upgrade-card')).toBeVisible();
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalled());
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledOnce());
     const sideCard = within(sideHost).getByTestId('chat-run-error-card');
-    expect(within(sideCard).getByRole('button', { name: '切换到 OpenDesign Cloud' })).toBeVisible();
+    expect(within(sideCard).getByRole('button', { name: '重试' })).toBeVisible();
     expect(within(sideHost).queryByTestId('chat-upgrade-card')).toBeNull();
     expect(within(sideHost).getByText(sideFailure.content)).toBeVisible();
     expect(sideFailure).toEqual(original);
-    expect(streamViaDaemon).not.toHaveBeenCalled();
+    expect(streamViaDaemon).toHaveBeenCalledOnce();
   });
 
 });

@@ -469,6 +469,7 @@ describe('NewProjectPanel design system defaults', () => {
         onDeleteTemplate={vi.fn()}
         promptTemplates={[]}
         onCreate={onCreate}
+        mediaProviders={{ openai: { apiKey: 'test-key', baseUrl: '' } }}
       />,
     );
 
@@ -486,7 +487,7 @@ describe('NewProjectPanel design system defaults', () => {
         designSystemId: null,
         metadata: expect.objectContaining({
           kind: 'image',
-          imageModel: 'vela/gpt-image-2',
+          imageModel: 'gpt-image-2',
           imageAspect: '3:4',
         }),
       }),

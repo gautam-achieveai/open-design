@@ -14,6 +14,9 @@ describe('McpClientSection OAuth controls', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/api/agents')) {
+        return jsonResponse({ agents: [{ id: 'kimi', name: 'Kimi', available: true, externalMcpInjection: 'acp-merge' }] });
+      }
       if (url.endsWith('/api/mcp/servers')) {
         return jsonResponse({
           servers: [
@@ -53,6 +56,13 @@ describe('McpClientSection OAuth controls', () => {
       expect(screen.getAllByText(/No managed OAuth/i).length).toBeGreaterThan(0);
     });
     expect(screen.queryByRole('button', { name: /^Connect$/i })).toBeNull();
+  });
+
+  it('explains that ACP remote forwarding depends on agent support', async () => {
+    render(<McpClientSection />);
+
+    expect(await screen.findByText(/ACP forwards HTTP and SSE servers only when the agent supports them/i)).toBeTruthy();
+    expect(screen.queryByText(/stdio only/i)).toBeNull();
   });
 
   it('infers no managed OAuth when a custom HTTP row is pointed at localhost', async () => {

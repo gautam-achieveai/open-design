@@ -1350,6 +1350,24 @@ export function createChatRunService({
   };
 
   const get = (id) => runs.get(id) ?? hydrateDurableRun(id);
+  // Owner lookup must not hydrate: recovery can write durable terminal state.
+  const peekProjectId = (id) => {
+    const live = runs.get(id);
+    if (live) return typeof live.projectId === 'string' ? live.projectId : null;
+    for (const [projectId, ids] of runIdsByProjectId) if (ids.has(id)) return projectId;
+    return null;
+  };
+  const readEvents = async (run, assertCurrent = () => {}) => {
+    assertCurrent();
+    const tail = run.events.slice();
+    if (run.eventsLogFinalFlush) await run.eventsLogFinalFlush;
+    const writer = run.eventsLogStream;
+    if (writer && !writer.writableEnded) await new Promise((resolve) => writer.write('', () => resolve()));
+    assertCurrent();
+    const journal = run.eventsLogPath ? readDurableRunEvents(run.eventsLogPath) : [];
+    const records = new Map([...journal, ...tail].map((record) => [record.id, record]));
+    return [...records.values()].sort((a, b) => a.id - b.id);
+  };
   const findByPluginWorkflowId = (pluginWorkflowId) => {
     if (typeof pluginWorkflowId !== 'string' || !pluginWorkflowId) return null;
     const runId = runIdsByPluginWorkflowId.get(pluginWorkflowId);
@@ -1623,7 +1641,23 @@ export function createChatRunService({
   ) => {
     if (TERMINAL_RUN_STATUSES.has(run.status)) return;
     const terminalAt = Date.now();
-    if (beforeFinish) beforeFinish(run, status, code, signal, terminalAt);
+    const override = beforeFinish?.(run, status, code, signal, terminalAt);
+    // A synchronous output seal may only downgrade a terminal claim. Apply
+    // this before completeness, durable state, outbox and the single end event.
+    if (override?.status === 'failed') {
+      status = 'failed';
+      code = 1;
+      signal = null;
+      run.errorCode = override.errorCode;
+      run.error = override.message;
+    }
+    // A failed seal can synchronously request finish or install a termination
+    // barrier. Respect that request before publishing any terminal state.
+    if (TERMINAL_RUN_STATUSES.has(run.status)) return;
+    if ((run.processTreeTerminationPending ?? 0) > 0) {
+      finish(run, status, code, signal);
+      return;
+    }
     run.status = status;
     run.exitCode = code;
     run.signal = signal;
@@ -2600,6 +2634,8 @@ export function createChatRunService({
     prepareRestart,
     start,
     get,
+    peekProjectId,
+    readEvents,
     findByPluginWorkflowId,
     list,
     stream,

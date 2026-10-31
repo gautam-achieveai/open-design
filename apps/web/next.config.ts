@@ -157,11 +157,11 @@ function configuredAllowedDevHosts(): string[] {
 }
 
 /**
- * Direct inputs to the client host contract reported with CMS Test acceptances.
+ * Retained inputs to the client touchpoint host compatibility fingerprint.
  *
  * Keep this closure at the host boundary: the touchpoint adapters and their
- * presentation assets, the production decision loader, and the app/shell
- * modules that mount or position those hosts. Broad shared application styles
+ * presentation assets, the decision loader, and the app/shell boundary.
+ * Retired campaign placements are excluded. Broad shared application styles
  * are intentionally excluded; including the whole app graph would turn an
  * unrelated shell change into a CMS host release.
  */
@@ -174,12 +174,6 @@ export const CMS_HOST_RELEASE_INPUTS = [
   'apps/web/src/components/touchpoint-lifecycle.ts',
   'apps/web/src/components/touchpoint-static-actions.ts',
   'apps/web/src/components/touchpoint-navigation.ts',
-  'apps/web/src/components/TestCampaignModal.tsx',
-  'apps/web/src/components/TestCampaignModal.module.css',
-  'apps/web/src/components/ProductionCampaignModal.tsx',
-  'apps/web/src/components/ProductionCampaignBadge.tsx',
-  'apps/web/src/components/ProductionCampaignBadge.module.css',
-  'apps/web/src/components/ProductionCampaignHover.tsx',
   'apps/web/src/components/HoverTouchpointOverlay.tsx',
   'apps/web/src/components/HoverTouchpointOverlay.module.css',
   'apps/web/src/components/production-touchpoint-loader.ts',

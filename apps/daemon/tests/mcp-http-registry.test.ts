@@ -47,6 +47,12 @@ describe('operationAllowed', () => {
 });
 
 describe('McpToolRegistry', () => {
+  it('includes the registered tool version on success and validation errors', async () => {
+    const registry = createRegistry();
+    expect((await registry.call('test_echo', { text: 'hi' }, unrestrictedGrant)).structuredContent.meta.toolVersion).toBe(1);
+    expect((await registry.call('test_echo', {}, unrestrictedGrant)).structuredContent.meta.toolVersion).toBe(1);
+  });
+
   it('rejects duplicate names and non-snake_case names', () => {
     const registry = createRegistry();
     expect(() => registry.register({
@@ -149,6 +155,10 @@ describe('McpToolRegistry', () => {
       expect(first!.text).toContain('<truncated>');
     }
     expect(result.structuredContent.meta.truncated).toBe(true);
+    // The caller receives structuredContent too; it must not retain the full
+    // payload when the text representation has been shortened.
+    expect(JSON.stringify(result.structuredContent).length).toBeLessThan(200);
+    if (first!.type === 'text') expect(() => JSON.parse(first!.text)).not.toThrow();
   });
 
   it('stamps meta.ms and emits redacted observability entries', async () => {

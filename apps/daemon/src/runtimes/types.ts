@@ -211,7 +211,7 @@ export type RuntimeAgentDef = {
   mcpDiscovery?: string;
   // How the daemon forwards the user's `.od/mcp-config.json` external MCP
   // servers to this runtime at spawn time. The shape of the injection
-  // is one of three strategies, each of which the server.ts spawn
+  // is one of the strategies the server.ts spawn
   // pipeline knows how to apply:
   //
   //   'claude-mcp-json'      — write `.mcp.json` into the managed
@@ -227,9 +227,11 @@ export type RuntimeAgentDef = {
   //   'mimo-env-content'      — same schema as opencode-env-content
   //                            but emitted as `MIMOCODE_CONFIG_CONTENT`
   //                            under MiMo's env namespace.
+  //   'codex-thread-config'  — additive private app-server thread config;
+  //                            only the app-server transport advertises it.
   //
   // Leave undefined for adapters that have no native MCP transport
-  // wired yet (codex, cursor-agent, copilot, qoder, pi). The
+  // wired yet (cursor-agent, copilot, qoder, pi, Codex exec-json). The
   // settings UI reads this field to surface an explicit "external MCP
   // is not forwarded to <agent>; configure servers in <agent>'s own
   // config file instead" hint, replacing the previous silent-failure
@@ -237,6 +239,7 @@ export type RuntimeAgentDef = {
   externalMcpInjection?:
     | 'claude-mcp-json'
     | 'acp-merge'
+    | 'codex-thread-config'
     | 'opencode-env-content'
     | 'mimo-env-content';
   installUrl?: string;

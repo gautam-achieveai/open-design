@@ -1,7 +1,18 @@
 # HTTP-first MCP — review plan
 
-Status: **for owner review** — nothing here is implemented; no code has been
-written against this plan.
+Status: **implementation in progress**. Slice 2 passed its browser-read gate;
+slice 3 passed the native Claude/CLI approval gate with current Electron/native
+integration still unverified. Slice 4 passed its HTTP business-service, mature ACP
+and SDK compatibility-carrier checks; the hand-written server is removed.
+Slice 5 and the full validation gate remain open.
+
+Scope correction: Vela/OpenDesign Cloud support is being removed at the user's
+request. The remaining native-browser acceptance scenario is real Electron UI
+approval of one native-agent click. Broader native-client expansion is stopped;
+the original Slice 5/full acceptance is not claimed complete.
+
+Implementation checkpoint: 2026-10-29. The proposal and decision history below
+are retained; phase evidence and remaining work are recorded in the execution ledger.
 
 Date: 2026-10-27
 
@@ -168,7 +179,7 @@ Roughly, in priority order; exact names are set when the registry lands.
    `list_files`, `search_files`.
 4. **Runs**: `start_run`, `get_run`, `cancel_run`, `get_active_context`.
 5. **Artifacts**: `get_artifact`, `create_artifact`.
-6. **Catalog**: `list_skills`, `list_plugins`, vela login pair.
+6. **Catalog**: `list_skills`, `list_plugins`. The Vela login pair is cancelled.
 7. Later: design systems/libraries, media, exports — only where a
    first-class tool beats the CLI/REST the agent can already call (decision 7).
 

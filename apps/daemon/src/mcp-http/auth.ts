@@ -9,7 +9,7 @@
 
 import type { Request } from 'express';
 import { bearerTokenFromRequest } from '../http/tool-request-auth.js';
-import type { ToolTokenRegistry } from '../tool-tokens.js';
+import { MCP_TOOL_ENDPOINT, type ToolTokenRegistry } from '../tool-tokens.js';
 import type { McpCredentialStore } from './credentials.js';
 import type { McpAuthGrant } from './registry.js';
 
@@ -34,7 +34,7 @@ export function resolveMcpGrant(
     };
   }
 
-  const runValidation = options.toolTokenRegistry.validate(token);
+  const runValidation = options.toolTokenRegistry.validate(token, { endpoint: MCP_TOOL_ENDPOINT });
   if (runValidation.ok) {
     return {
       ok: true,

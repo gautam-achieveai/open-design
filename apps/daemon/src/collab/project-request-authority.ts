@@ -39,7 +39,7 @@ export type AuthorizeProjectToolRequest = (
   options: AuthorizeProjectRequestOptions,
 ) => Promise<AuthorizedProjectToolRequest | null>;
 
-export async function enforceLocalProjectDataPlaneRequest(input: {
+type LocalProjectDataPlaneRequestInput = {
   req: any;
   projectId: string;
   options: AuthorizeProjectRequestOptions;
@@ -59,7 +59,9 @@ export async function enforceLocalProjectDataPlaneRequest(input: {
     message: string,
     details?: Record<string, unknown>,
   ) => unknown;
-}): Promise<boolean> {
+};
+
+function enforceLocalProjectDataPlaneRequestSync(input: LocalProjectDataPlaneRequestInput): boolean {
   const {
     req,
     projectId,
@@ -178,6 +180,10 @@ export async function enforceLocalProjectDataPlaneRequest(input: {
   return true;
 }
 
+export async function enforceLocalProjectDataPlaneRequest(input: LocalProjectDataPlaneRequestInput): Promise<boolean> {
+  return enforceLocalProjectDataPlaneRequestSync(input);
+}
+
 /**
  * Build the one project data-plane authority gate used by route modules.
  *
@@ -186,7 +192,7 @@ export async function enforceLocalProjectDataPlaneRequest(input: {
  * availability; cloud share/sync/billing boundaries perform their own fresh
  * authorization. Unbound pre-Workspace local projects retain legacy behavior.
  */
-export function createAuthorizeProjectRequest(deps: {
+export interface ProjectRequestAuthorityDependencies {
   db: unknown;
   getWorkspaceProject: (
     db: unknown,
@@ -209,8 +215,97 @@ export function createAuthorizeProjectRequest(deps: {
    * shape because it lives on project metadata for restart-safe recovery.
    */
   isProjectRevoked?: (db: unknown, projectId: string) => boolean;
+  /** Product retirement policy; does not rewrite the durable binding or data. */
+  isProjectUnavailable?: (db: unknown, projectId: string) => boolean;
   /** A bound first-open placeholder may be read but is never content authority. */
   isProjectUnmaterializedPlaceholder?: (db: unknown, projectId: string) => boolean;
+}
+
+export type ProjectRequestDecision =
+  | { ok: true }
+  | { ok: false; status: number; code: string; message: string; details?: Record<string, unknown> };
+
+export type DecideProjectRequest = (
+  req: any,
+  projectId: string,
+  options: AuthorizeProjectRequestOptions,
+) => Promise<ProjectRequestDecision>;
+
+export type DecideProjectRequestSync = (
+  req: any,
+  projectId: string,
+  options: AuthorizeProjectRequestOptions,
+) => ProjectRequestDecision;
+
+/**
+ * Read current local project authority without an asynchronous gap. The caller
+ * must use synchronous dependency implementations, as required by their types.
+ * This allows an approval to re-check authority immediately before enqueue.
+ */
+export function createSynchronousProjectRequestDecision(deps: ProjectRequestAuthorityDependencies): DecideProjectRequestSync {
+  const {
+    db,
+    getWorkspaceProject,
+    getWorkspaceProjectByProjectId,
+    isProjectRevoked,
+    isProjectUnavailable,
+    isProjectUnmaterializedPlaceholder,
+  } = deps;
+  return (req, projectId, options) => {
+    if (isProjectRevoked?.(db, projectId)) {
+      return {
+        ok: false,
+        status: options.mode === 'read' ? 404 : 403,
+        code: options.mode === 'read' ? 'PROJECT_NOT_FOUND' : 'WORKSPACE_PROJECT_PERMISSION_DENIED',
+        message: options.mode === 'read' ? 'project not found' : 'workspace project mutation is not allowed',
+      };
+    }
+    if (isProjectUnavailable?.(db, projectId)) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'WORKSPACE_UNAVAILABLE',
+        message: 'Team projects are unavailable because Cloud support has been removed. Stored data has been preserved.',
+      };
+    }
+    const denial: { value?: ProjectRequestDecision } = {};
+    const allowed = enforceLocalProjectDataPlaneRequestSync({
+      req,
+      projectId,
+      options,
+      db,
+      getWorkspaceProject,
+      getWorkspaceProjectByProjectId,
+      onDenied: (status, code, message, details) => {
+        denial.value = { ok: false, status, code, message, ...(details === undefined ? {} : { details }) };
+      },
+    });
+    if (!allowed) {
+      if (!denial.value) throw new Error('Project authority denied without a reason');
+      return denial.value;
+    }
+    if (
+      options.mode !== 'read'
+      && options.capability !== 'comment'
+      && isProjectUnmaterializedPlaceholder?.(db, projectId)
+    ) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'PROJECT_MATERIALIZATION_PENDING',
+        message: 'project content is still materializing',
+      };
+    }
+    return { ok: true };
+  };
+}
+
+export function createProjectRequestDecision(deps: ProjectRequestAuthorityDependencies): DecideProjectRequest {
+  const decide = createSynchronousProjectRequestDecision(deps);
+  return async (req, projectId, options) => decide(req, projectId, options);
+}
+
+export function createAuthorizeProjectRequest(deps: ProjectRequestAuthorityDependencies & {
   sendApiError: (
     res: Response,
     status: number,
@@ -219,53 +314,15 @@ export function createAuthorizeProjectRequest(deps: {
     details?: Record<string, unknown>,
   ) => unknown;
 }): AuthorizeProjectRequest {
-  const {
-    db,
-    getWorkspaceProject,
-    getWorkspaceProjectByProjectId,
-    isProjectRevoked,
-    isProjectUnmaterializedPlaceholder,
-    sendApiError,
-  } = deps;
+  const decide = createProjectRequestDecision(deps);
   return async (req, res, projectId, options) => {
-    if (isProjectRevoked?.(db, projectId)) {
-      sendApiError(
-        res,
-        options.mode === 'read' ? 404 : 403,
-        options.mode === 'read'
-          ? 'PROJECT_NOT_FOUND'
-          : 'WORKSPACE_PROJECT_PERMISSION_DENIED',
-        options.mode === 'read'
-          ? 'project not found'
-          : 'workspace project mutation is not allowed',
-      );
-      return false;
+    const decision = await decide(req, projectId, options);
+    if (decision.ok) return true;
+    if (decision.details === undefined) {
+      deps.sendApiError(res, decision.status, decision.code, decision.message);
+    } else {
+      deps.sendApiError(res, decision.status, decision.code, decision.message, decision.details);
     }
-    const allowed = await enforceLocalProjectDataPlaneRequest({
-      req,
-      projectId,
-      options,
-      db,
-      getWorkspaceProject,
-      getWorkspaceProjectByProjectId,
-      onDenied: (status, code, message, details) => details === undefined
-        ? sendApiError(res, status, code, message)
-        : sendApiError(res, status, code, message, details),
-    });
-    if (!allowed) return false;
-    if (
-      options.mode !== 'read'
-      && options.capability !== 'comment'
-      && isProjectUnmaterializedPlaceholder?.(db, projectId)
-    ) {
-      sendApiError(
-        res,
-        409,
-        'PROJECT_MATERIALIZATION_PENDING',
-        'project content is still materializing',
-      );
-      return false;
-    }
-    return true;
+    return false;
   };
 }
