@@ -1,4 +1,3 @@
-import { amrAgentDef } from './defs/amr.js';
 import { claudeAgentDef } from './defs/claude.js';
 import { codexAgentDef } from './defs/codex.js';
 import { devinAgentDef } from './defs/devin.js';
@@ -38,7 +37,6 @@ import type { RuntimeAgentDef } from './types.js';
  * `createLocalAgentDef`), so it is always an id we have never heard of.
  */
 export const SHIPPED_AGENT_DEFS: RuntimeAgentDef[] = [
-  amrAgentDef,
   claudeAgentDef,
   codexAgentDef,
   devinAgentDef,
@@ -70,7 +68,7 @@ export const SHIPPED_AGENT_DEFS: RuntimeAgentDef[] = [
 export function readLocalAgentProfileDefs(
   baseDefs: RuntimeAgentDef[] = SHIPPED_AGENT_DEFS,
 ): RuntimeAgentDef[] {
-  return readLocalAgentProfileDefsFromFile(baseDefs);
+  return readLocalAgentProfileDefsFromFile(baseDefs).filter((def) => def.id !== 'amr');
 }
 
 export const AGENT_DEFS: RuntimeAgentDef[] = [

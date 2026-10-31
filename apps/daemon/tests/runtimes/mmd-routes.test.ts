@@ -17,6 +17,13 @@ import {
   resolveMmdRoutesFile,
 } from '../../src/runtimes/mmd-routes.js';
 
+const fallbackModels = [
+  { id: 'default', label: 'Default' },
+  { id: 'sonnet', label: 'Sonnet fixture' },
+  { id: 'opus', label: 'Opus fixture' },
+  { id: 'claude-sonnet-4-5', label: 'Pinned fixture' },
+];
+
 test('mmd route parser reads route keys without exposing provider secrets', () => {
   const ids = parseMmdRouteModelIds({
     routes: {
@@ -141,7 +148,7 @@ test('mmd route loader uses HOME default path and keeps Claude fallback models',
 
     const models = await loadMmdRouteModels(
       { HOME: dir },
-      claude.fallbackModels,
+      fallbackModels,
     );
     const ids = models?.map((model) => model.id);
 
@@ -178,7 +185,7 @@ test('mmd route loader supports explicit file override and safe fallback on bad 
 
     const models = await loadMmdRouteModels(
       { MMD_MODEL_ROUTES_FILE: routesFile },
-      claude.fallbackModels,
+      fallbackModels,
     );
     assert.deepEqual(models?.map((model) => model.id).slice(0, 3), [
       'default',
@@ -190,7 +197,7 @@ test('mmd route loader supports explicit file override and safe fallback on bad 
     assert.equal(
       await loadMmdRouteModels(
         { MMD_MODEL_ROUTES_FILE: join(dir, 'missing.json') },
-        claude.fallbackModels,
+        fallbackModels,
       ),
       null,
     );
@@ -200,7 +207,7 @@ test('mmd route loader supports explicit file override and safe fallback on bad 
     assert.equal(
       await loadMmdRouteModels(
         { MMD_MODEL_ROUTES_FILE: invalidFile },
-        claude.fallbackModels,
+        fallbackModels,
       ),
       null,
     );
@@ -267,10 +274,10 @@ test('claude runtime fetchModels surfaces mmd route models to the picker', async
     });
 
     assert.ok(models);
-    assert.deepEqual(models.map((model) => model.id).slice(0, 3), [
+    assert.deepEqual(models.map((model) => model.id), [
       'default',
       'claude-opus-4-6-thinking',
-      'sonnet',
+      ...claude.fallbackModels.map((model) => model.id).filter((id) => id !== 'default'),
     ]);
     assert.equal(JSON.stringify(models).includes('sk-secret'), false);
   } finally {

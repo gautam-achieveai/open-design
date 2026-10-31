@@ -46,37 +46,17 @@ afterEach(() => {
   }
 });
 
-describe("resolveToolPackConfig AMR profile", () => {
-  it("bakes OPEN_DESIGN_AMR_PROFILE into packaged config when set at build time", () => {
-    process.env.OPEN_DESIGN_AMR_PROFILE = "feature-test";
-    const config = resolveToolPackConfig("mac", { namespace: "amr-profile-test" });
-    expect(config.amrProfile).toBe("feature-test");
-  });
-
-  it("rejects unsupported AMR profiles before packaging", () => {
-    process.env.OPEN_DESIGN_AMR_PROFILE = "staging";
-    expect(() => resolveToolPackConfig("mac")).toThrow(
-      /OPEN_DESIGN_AMR_PROFILE must be prod, test, feature-test, or local/,
-    );
-  });
-});
-
-describe("resolveToolPackConfig Vela CLI requirement", () => {
-  it("defaults to optional Vela CLI bundling", () => {
-    const config = resolveToolPackConfig("mac", { namespace: "vela-optional-test" });
-    expect(config.requireVelaCli).toBe(false);
-  });
-
-  it("reads --require-vela-cli from build options", () => {
-    const config = resolveToolPackConfig("mac", {
-      namespace: "vela-required-test",
-      requireVelaCli: true,
-    });
-    expect(config.requireVelaCli).toBe(true);
-  });
-});
-
 describe("resolveToolPackConfig win build target", () => {
+  it("ignores retired cloud configuration inherited from older build environments", () => {
+    process.env.OPEN_DESIGN_AMR_PROFILE = "legacy-profile";
+    process.env.OD_VELA_WEB_URL = "not-a-url";
+    process.env.OD_VELA_WEB_URL_PROD = "not-a-url";
+    const config = resolveToolPackConfig("win");
+    for (const field of ["amrProfile", "velaWebUrl", "velaWebUrls", "requireVelaCli"]) {
+      expect(config).not.toHaveProperty(field);
+    }
+  });
+
   it("accepts the portable zip target and rejects unsupported values", () => {
     expect(resolveToolPackConfig("win", { to: "zip" }).to).toBe("zip");
     expect(resolveToolPackConfig("win", { to: "all" }).to).toBe("all");
@@ -190,48 +170,5 @@ describe("resolveToolPackConfig PostHog analytics", () => {
     process.env.POSTHOG_HOST = "https://eu.i.posthog.com///";
     const config = resolveToolPackConfig("mac");
     expect(config.posthogHost).toBe("https://eu.i.posthog.com");
-  });
-});
-
-// The vela web origin of an internal (non-public) environment must never be a
-// literal in this public repository. It is injected at packaging time from a CI
-// secret keyed by AMR profile, exactly like POSTHOG_KEY, and flows on into
-// open-design-config.json -> the packaged daemon spawn env (OD_VELA_WEB_URL).
-describe("resolveToolPackConfig vela web origin", () => {
-  it("bakes every supplied profile origin for runtime environment switching", () => {
-    process.env.OD_VELA_WEB_URL_PROD = "https://prod.example.invalid";
-    process.env.OD_VELA_WEB_URL_TEST = "https://test.example.invalid/";
-    process.env.OD_VELA_WEB_URL_FEATURE_TEST = "https://feature.example.invalid";
-    const config = resolveToolPackConfig("mac", { namespace: "vela-web-test" });
-    expect(config.velaWebUrls).toEqual({
-      prod: "https://prod.example.invalid",
-      test: "https://test.example.invalid",
-      "feature-test": "https://feature.example.invalid",
-    });
-  });
-
-  it("bakes OD_VELA_WEB_URL into packaged config when set at build time", () => {
-    process.env.OD_VELA_WEB_URL = "https://vela.example.invalid";
-    const config = resolveToolPackConfig("mac", { namespace: "vela-web-test" });
-    expect(config.velaWebUrl).toBe("https://vela.example.invalid");
-  });
-
-  it("omits the vela web origin for builds without the secret", () => {
-    delete process.env.OD_VELA_WEB_URL;
-    const config = resolveToolPackConfig("mac", { namespace: "vela-web-test" });
-    expect(config.velaWebUrl).toBeUndefined();
-  });
-
-  it("strips trailing slashes so the daemon can append console paths", () => {
-    process.env.OD_VELA_WEB_URL = "https://vela.example.invalid///";
-    const config = resolveToolPackConfig("mac", { namespace: "vela-web-test" });
-    expect(config.velaWebUrl).toBe("https://vela.example.invalid");
-  });
-
-  it("rejects a vela web origin that is not an absolute http(s) URL", () => {
-    process.env.OD_VELA_WEB_URL = "vela.example.invalid";
-    expect(() => resolveToolPackConfig("mac")).toThrow(
-      /OD_VELA_WEB_URL must be an absolute URL/,
-    );
   });
 });

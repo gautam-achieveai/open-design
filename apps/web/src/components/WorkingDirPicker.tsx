@@ -52,11 +52,10 @@ function basename(dir: string): string {
 
 /**
  * Working-directory picker: a borderless trigger that opens a panel with
- * "Choose folder" and a "Recent folders" submenu. Picking a directory grants
- * the agent read-only awareness of those local files (via the project's
- * `linkedDirs` → `--add-dir`); it does NOT import the folder into Design
- * Files. Mounted by the Home composer; layout is left to the host via
- * `className`.
+ * "Choose folder" and a "Recent folders" submenu. Picking a directory binds
+ * the project to that source folder as its real working tree. Separately
+ * linked reference folders use `linkedDirs` → `--add-dir` instead. Mounted by
+ * the Home composer; layout is left to the host via `className`.
  */
 export function WorkingDirPicker({
   workingDir,

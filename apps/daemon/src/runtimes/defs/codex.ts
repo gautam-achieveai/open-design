@@ -111,7 +111,7 @@ export function parseCodexDebugModels(stdout: string): RuntimeModelOption[] | nu
   return out.length > 1 ? out : null;
 }
 
-const GPT_5_5_SERVICE_TIER_OPTIONS: RuntimeModelOption[] = [
+const CODEX_FAST_SERVICE_TIER_OPTIONS: RuntimeModelOption[] = [
   { id: 'priority', label: 'Fast' },
 ];
 
@@ -282,20 +282,17 @@ export const codexAgentDef = {
     fallbackModels: [
       DEFAULT_MODEL_OPTION,
       {
-        id: 'gpt-5.5',
-        label: 'gpt-5.5',
+        id: 'gpt-6.1-sol',
+        label: 'gpt-6.1-sol',
         additionalSpeedTiers: ['fast'],
-        serviceTierOptions: GPT_5_5_SERVICE_TIER_OPTIONS,
+        serviceTierOptions: CODEX_FAST_SERVICE_TIER_OPTIONS,
       },
-      { id: 'gpt-5.4', label: 'gpt-5.4' },
-      { id: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
-      { id: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
-      { id: 'gpt-5.1', label: 'gpt-5.1' },
-      { id: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini' },
-      { id: 'gpt-5-codex', label: 'gpt-5-codex' },
-      { id: 'gpt-5', label: 'gpt-5' },
-      { id: 'o3', label: 'o3' },
-      { id: 'o4-mini', label: 'o4-mini' },
+      { id: 'gpt-6-astra', label: 'gpt-6-astra' },
+      { id: 'gpt-6-sol', label: 'gpt-6-sol' },
+      { id: 'gpt-6-luna', label: 'gpt-6-luna' },
+      { id: 'gpt-5.6-sol', label: 'gpt-5.6-sol' },
+      { id: 'gpt-5.6-terra', label: 'gpt-5.6-terra' },
+      { id: 'gpt-5.6-luna', label: 'gpt-5.6-luna' },
     ],
     reasoningOptions: [
       { id: 'default', label: 'Default' },
@@ -615,6 +612,7 @@ export function withCodexTransport(
   return {
     ...def,
     streamFormat: CODEX_APP_SERVER_STREAM_FORMAT,
+    externalMcpInjection: 'codex-thread-config',
     // The prompt is a `turn/start` parameter; stdin carries JSON-RPC frames.
     promptViaStdin: false,
     buildArgs: (_prompt, _imagePaths, extraAllowedDirs = [], _options = {}, runtimeContext = {}) =>

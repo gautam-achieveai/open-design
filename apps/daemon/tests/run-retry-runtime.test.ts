@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { startServer } from '../src/server.js';
@@ -35,8 +34,6 @@ type RunEvent = {
   event: string;
   data: Record<string, unknown>;
 };
-
-const FAKE_VELA = fileURLToPath(new URL('./fixtures/fake-vela.mjs', import.meta.url));
 
 // The two silent-stall cases below make the inactivity watchdog do two jobs with
 // one budget: trip on the first (silent) attempt so the same-run retry fires,
@@ -162,7 +159,7 @@ describe('same-run retry runtime', () => {
 
   it('retries an ACP fatal close after persisting its runtime close reason', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-run-retry-acp-fatal-bin-'));
-    const fakeVela = await writeFatalThenSuccessfulVela(binDir, 'vela-fatal-then-success');
+    const fakeAcp = await writeRetryAcp(binDir, 'acp-fatal-then-success', { fatalFirst: true });
 
     delete process.env.POSTHOG_KEY;
     delete process.env.POSTHOG_HOST;
@@ -170,18 +167,16 @@ describe('same-run retry runtime', () => {
     delete process.env.LANGFUSE_SECRET_KEY;
     delete process.env.LANGFUSE_BASE_URL;
     delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-    process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-    process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
 
     started = await startServer({ port: 0, returnServer: true }) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: fakeVela } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: fakeAcp } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
 
-    const run = await createAndWaitForRun(started.url, 'amr');
+    const run = await createAndWaitForRun(started.url, 'hermes');
     expect(run.status).toBe('succeeded');
 
     const events = await readRunEvents(run.eventsLogPath);
@@ -201,14 +196,11 @@ describe('same-run retry runtime', () => {
     expect(fatalCloseDiagnostics).toHaveLength(1);
   });
 
-  it('retries AMR when protocol heartbeats arrive forever without first output', async () => {
-    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-run-retry-amr-first-output-bin-'));
-    const fakeVela = await writeHeartbeatStallingVela(
-      binDir,
-      'vela-first-output-then-success',
-      1,
-      250,
-    );
+  it('retries ACP when protocol heartbeats arrive forever without first output', async () => {
+    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-run-retry-acp-first-output-bin-'));
+    const fakeAcp = await writeRetryAcp(binDir, 'acp-first-output-then-success', {
+      stallAttempts: 1, successfulPromptDelayMs: 250,
+    });
 
     delete process.env.POSTHOG_KEY;
     delete process.env.POSTHOG_HOST;
@@ -216,8 +208,6 @@ describe('same-run retry runtime', () => {
     delete process.env.LANGFUSE_SECRET_KEY;
     delete process.env.LANGFUSE_BASE_URL;
     delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-    process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-    process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
     // The heartbeats keep both legacy inactivity watchdogs alive. Only the
     // absolute first-output deadline may terminate attempt 0.
     process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '100';
@@ -226,13 +216,13 @@ describe('same-run retry runtime', () => {
 
     started = await startServer({ port: 0, returnServer: true }) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: fakeVela } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: fakeAcp } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
 
-    const run = await createAndWaitForRun(started.url, 'amr');
+    const run = await createAndWaitForRun(started.url, 'hermes');
     expect(run.status).toBe('succeeded');
     expect(run.terminalTrigger).toBeNull();
 
@@ -255,19 +245,19 @@ describe('same-run retry runtime', () => {
   });
 
   it('retries when title-only ACP text is followed by heartbeat-only stalling', async () => {
-    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-run-retry-amr-title-only-bin-'));
-    const fakeVela = await writeTitleOnlyVela(binDir, 'vela-title-only-stall', true);
-    configureAmrFirstOutputEnv();
+    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-run-retry-acp-title-only-bin-'));
+    const fakeAcp = await writeRetryAcp(binDir, 'acp-title-only-stall', { titleOnly: true, stallAttempts: 1 });
+    configureAcpFirstOutputEnv();
 
     started = await startServer({ port: 0, returnServer: true }) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: fakeVela } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: fakeAcp } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
 
-    const run = await createAndWaitForRun(started.url, 'amr', {
+    const run = await createAndWaitForRun(started.url, 'hermes', {
       titleGeneration: { enabled: true },
     });
     expect(run.status).toBe('succeeded');
@@ -277,19 +267,19 @@ describe('same-run retry runtime', () => {
   });
 
   it('does not retry after a title-only clean ACP result with no usage', async () => {
-    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-run-retry-amr-title-clean-bin-'));
-    const fakeVela = await writeTitleOnlyVela(binDir, 'vela-title-only-clean', false);
-    configureAmrFirstOutputEnv();
+    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-run-retry-acp-title-clean-bin-'));
+    const fakeAcp = await writeRetryAcp(binDir, 'acp-title-only-clean', { titleOnly: true });
+    configureAcpFirstOutputEnv();
 
     started = await startServer({ port: 0, returnServer: true }) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: fakeVela } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: fakeAcp } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
 
-    const run = await createAndWaitForRun(started.url, 'amr', {
+    const run = await createAndWaitForRun(started.url, 'hermes', {
       titleGeneration: { enabled: true },
     });
     expect(run.status).toBe('succeeded');
@@ -298,13 +288,9 @@ describe('same-run retry runtime', () => {
     expect(events.filter((event) => event.event === 'run_retry_attempted')).toHaveLength(0);
   });
 
-  it('fails AMR after both first-output attempts remain heartbeat-only', async () => {
-    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-run-retry-amr-first-output-fail-bin-'));
-    const fakeVela = await writeHeartbeatStallingVela(
-      binDir,
-      'vela-first-output-always-stalls',
-      2,
-    );
+  it('fails ACP after both first-output attempts remain heartbeat-only', async () => {
+    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-run-retry-acp-first-output-fail-bin-'));
+    const fakeAcp = await writeRetryAcp(binDir, 'acp-first-output-always-stalls', { stallAttempts: 2 });
 
     delete process.env.POSTHOG_KEY;
     delete process.env.POSTHOG_HOST;
@@ -312,21 +298,19 @@ describe('same-run retry runtime', () => {
     delete process.env.LANGFUSE_SECRET_KEY;
     delete process.env.LANGFUSE_BASE_URL;
     delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-    process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-    process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
     process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '100';
     process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS = STALL_WATCHDOG_TIMEOUT_MS;
     process.env.OD_ACP_STAGE_TIMEOUT_MS = STALL_WATCHDOG_TIMEOUT_MS;
 
     started = await startServer({ port: 0, returnServer: true }) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: fakeVela } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: fakeAcp } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
 
-    const run = await createAndWaitForRun(started.url, 'amr');
+    const run = await createAndWaitForRun(started.url, 'hermes');
     expect(run.status).toBe('failed');
     expect(run.error).toContain('without emitting a first output');
     expect(run.terminalTrigger).toBe('first_output_deadline');
@@ -666,8 +650,6 @@ function snapshotEnv(): Record<string, string | undefined> {
     OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS: process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS,
     OD_CHAT_RUN_INACTIVITY_KILL_GRACE_MS: process.env.OD_CHAT_RUN_INACTIVITY_KILL_GRACE_MS,
     OD_ACP_STAGE_TIMEOUT_MS: process.env.OD_ACP_STAGE_TIMEOUT_MS,
-    VELA_RUNTIME_KEY: process.env.VELA_RUNTIME_KEY,
-    VELA_LINK_URL: process.env.VELA_LINK_URL,
   };
 }
 
@@ -678,15 +660,13 @@ function restoreEnv(env: Record<string, string | undefined>): void {
   }
 }
 
-function configureAmrFirstOutputEnv(): void {
+function configureAcpFirstOutputEnv(): void {
   delete process.env.POSTHOG_KEY;
   delete process.env.POSTHOG_HOST;
   delete process.env.LANGFUSE_PUBLIC_KEY;
   delete process.env.LANGFUSE_SECRET_KEY;
   delete process.env.LANGFUSE_BASE_URL;
   delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-  process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-  process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
   process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '100';
   process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS = STALL_WATCHDOG_TIMEOUT_MS;
   process.env.OD_ACP_STAGE_TIMEOUT_MS = STALL_WATCHDOG_TIMEOUT_MS;
@@ -735,87 +715,63 @@ if (attempts === 0) {
   return bin;
 }
 
-async function writeFatalThenSuccessfulVela(dir: string, name: string): Promise<string> {
-  const bin = path.join(dir, name);
-  const counterPath = path.join(dir, `${name}-attempts`);
-  await writeFile(bin, `#!/bin/sh
-export FAKE_VELA_REQUIRE_SET_MODEL=0
-if [ "$1" = "agent" ] && [ "$2" = "run" ]; then
-  attempts=0
-  if [ -f ${JSON.stringify(counterPath)} ]; then
-    attempts=$(tr -dc '0-9' < ${JSON.stringify(counterPath)})
-  fi
-  echo $((attempts + 1)) > ${JSON.stringify(counterPath)}
-  if [ "$attempts" -eq 0 ]; then
-    export FAKE_VELA_PROMPT_ERROR='transient fatal RPC close'
-  fi
-fi
-exec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_VELA)} "$@"
-`, 'utf8');
-  await chmod(bin, 0o755);
-  return bin;
-}
-
-async function writeHeartbeatStallingVela(
+// Count actual prompts, so model discovery cannot consume a retry attempt.
+async function writeRetryAcp(
   dir: string,
   name: string,
-  stallAttempts: number,
-  successfulPromptDelayMs = 0,
+  options: { fatalFirst?: boolean; stallAttempts?: number; titleOnly?: boolean; successfulPromptDelayMs?: number },
 ): Promise<string> {
-  const bin = path.join(dir, name);
+  const script = path.join(dir, `${name}.cjs`);
   const counterPath = path.join(dir, `${name}-attempts`);
-  await writeFile(bin, `#!/bin/sh
-unset FAKE_VELA_STALL_AFTER_PROMPT
-unset FAKE_VELA_PROMPT_RESULT_DELAY_MS
-if [ "$1" = "agent" ] && [ "$2" = "run" ]; then
-  attempts=0
-  if [ -f ${JSON.stringify(counterPath)} ]; then
-    attempts=$(tr -dc '0-9' < ${JSON.stringify(counterPath)})
-  fi
-  echo $((attempts + 1)) > ${JSON.stringify(counterPath)}
-  if [ "$attempts" -lt ${String(stallAttempts)} ]; then
-    export FAKE_VELA_STALL_AFTER_PROMPT=1
-  elif [ ${String(successfulPromptDelayMs)} -gt 0 ]; then
-    export FAKE_VELA_PROMPT_RESULT_DELAY_MS=${String(successfulPromptDelayMs)}
-  fi
-fi
-exec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_VELA)} "$@"
+  await writeFile(script, `#!/usr/bin/env node
+const fs = require('node:fs');
+const readline = require('node:readline');
+if (process.argv.includes('--version')) { console.log('hermes 1.0.0'); process.exit(0); }
+const options = ${JSON.stringify(options)};
+const counterPath = ${JSON.stringify(counterPath)};
+const sessionId = 'retry-acp-session';
+const send = frame => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...frame }) + '\\n');
+const result = (id, value) => send({ id, result: value });
+const update = value => send({ method: 'session/update', params: { sessionId, update: value } });
+const input = readline.createInterface({ input: process.stdin });
+input.on('line', line => {
+  const { id, method } = JSON.parse(line);
+  if (method === 'initialize') result(id, { protocolVersion: 1, agentCapabilities: { loadSession: true } });
+  else if (method === 'session/new' || method === 'session/load') result(id, { sessionId });
+  else if (method === 'session/set_model' || method === 'session/set_config_option') result(id, {});
+  else if (method === 'session/cancel') process.exit(0);
+  else if (method === 'session/prompt') {
+    let attempt = 0;
+    try { attempt = Number(fs.readFileSync(counterPath, 'utf8')) || 0; } catch {}
+    fs.writeFileSync(counterPath, String(attempt + 1));
+    if (options.fatalFirst && attempt === 0) {
+      send({ id, error: { code: -32602, message: 'transient fatal RPC close' } });
+      return;
+    }
+    const stalled = attempt < (options.stallAttempts || 0);
+    if (options.titleOnly || !stalled) {
+      const text = options.titleOnly
+        ? '<od-title>Generated title</od-title>' + (options.stallAttempts && !stalled ? 'Recovered answer.' : '')
+        : 'Recovered after retry.';
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+    }
+    if (stalled) {
+      setInterval(() => update({ sessionUpdate: 'heartbeat' }), 20);
+      return;
+    }
+    const finish = () => result(id, { stopReason: 'end_turn',
+      ...(options.titleOnly ? {} : { usage: { inputTokens: 12, outputTokens: 7, totalTokens: 19 } }) });
+    if (options.successfulPromptDelayMs) setTimeout(finish, options.successfulPromptDelayMs);
+    else finish();
+  } else if (id !== undefined) result(id, {});
+});
+input.on('close', () => process.exit(0));
 `, 'utf8');
-  await chmod(bin, 0o755);
-  return bin;
-}
-
-async function writeTitleOnlyVela(
-  dir: string,
-  name: string,
-  stallFirstAttempt: boolean,
-): Promise<string> {
-  const bin = path.join(dir, name);
-  const counterPath = path.join(dir, `${name}-attempts`);
-  await writeFile(bin, `#!/bin/sh
-unset FAKE_VELA_STALL_AFTER_PROMPT FAKE_VELA_TEXT_BEFORE_STALL
-unset FAKE_VELA_OMIT_PROMPT_USAGE FAKE_VELA_STAY_ALIVE_AFTER_PROMPT_MS
-if [ "$1" = "agent" ] && [ "$2" = "run" ]; then
-  attempts=0
-  if [ -f ${JSON.stringify(counterPath)} ]; then
-    attempts=$(tr -dc '0-9' < ${JSON.stringify(counterPath)})
-  fi
-  echo $((attempts + 1)) > ${JSON.stringify(counterPath)}
-  export FAKE_VELA_TEXT='<od-title>Generated title</od-title>'
-  if [ ${stallFirstAttempt ? '1' : '0'} -eq 1 ] && [ "$attempts" -eq 0 ]; then
-    export FAKE_VELA_TEXT_BEFORE_STALL=1
-    export FAKE_VELA_STALL_AFTER_PROMPT=1
-  elif [ ${stallFirstAttempt ? '1' : '0'} -eq 1 ]; then
-    export FAKE_VELA_TEXT='<od-title>Recovered title</od-title>Recovered answer.'
-  else
-    export FAKE_VELA_OMIT_PROMPT_USAGE=1
-    export FAKE_VELA_STAY_ALIVE_AFTER_PROMPT_MS=250
-  fi
-fi
-exec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_VELA)} "$@"
-`, 'utf8');
-  await chmod(bin, 0o755);
-  return bin;
+  await chmod(script, 0o755);
+  if (process.platform !== 'win32') return script;
+  const command = path.join(dir, `${name}.cmd`);
+  await writeFile(command, `@"${process.execPath}" "${script}" %*\r\n`, 'utf8');
+  return command;
 }
 
 async function writeStreamErrorThenSuccessfulOpenCode(dir: string, name: string): Promise<string> {
@@ -1018,27 +974,6 @@ async function createAndWaitForRun(
   });
   expect(projectResponse.status).toBe(200);
   const projectBody = await projectResponse.json() as { conversationId: string };
-  let runWorkspaceHeaders: Record<string, string> | undefined;
-  if (agentId === 'amr') {
-    // AMR Cloud never runs against the generic account wallet. Model these
-    // retry fixtures after the real historical-project migration: the first
-    // Personal Workspace list read adopts the otherwise-headerless project,
-    // and every attempt then receives that persisted exact Workspace id.
-    const personalWorkspaceId = `retry_personal_${projectId}`;
-    runWorkspaceHeaders = {
-      'x-od-workspace-id': personalWorkspaceId,
-      'x-od-workspace-type': 'personal',
-      'x-od-workspace-member-id': 'retry-runtime-personal-owner',
-      'x-od-workspace-role': 'owner',
-    };
-    const adoptionResponse = await fetch(
-      `${url}/api/workspaces/${encodeURIComponent(personalWorkspaceId)}/projects?view=all`,
-      {
-        headers: runWorkspaceHeaders,
-      },
-    );
-    expect(adoptionResponse.status).toBe(200);
-  }
   const assistantMessageId = `assistant_retry_${randomUUID()}`;
   const runResponse = await fetch(`${url}/api/runs`, {
     method: 'POST',
@@ -1047,7 +982,6 @@ async function createAndWaitForRun(
       'x-od-analytics-device-id': 'retry-runtime-test',
       'x-od-analytics-session-id': 'retry-runtime-session',
       'x-od-analytics-client-type': 'web',
-      ...runWorkspaceHeaders,
     },
     body: JSON.stringify({
       projectId,
@@ -1062,7 +996,7 @@ async function createAndWaitForRun(
   });
   expect(runResponse.status).toBe(202);
   const body = await runResponse.json() as { runId: string };
-  return await waitForRun(url, body.runId, runWorkspaceHeaders);
+  return await waitForRun(url, body.runId);
 }
 
 async function waitForRun(

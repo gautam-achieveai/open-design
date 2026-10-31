@@ -1,12 +1,35 @@
 import path from 'node:path';
 import { DEFAULT_MODEL_OPTION } from './shared.js';
-import type { RuntimeAgentDef } from '../types.js';
+import type { RuntimeAgentDef, RuntimeModelOption } from '../types.js';
+
+const QODER_MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/;
+
+/** Parse Qoder's MODEL header plus one model name per line, or value/label TSV. */
+export function parseQoderModels(stdout: string): RuntimeModelOption[] | null {
+  const out: RuntimeModelOption[] = [DEFAULT_MODEL_OPTION];
+  const seen = new Set<string>([DEFAULT_MODEL_OPTION.id]);
+  for (const rawLine of String(stdout || '').split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line === 'MODEL') continue;
+    const columns = line.split('\t').map((column) => column.trim());
+    const id = columns[0] ?? '';
+    if (!QODER_MODEL_ID_RE.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label: columns[1] || id });
+  }
+  return out.length > 1 ? out : null;
+}
 
 export const qoderAgentDef = {
     id: 'qoder',
     name: 'Qoder CLI',
     bin: 'qodercli',
     versionArgs: ['--version'],
+    listModels: {
+      args: ['--list-models'],
+      timeoutMs: 15_000,
+      parse: parseQoderModels,
+    },
     fallbackModels: [
       DEFAULT_MODEL_OPTION,
       { id: 'lite', label: 'Lite' },

@@ -5,7 +5,6 @@
 // 用户 2026-09-02 裁决:「额度不足和额度耗尽,升级卡各只有一张,不存在第二张
 // 白色通用报错卡」。
 //
-// 在此之前只有「发送前」那一个口出升级卡(`ProjectView` 的余额闸门 → `amrBalanceCardUsd`);
 // 「跑到一半」那条走的是 daemon 的 `AMR_INSUFFICIENT_BALANCE` → `amr-guidance` 的
 // 通用 `failureCard` → 白色 `RunErrorCard` + 四颗按钮。同一件事两张卡、两种说法,
 // 正是设计稿要避免的。
@@ -87,8 +86,6 @@ function failedMidRun(
 
 function renderChat(opts: {
   messages?: ChatMessage[];
-  amrBalanceCardUsd?: number | null;
-  amrBalanceCardUnavailable?: boolean;
 } = {}) {
   return render(
     <ChatPane
@@ -101,8 +98,6 @@ function renderChat(opts: {
       onSend={vi.fn()}
       onStop={vi.fn()}
       onRetry={vi.fn()}
-      amrBalanceCardUsd={opts.amrBalanceCardUsd ?? null}
-      amrBalanceCardUnavailable={opts.amrBalanceCardUnavailable ?? false}
       onOpenSettings={vi.fn() as never}
       conversations={[
         { projectId: 'project-1', id: 'conv-1', title: 'Current', createdAt: 1, updatedAt: 1 },
@@ -122,82 +117,6 @@ function renderChat(opts: {
 function genericErrorCard(container: HTMLElement): Element | null {
   return container.querySelector('[data-user-action-card="run-recovery"]');
 }
-
-describe('跑到一半余额不足:只有升级卡', () => {
-  it('AMR_INSUFFICIENT_BALANCE 出升级卡,不出白色通用报错卡', () => {
-    const { container } = renderChat({
-      messages: [failedMidRun({ code: 'AMR_INSUFFICIENT_BALANCE' })],
-      // 余额已经查过了(见 ProjectView 那一页的接线断言),$0 = 耗尽档。
-      amrBalanceCardUsd: 0,
-    });
-
-    // 升级卡在场,而且是「额度耗尽」那一档(红数字)。
-    const upgrade = screen.getByTestId('chat-upgrade-card');
-    expect(upgrade.getAttribute('data-out')).toBe('true');
-
-    // 第二张卡不存在 —— 连同它那四颗按钮。
-    expect(genericErrorCard(container)).toBeNull();
-    expect(screen.queryByTestId('chat-error-contact-support')).toBeNull();
-    expect(screen.queryByTestId('chat-error-export-logs')).toBeNull();
-  });
-
-  /*
-   * 交接不是删除:`suppressCard` 说的是「别人已经在说这件事了」,而这里的
-   * 「别人」是升级卡 —— 它只在钱包读数**读得出确定数字**时才画得出来
-   * (`ProjectView` 在失败之后补查一次)。读不出来的时候没有任何人在说话,
-   * 这时还按下白卡,用户在一轮「钱不够」的失败之后**屏幕上什么都不剩**:
-   * 没有失败说明,也没有恢复入口。那是这条 P0 路上的自救口
-   * (`e2e/ui/amr-run-failure-recovery.test.ts:118`)。
-   *
-   * 所以交接只在接手方真的在场时成立;接不住就把白卡还回来。
-   */
-  it('钱包读不出数字时把白卡还回来，并保留 Cloud 固定三颗动作', () => {
-    const { container } = renderChat({
-      messages: [failedMidRun({ code: 'AMR_INSUFFICIENT_BALANCE' })],
-      // 补查落空:没有数字,所以升级卡画不出来。
-      amrBalanceCardUsd: null,
-      amrBalanceCardUnavailable: true,
-    });
-
-    expect(screen.queryByTestId('chat-upgrade-card')).toBeNull();
-    expect(genericErrorCard(container)).toBeTruthy();
-    // G16 的固定三颗只约束白色报错卡；真实余额卡的交接守卫不变。
-    const actions = genericErrorCard(container)!.querySelectorAll('button');
-    expect(Array.from(actions, (button) => button.dataset.testid)).toEqual([
-      'chat-error-contact-support',
-      'chat-error-export-logs',
-      'chat-error-retry',
-    ]);
-    expect(screen.getByTestId('chat-error-retry').dataset.runErrorAction).toBe('primary');
-    expect(screen.queryByText('chat.amrError.rechargeCta')).toBeNull();
-  });
-
-  /*
-   * 反向:补查还没回来的那一格**不出白卡**。否则每次余额不足都要先闪一下
-   * 白卡再换成升级卡 —— 用户 2026-09-02 裁决的「一张卡」会被闪成两张。
-   */
-  it('补查还没落地时,一张卡都不画(不闪白卡)', () => {
-    const { container } = renderChat({
-      messages: [failedMidRun({ code: 'AMR_INSUFFICIENT_BALANCE' })],
-      amrBalanceCardUsd: null,
-      amrBalanceCardUnavailable: false,
-    });
-
-    expect(screen.queryByTestId('chat-upgrade-card')).toBeNull();
-    expect(genericErrorCard(container)).toBeNull();
-  });
-
-  it('余额 > 0 的那一档同样只有一张卡(告警档)', () => {
-    const { container } = renderChat({
-      messages: [failedMidRun({ code: 'AMR_INSUFFICIENT_BALANCE' })],
-      amrBalanceCardUsd: 1.2,
-    });
-
-    const upgrade = screen.getByTestId('chat-upgrade-card');
-    expect(upgrade.getAttribute('data-out')).toBe('false');
-    expect(genericErrorCard(container)).toBeNull();
-  });
-});
 
 describe('反向对照:别的失败照旧画通用报错卡', () => {
   it('客户端环境类失败(证书 · S30)仍然是白色报错卡,且没有升级卡', () => {
@@ -227,5 +146,14 @@ describe('反向对照:别的失败照旧画通用报错卡', () => {
 
     expect(genericErrorCard(container)).toBeTruthy();
     expect(screen.queryByTestId('chat-upgrade-card')).toBeNull();
+  });
+});
+
+describe('Historical balance failure after Cloud retirement', () => {
+  it('keeps diagnostics visible without a wallet lookup, upgrade, or retry action', () => {
+    const {container}=renderChat({messages:[failedMidRun({code:'AMR_INSUFFICIENT_BALANCE'})]});
+    expect(genericErrorCard(container)).toBeTruthy();
+    expect(screen.queryByTestId('chat-upgrade-card')).toBeNull();
+    expect(screen.queryByTestId('chat-error-retry')).toBeNull();
   });
 });

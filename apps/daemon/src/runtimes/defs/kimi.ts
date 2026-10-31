@@ -8,9 +8,15 @@ export const kimiAgentDef = {
     versionArgs: ['--version'],
     fallbackModels: [
       DEFAULT_MODEL_OPTION,
-      { id: 'kimi-k2-turbo-preview', label: 'kimi-k2-turbo-preview' },
-      { id: 'moonshot-v1-8k', label: 'moonshot-v1-8k' },
-      { id: 'moonshot-v1-32k', label: 'moonshot-v1-32k' },
+      { id: 'k3.1-pro', label: 'k3.1-pro' },
+      { id: 'k3.1-pro-highspeed', label: 'k3.1-pro-highspeed' },
+      { id: 'k3', label: 'k3' },
+      { id: 'k3-256k', label: 'k3-256k' },
+      { id: 'kimi-for-coding', label: 'kimi-for-coding (K2.8 Preview)' },
+      {
+        id: 'kimi-for-coding-highspeed',
+        label: 'kimi-for-coding-highspeed (K2.7 Code Highspeed)',
+      },
     ],
     fetchModels: async (resolvedBin, env) =>
       detectAcpModels({

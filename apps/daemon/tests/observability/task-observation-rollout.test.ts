@@ -2137,7 +2137,7 @@ describe('task observation rollout', () => {
     }
   });
 
-  it('uses relay for Task hierarchy even when Vela is configured for single-Run', async () => {
+  it('uses relay for Task and single-Run telemetry despite retired Vela settings', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => new Response('', { status: 202 }));
     const env = {
       ...BASE_ENV,
@@ -2151,8 +2151,8 @@ describe('task observation rollout', () => {
     };
     expect(readTaskTelemetrySinkConfig(env)).toMatchObject({ kind: 'relay' });
     expect(readRunTelemetrySinkConfig(env, configuredEnv)).toMatchObject({
-      kind: 'vela',
-      apiUrl: 'https://vela.example.test',
+      kind: 'relay',
+      relayUrl: 'https://relay.example.test/private?key=secret',
     });
     const rollout = service({
       mode: 'send',

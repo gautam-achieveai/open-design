@@ -48,7 +48,6 @@ import { OdCardView } from '../../../src/components/OdCard';
 import { QueuedSendStrip, UserMessageImpl } from '../../../src/components/ChatPane';
 import { AssistantFeedback, AssistantFeedbackReasons, AssistantFooter, AssistantMessage, feedbackReasonOptions } from '../../../src/components/AssistantMessage';
 import { FileOpsSummary } from '../../../src/components/FileOpsSummary';
-import { UpgradeCard } from '../../../src/components/chat/UpgradeCard';
 import { PlanPill } from '../../../src/components/chat/PlanPill';
 import { UserStatusCard } from '../../../src/components/chat/UserStatusCard';
 import { parseTodoWriteInput } from '../../../src/runtime/todos';
@@ -781,7 +780,6 @@ const stoppedRow = () => assistantMsg(
 /** 笼子类名:见 `scope()`。挂在组件外面一层空 div 上,只为把那份 module 的样式圈住。 */
 const CAGE_NEXT_STEP = 'cage-next-step';
 const CAGE_ACTION_CARD = 'cage-action-card';
-const CAGE_UPGRADE = 'cage-upgrade';
 const CAGE_QUOTE = 'cage-quote';
 const CAGE_ERR = 'cage-err';
 const CAGE_AUDIO = 'cage-audio';
@@ -924,13 +922,6 @@ const planPill = (items: Array<[string, string]>) => (
       todos={parseTodoWriteInput({ todos: items.map(([content, status]) => ({ content, status })) })}
       running
     />
-  </div>
-);
-
-/** 升级卡(组件 18):流水里的一张卡,余额决定走哪一档 */
-const upgrade = (balanceUsd: number) => (
-  <div className={CAGE_UPGRADE}>
-    <UpgradeCard balanceUsd={balanceUsd} onUpgrade={() => undefined} />
   </div>
 );
 
@@ -1625,51 +1616,6 @@ const EDGE: Cell[] = [
       '**这一族最接近对齐的一格**:自动出队本来就实现了(空闲即取队首重放),序号重排是数组下标的自然结果,零形态差、零数据差',
       '下半截队列的行内排布同第 72 格 —— 那条错位已经修成 flex 了;上半截的用户气泡一直是对的',
       '⚠️ **一条稿子没画的边界**:AMR 余额闸门会**暂停**队列自动出队(`amrGatePausedQueueConversationsRef`),此时队列就停在那儿不动,界面上没有任何解释',
-    ],
-  },
-  {
-    gid: 75, sub: '18-1', cmp: '升级', state: '额度不足 · < 5 美金', family: '边界',
-    node: () => upgrade(3.2),
-    notes: [
-      '**这一格已经建出来了**:`components/chat/UpgradeCard.tsx` —— 流水里的一张卡,不是弹窗、不挡发送(D4 的取向)',
-      '出现时机按用户 2026-08-26 的裁决:**一轮跑完之后**(D58)——**2026-09-07 才真正落地**,在此之前告警档在发送那一刻就摆出来了',
-      '产品 2026-09-07 再裁(T61):这张卡是「**那一轮为什么停下来的凭据**」,不是当前余额的读数 —— 结束后**锚在那一轮下面**,第二轮跑起来不许挪;第二轮结束余额仍不足就**另出一张新的**。判定在 `ChatPane.archiveLowBalanceTurnCard`',
-      '产品原有的软提醒弹窗 `AmrLowBalanceDialog`(居中硬阻断)**已于 2026-09-06 删除**(T53);2026-09-07 产品把**整个低余额档**也撤了 —— 原话「**这个要不先不要了,跟产品说了一下,不要这个了**」,追问范围后「**余额为零的那个卡片要显示的,并且也要弹窗的**」(T66)',
-      '⚠️ **这一格今天只有一条来源**:一轮**跑到一半死在钱上**、而停下来时钱包还剩一点(例如 $0.35),那份读数按 T61 存档在那一轮下面。**发送前不再有「余额低所以先提醒一句」这回事** —— 判定层没有第二条线了,`AMR_LOW_BALANCE_WARN_USD` 已删除(不是改成 0)。稿子的「额度不足 · < 5 美金」和 T52 的 $2 偏离随之作废',
-    ],
-  },
-  {
-    gid: 76, sub: '18-2', cmp: '升级', state: '额度耗尽 · = 0 美金', family: '边界',
-    node: () => upgrade(0),
-    notes: [
-      '**这一格已经建出来了**:`components/chat/UpgradeCard.tsx` —— 流水里的一张卡,不是弹窗、不挡发送(D4 的取向)',
-      '出现时机按用户 2026-08-26 的裁决:**一轮跑完之后**(D58)——**2026-09-07 才真正落地**,在此之前告警档在发送那一刻就摆出来了',
-      '产品 2026-09-07 再裁(T61):这张卡是「**那一轮为什么停下来的凭据**」,不是当前余额的读数 —— 结束后**锚在那一轮下面**,第二轮跑起来不许挪;第二轮结束余额仍不足就**另出一张新的**。判定在 `ChatPane.archiveLowBalanceTurnCard`',
-      '产品原有的软提醒弹窗 `AmrLowBalanceDialog`(居中硬阻断)**已于 2026-09-06 删除**(T53);2026-09-07 产品把**整个低余额档**也撤了 —— 原话「**这个要不先不要了,跟产品说了一下,不要这个了**」,追问范围后「**余额为零的那个卡片要显示的,并且也要弹窗的**」(T66)',
-      '阈值:这一档 `AMR_HARD_BLOCK_BALANCE_USD = 0`,和稿子的「额度耗尽 · = 0 美金」一致。**T66 之后这是发送前闸门唯一还会出卡的余额**,而且卡和弹窗同时出',
-    ],
-  },
-  {
-    gid: 77, sub: '18-3', cmp: '升级', state: '点 Upgrade 后 · 跳 Web 端,按身份分四种弹窗', family: '边界',
-    node: () => (
-      <div className={CAGE_UPGRADE} style={{ display: 'grid', gap: 0 }}>
-        {[
-          ['非 Max · Team Owner', '升级弹窗', ''],
-          ['非 Max · 非 Owner', '提醒弹窗', ' — 提示联系管理员'],
-          ['Max · Team Owner', '自动充值弹窗', ''],
-          ['Max · 非 Owner', '提醒弹窗', ''],
-        ].map(([who, kind, tail]) => (
-          <div key={who} style={{ display: 'flex', gap: 9, padding: '7px 0', fontSize: 12 }}>
-            <span style={{ flex: '0 0 44%', color: 'var(--text-muted)' }}>{who}</span>
-            <span><b>{kind}</b>{tail}</span>
-          </div>
-        ))}
-      </div>
-    ),
-    notes: [
-      '⚠️ **稿子这一格本身不是 UI,是一张说明表**(四行身份 × 该出什么弹窗)—— 这里把同一张表摆出来,好让产品逐行确认,而不是留一格空白',
-      '点 Upgrade 之后跳 Web 端,按身份分四种弹窗;**这四种弹窗都不在 chat 面板里**,归属在账号 / 订阅那一侧',
-      '⚠️ 产品要确认:这张表今天在产品里是不是这么分的',
     ],
   },
   {
@@ -2942,8 +2888,6 @@ function buildPage(): string {
   // 这两份的类名(`.root` `.card` `.title` `.label` …)太大路,必须关进笼子,见 `scope()`
   const nextStepCss = scope(read('src/components/NextStepActions.module.css'), CAGE_NEXT_STEP);
   const actionCardCss = scope(read('src/components/UserActionCard.module.css'), CAGE_ACTION_CARD);
-  // 升级卡的类名(`.up` / `.head` / `.why` / `.cta`)也是大路名字,同样关笼子
-  const upgradeCss = scope(read('src/components/chat/UpgradeCard.module.css'), CAGE_UPGRADE);
   // 正文取词的两份 module 同样关笼子(`.bar` / `.refs` / `.pop` 都是大路名字)
   const errCss = scope(read('src/components/chat/RunErrorCard.module.css'), CAGE_ERR);
   const audioCss = scope(read('src/components/chat/AudioArtifact.module.css'), CAGE_AUDIO);
@@ -3082,7 +3026,7 @@ function buildPage(): string {
   const inlinedSelectors = tally(topLevelSelectors([
     tokens, seam, record, qform, odcard, primitives, buttonSizes, userMsg, forkCss,
     bareButtonCss, queueCss, amrCss, proseCss, artifactCss, footerBase, footerSkin, legacySkin,
-    nextStepCss, actionCardCss, upgradeCss, quoteCss, errCss, audioCss, supportCss, edge, planCss,
+    nextStepCss, actionCardCss, quoteCss, errCss, audioCss, supportCss, edge, planCss,
     statusCardCss, liveLogCss, liveFlowCss, liveProducedCss, liveCompletionCss, liveModuleCss, PAGE_CSS,
   ].join('\n')));
   const sourceSelectors = tally(topLevelSelectors(GLOBAL_SHEETS.map((p) => read(p)).join('\n')));
@@ -3204,7 +3148,7 @@ ${tokens}</style>
 <style>${legacySkin}</style>
 <style>${nextStepCss}</style>
 <style>${actionCardCss}</style>
-<style>${upgradeCss}</style>
+
 <style>${quoteCss}</style>
 <style>${errCss}</style>
 <style>${audioCss}</style>

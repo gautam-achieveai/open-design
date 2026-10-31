@@ -420,23 +420,44 @@ function mergeAuthHeader(
 }
 
 /**
- * Convert user-configured external MCP servers into the ACP `mcpServers`
- * shape that Hermes/Kimi accept (already in use by buildLiveArtifactsMcpServersForAgent).
- * SSE/HTTP servers are dropped — ACP currently models stdio only — but we
- * surface a warning so the UI can hint at it.
+ * Convert user-configured external MCP servers into ACP descriptors. Remote
+ * transports are filtered against the connected agent's capabilities at the
+ * session handshake, not here.
  */
-export interface AcpMcpServer {
+export type AcpMcpServer = {
   type: 'stdio';
   name: string;
   command: string;
   args: string[];
   env: Array<{ name: string; value: string }>;
-}
+} | {
+  type: 'http' | 'sse';
+  name: string;
+  url: string;
+  headers: Array<{ name: string; value: string }>;
+};
 
-export function buildAcpMcpServers(servers: McpServerConfig[]): AcpMcpServer[] {
-  const enabled = servers.filter((s) => s.enabled && s.transport === 'stdio');
+export function buildAcpMcpServers(
+  servers: McpServerConfig[],
+  tokens: Record<string, string> = {},
+): AcpMcpServer[] {
+  const enabled = servers.filter((s) => s.enabled);
   const out: AcpMcpServer[] = [];
   for (const s of enabled) {
+    if (s.transport !== 'stdio') {
+      if (!s.url) continue;
+      const headers = mergeAuthHeader(
+        s.headers,
+        effectiveMcpAuthMode(s) === 'oauth' ? tokens[s.id] : undefined,
+      );
+      out.push({
+        type: s.transport,
+        name: s.id,
+        url: s.url,
+        headers: Object.entries(headers ?? {}).map(([name, value]) => ({ name, value })),
+      });
+      continue;
+    }
     const envEntries: Array<{ name: string; value: string }> = [];
     if (s.env) {
       for (const [name, value] of Object.entries(s.env)) {

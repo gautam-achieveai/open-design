@@ -159,14 +159,14 @@ describe('media task route recovery', () => {
 
     insertProject(db, {
       id: projectId,
-      name: 'Token-polled Team media project',
+      name: 'Token-polled Personal media project',
       createdAt: now,
       updatedAt: now,
     });
     ensureWorkspaceProject(db, {
       projectId,
-      workspaceId: 'workspace-team',
-      visibility: 'team',
+      workspaceId: 'workspace-personal',
+      visibility: 'personal',
       createdByWorkspaceMemberId: 'member-creator',
     });
     insertMediaTask(db, {
@@ -329,14 +329,14 @@ describe('media task route recovery', () => {
 
     insertProject(db, {
       id: projectId,
-      name: 'Fresh-authority Team media project',
+      name: 'Local authority media project',
       createdAt: now,
       updatedAt: now,
     });
     ensureWorkspaceProject(db, {
       projectId,
       workspaceId,
-      visibility: 'team',
+      visibility: 'personal',
       createdByWorkspaceMemberId: 'member-creator',
     });
     const token = toolTokenRegistry.mint({
@@ -383,7 +383,7 @@ describe('media task route recovery', () => {
       server: http.Server;
     };
     server = started.server;
-    await vi.waitFor(() => expect(authorityRequests).toBeGreaterThanOrEqual(1));
+    expect(authorityRequests).toBe(0);
     const startupAuthorityRequests = authorityRequests;
     const waitForMissingTask = () => fetch(
       `${started.url}/api/media/tasks/missing-task/wait`,

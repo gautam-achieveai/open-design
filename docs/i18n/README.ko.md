@@ -1,6 +1,7 @@
 <h1 align="center">OpenDesign: 최초의 협업형 디자인 에이전트 워크스페이스</h1>
 
-> ✨ **[OpenDesign Go 소개](https://open-design.ai/pricing/)**. Go Plan은 첫 달 8달러부터 시작하며, 매월 다음을 포함한 10개 이상의 모델에 사용할 수 있는 크레딧이 제공됩니다: GPT-6.1 Sol, GPT-6 Luna, DeepSeek V4.1 Flash, GLM-5.3 Flash-X 및 MiMo V2.6 Flash. 모든 개인 플랜에는 Codex, Claude Code, DSH, OpenCode 등에서 사용할 수 있는 API 액세스가 포함됩니다.
+> **Fork notice:** Vela/OpenDesign Cloud accounts, managed models and team sync are unavailable. Local agents and separately configured providers remain. See the [current README](../../README.md). Dated roadmap entries below describe upstream history.
+
 >
 > 🧩 **[DeepSeek Harness를 지원합니다.](https://open-design.ai/zh/agents/deepseek-harness-design/)** DeepSeek 공식 `dsh` Agent Harness를 OpenDesign의 네이티브 런타임으로 연결하고 구조화된 사고, 도구 호출, 모델 검색, 취소, 세션 재개를 사용할 수 있습니다. 생성된 파일은 라이브 미리보기와 전달을 위해 OpenDesign 워크플로 안에 유지됩니다.
 
@@ -11,7 +12,6 @@
 <p align="center">
   <a href="https://open-design.ai/">웹사이트</a> ·
   <a href="https://open-design.ai/">다운로드</a> ·
-  <a href="https://open-design.ai/cloud/">OpenDesign Cloud</a> ·
   <a href="https://discord.gg/mHAjSMV6gz">Discord</a> ·
   <a href="https://x.com/OpenDesignHQ">@OpenDesignHQ 팔로우</a>
 </p>
@@ -29,7 +29,7 @@
 
 ## OpenDesign란
 
-OpenDesign은 **협업형 디자인 에이전트 워크스페이스**입니다. 작업 내용을 설명하고 평소 사용하는 코딩 에이전트나 OpenDesign Cloud로 디자인 시스템에 맞는 프로토타입을 만드세요. 팀과 공유해 피드백을 받은 뒤 같은 프로젝트에서 에이전트와 계속 다듬을 수 있습니다.
+OpenDesign은 **협업형 디자인 에이전트 워크스페이스**입니다. 작업 내용을 설명하고 평소 사용하는 코딩 에이전트로 디자인 시스템에 맞는 프로토타입을 만드세요. 팀과 공유해 피드백을 받은 뒤 같은 프로젝트에서 에이전트와 계속 다듬을 수 있습니다.
 
 이 워크플로는 개방적이고 확장 가능합니다. **오픈소스 Claude Design 대안**인 OpenDesign은 Apache 2.0 라이선스로 제공되며, 팀은 스킬, 디자인 템플릿, 디자인 시스템, 플러그인을 살펴보고 자신의 프로세스에 맞게 수정할 수 있습니다.
 
@@ -117,7 +117,6 @@ OpenDesign은 **협업형 디자인 에이전트 워크스페이스**입니다. 
 `od mcp install <agent> --print`로 드라이런 미리보기 · `--uninstall`로 제거 · 전체 목록은 `od mcp install --help`로 확인.
 
 <p align="center">
-  <img src="https://repo-assets.open-design.ai/resources/images/coding-agents.png" alt="The 25 coding-agent CLIs OpenDesign supports — Claude Code · Codex · OpenCode · Hermes · Antigravity · Vela · Grok Build · Kimi · Cursor Agent · Qwen · Qoder · GitHub Copilot · Pi · Kiro · Kilo · Mistral Vibe · DeepSeek · Reasonix · Aider · Amp · CodeBuddy · Mimo · AtomCode · Devin · Trae" width="100%" />
 </p>
 
 **CLI를 설치하지 않았다고요?** `POST /api/proxy/{anthropic,openai,azure,google,ollama,senseaudio}/stream`의 BYOK 프록시가 동일한 루프(프로세스 스폰 없이)를 제공합니다 — `baseUrl` + `apiKey` + `model`을 붙여넣기만 하면 되며, OpenAI, Anthropic, Azure OpenAI, Google Gemini, Ollama, LM Studio, vLLM 또는 OpenAI 호환 엔드포인트라면 무엇이든 지원합니다. 대상별 SSRF 보호가 데몬 경계에서 내부 IP / 링크 로컬 / CGNAT를 차단합니다.

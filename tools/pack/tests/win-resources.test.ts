@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -10,17 +10,6 @@ import { prepareResourceTree } from "@/win/resources.js";
 import type { WinPaths } from "@/win/types.js";
 
 const RESOURCE_TREE_CACHE_TEST_TIMEOUT_MS = 15_000;
-
-async function writeFakeOpenCodeCompanion(
-  source: string,
-  content = "#!/bin/sh\nexit 0\n",
-): Promise<string> {
-  const companion = join(dirname(source), "libexec", "opencode", "opencode");
-  await mkdir(dirname(companion), { recursive: true });
-  await writeFile(companion, content, "utf8");
-  await chmod(companion, 0o755);
-  return companion;
-}
 
 async function createWorkspaceFixture(workspaceRoot: string): Promise<void> {
   await mkdir(join(workspaceRoot, "skills", "sample"), { recursive: true });
@@ -91,6 +80,30 @@ async function createDshRuntimeFixture(workspaceRoot: string): Promise<void> {
 }
 
 describe("prepareResourceTree", () => {
+  it("replaces obsolete cloud binaries on cold and warm materialization", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-design-win-retired-resource-"));
+    const workspaceRoot = join(root, "workspace");
+    const resourceRoot = join(root, "materialized");
+    const cache = new ToolPackCache(join(root, "cache"));
+    try {
+      await createWorkspaceFixture(workspaceRoot);
+      for (const expectedStatus of ["miss", "hit"]) {
+        const obsoleteRoot = join(resourceRoot, "bin", "libexec", "opencode");
+        await mkdir(obsoleteRoot, { recursive: true });
+        await writeFile(join(resourceRoot, "bin", "vela.exe"), "obsolete");
+        await writeFile(join(obsoleteRoot, "opencode.exe"), "obsolete companion");
+        await prepareResourceTree({ workspaceRoot } as ToolPackConfig,
+          { resourceRoot } as WinPaths, cache, { materialize: true });
+        await expect(readFile(join(resourceRoot, "bin", "vela.exe"))).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(readFile(join(obsoleteRoot, "opencode.exe"))).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await readdir(join(resourceRoot, "bin"))).toEqual(["7z.dll", "7z.exe"]);
+        expect(cache.report().entries.at(-1)?.status).toBe(expectedStatus);
+      }
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("ships the browser clipper and refreshes it without invalidating on unrelated build output", async () => {
     const root = await mkdtemp(join(tmpdir(), "open-design-win-clipper-"));
     const workspaceRoot = join(root, "workspace");
@@ -254,110 +267,6 @@ describe("prepareResourceTree", () => {
         "miss",
       ]);
     } finally {
-      await rm(root, { force: true, recursive: true });
-    }
-  }, RESOURCE_TREE_CACHE_TEST_TIMEOUT_MS);
-
-  it("copies a configured Vela CLI binary into the Windows resource tree", async () => {
-    const root = await mkdtemp(join(tmpdir(), "open-design-win-vela-"));
-    const workspaceRoot = join(root, "workspace");
-    const resourceRoot = join(root, "materialized", "open-design");
-    const source = join(root, "source", "vela.exe");
-    const cache = new ToolPackCache(join(root, "cache"));
-    const config = { workspaceRoot } as ToolPackConfig;
-    const paths = { resourceRoot } as WinPaths;
-    const originalVelaBin = process.env.OPEN_DESIGN_VELA_CLI_BIN;
-
-    try {
-      await createWorkspaceFixture(workspaceRoot);
-      await mkdir(join(root, "source"), { recursive: true });
-      await writeFile(source, "fake vela exe\n", "utf8");
-      await writeFakeOpenCodeCompanion(source, "fake opencode\n");
-      process.env.OPEN_DESIGN_VELA_CLI_BIN = source;
-
-      await prepareResourceTree(config, paths, cache, { materialize: true });
-
-      await expect(readFile(join(resourceRoot, "bin", "vela.exe"), "utf8")).resolves.toBe(
-        "fake vela exe\n",
-      );
-      await expect(
-        readFile(join(resourceRoot, "bin", "libexec", "opencode", "opencode"), "utf8"),
-      ).resolves.toBe("fake opencode\n");
-    } finally {
-      if (originalVelaBin == null) delete process.env.OPEN_DESIGN_VELA_CLI_BIN;
-      else process.env.OPEN_DESIGN_VELA_CLI_BIN = originalVelaBin;
-      await rm(root, { force: true, recursive: true });
-    }
-  });
-
-  it("fails strict Windows resource preparation when configured Vela CLI is missing", async () => {
-    const root = await mkdtemp(join(tmpdir(), "open-design-win-vela-strict-"));
-    const workspaceRoot = join(root, "workspace");
-    const resourceRoot = join(root, "materialized", "open-design");
-    const cache = new ToolPackCache(join(root, "cache"));
-    const config = {
-      workspaceRoot,
-      requireVelaCli: true,
-    } as ToolPackConfig;
-    const paths = { resourceRoot } as WinPaths;
-    const originalVelaBin = process.env.OPEN_DESIGN_VELA_CLI_BIN;
-
-    try {
-      await createWorkspaceFixture(workspaceRoot);
-      process.env.OPEN_DESIGN_VELA_CLI_BIN = join(root, "missing", "vela.exe");
-      await expect(
-        prepareResourceTree(config, paths, cache, { materialize: true }),
-      ).rejects.toThrow();
-    } finally {
-      if (originalVelaBin == null) delete process.env.OPEN_DESIGN_VELA_CLI_BIN;
-      else process.env.OPEN_DESIGN_VELA_CLI_BIN = originalVelaBin;
-      await rm(root, { force: true, recursive: true });
-    }
-  });
-
-  it("invalidates the Windows resource tree cache when the Vela companion changes", async () => {
-    const root = await mkdtemp(join(tmpdir(), "open-design-win-vela-companion-"));
-    const workspaceRoot = join(root, "workspace");
-    const resourceRoot = join(root, "materialized", "open-design");
-    const source = join(root, "source", "vela.exe");
-    const cache = new ToolPackCache(join(root, "cache"));
-    const config = { workspaceRoot } as ToolPackConfig;
-    const paths = { resourceRoot } as WinPaths;
-    const originalVelaBin = process.env.OPEN_DESIGN_VELA_CLI_BIN;
-    const materializedCompanion = join(
-      resourceRoot,
-      "bin",
-      "libexec",
-      "opencode",
-      "opencode",
-    );
-
-    try {
-      await createWorkspaceFixture(workspaceRoot);
-      await mkdir(join(root, "source"), { recursive: true });
-      await writeFile(source, "fake vela exe\n", "utf8");
-      const sourceCompanion = await writeFakeOpenCodeCompanion(source, "companion one\n");
-      process.env.OPEN_DESIGN_VELA_CLI_BIN = source;
-
-      await prepareResourceTree(config, paths, cache, { materialize: true });
-      await expect(readFile(materializedCompanion, "utf8")).resolves.toBe(
-        "companion one\n",
-      );
-
-      await writeFile(sourceCompanion, "companion two\n", "utf8");
-
-      await prepareResourceTree(config, paths, cache, { materialize: true });
-
-      await expect(readFile(materializedCompanion, "utf8")).resolves.toBe(
-        "companion two\n",
-      );
-      expect(cache.report().entries.map((entry) => entry.status)).toEqual([
-        "miss",
-        "miss",
-      ]);
-    } finally {
-      if (originalVelaBin == null) delete process.env.OPEN_DESIGN_VELA_CLI_BIN;
-      else process.env.OPEN_DESIGN_VELA_CLI_BIN = originalVelaBin;
       await rm(root, { force: true, recursive: true });
     }
   }, RESOURCE_TREE_CACHE_TEST_TIMEOUT_MS);

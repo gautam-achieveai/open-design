@@ -7,8 +7,16 @@ import type { RuntimeAgentDef } from '../types.js';
 // these are used when that file is absent or unreadable.
 const QWEN_FALLBACK_MODELS = [
   DEFAULT_MODEL_OPTION,
+  { id: 'qwen3.5-plus', label: 'qwen3.5-plus' },
+  { id: 'qwen3.6-plus', label: 'qwen3.6-plus' },
+  { id: 'qwen3.7-plus', label: 'qwen3.7-plus' },
   { id: 'qwen3-coder-plus', label: 'qwen3-coder-plus' },
-  { id: 'qwen3-coder-flash', label: 'qwen3-coder-flash' },
+  { id: 'qwen3-coder-next', label: 'qwen3-coder-next' },
+  { id: 'qwen3-max-2026-01-23', label: 'qwen3-max-2026-01-23' },
+  { id: 'glm-5', label: 'glm-5' },
+  { id: 'glm-4.7', label: 'glm-4.7' },
+  { id: 'kimi-k2.5', label: 'kimi-k2.5' },
+  { id: 'MiniMax-M2.5', label: 'MiniMax-M2.5' },
 ];
 
 export const qwenAgentDef = {

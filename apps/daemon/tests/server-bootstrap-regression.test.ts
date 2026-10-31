@@ -249,7 +249,7 @@ describe('server route inventory', () => {
     ]));
 
     expect(routeKeys.filter((key) => automationRouteKeys.includes(key))).toEqual(automationRouteKeys);
-    expect(routeKeys.filter((key) => velaRouteKeys.includes(key))).toEqual(velaRouteKeys);
+    expect(routeKeys.filter((key) => velaRouteKeys.includes(key))).toEqual([]);
     expect(routeKeys.filter((key) => genuiRouteKeys.includes(key))).toEqual(genuiRouteKeys);
     expect(routeKeys.filter((key) => runRouteKeys.includes(key))).toEqual(runRouteKeys);
     expect(routeKeys.filter((key) => pluginEventRouteKeys.includes(key))).toEqual(pluginEventRouteKeys);
@@ -342,8 +342,8 @@ describe('bootstrap route regressions', () => {
     expect(automationMissing.status).toBe(404);
     expect(await automationMissing.json()).toEqual({ error: 'automation source packet not found' });
 
-    expect(velaProxyUnknownPath.status).toBe(404);
-    expect(await velaProxyUnknownPath.json()).toEqual({ error: 'unknown_amr_api_proxy_path' });
+    expect(velaProxyUnknownPath.status).toBe(410);
+    expect(await velaProxyUnknownPath.json()).toMatchObject({ error: { code: 'CLOUD_FEATURES_DISABLED' } });
 
     expect(genuiRunList.status).toBe(404);
     expect(await genuiRunList.json()).toEqual({ error: 'run not found' });

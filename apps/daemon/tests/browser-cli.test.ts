@@ -126,6 +126,26 @@ describe('od browser CLI', () => {
   });
 
   // Integration: real CLI processes prove flag parsing, file/stdin and HTTP parity.
+  it('accepts the advertised performance comparison, scenario and native override flags', async () => {
+    const common = ['--project', 'p1', '--tab', 'tab-a', '--json', '--daemon-url', baseUrl];
+    const cases = [
+      { args: ['compare', '--baseline', 'before-1,before-2,before-3', '--candidate', 'after-1,after-2,after-3'],
+        path: 'compare', body: { baselineReportIds: ['before-1', 'before-2', 'before-3'], candidateReportIds: ['after-1', 'after-2', 'after-3'] } },
+      { args: ['start', '--scenario-id', 'save-button', '--max-ms', '15000'],
+        path: 'start', body: { tabId: 'tab-a', scenarioId: 'save-button', maxMs: 15000 } },
+      { args: ['override', 'report-1', '--cpu', '2', '--approval-request-id', 'approval-1'],
+        path: 'override', body: { tabId: 'tab-a', reportId: 'report-1', cpu: 2, approvalRequestId: 'approval-1' } },
+    ];
+    for (const [index, scenario] of cases.entries()) {
+      const result = await runCli(['browser', 'performance', ...scenario.args, ...common]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout).commandId).toBe('command-1');
+      expect(requests[index]).toMatchObject({ method: 'POST', url: `/api/projects/p1/browser/performance/${scenario.path}` });
+      expect(JSON.parse(requests[index]!.body)).toEqual(scenario.body);
+    }
+    expect(requests).toHaveLength(cases.length);
+  });
+
   it('posts approved typed styles from a file to the shared browser command route (integration)', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'od-browser-styles-'));
     try {

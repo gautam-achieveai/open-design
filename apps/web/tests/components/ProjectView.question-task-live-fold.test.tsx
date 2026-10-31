@@ -32,7 +32,6 @@ const streamViaDaemon = vi.fn();
 const reattachDaemonRun = vi.fn();
 const saveMessage = vi.fn();
 const createConversation = vi.fn();
-const checkAmrBalanceGate = vi.fn();
 const fetchBrands = vi.fn();
 
 
@@ -161,11 +160,6 @@ vi.mock('../../src/providers/daemon', async (importOriginal) => ({
 
 vi.mock('../../src/providers/project-events', () => ({
   useProjectFileEvents: vi.fn(),
-}));
-
-vi.mock('../../src/runtime/amr-balance-gate', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/runtime/amr-balance-gate')>()),
-  checkAmrBalanceGate: (...args: unknown[]) => checkAmrBalanceGate(...args),
 }));
 
 vi.mock('../../src/runtime/brands', async (importOriginal) => ({
@@ -366,7 +360,6 @@ beforeEach(() => {
     await options.handlers.onDone(FORM);
   });
   streamViaDaemon.mockImplementation(() => new Promise<void>(() => {}));
-  checkAmrBalanceGate.mockResolvedValue({ kind: 'allow' });
   vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
 });
 

@@ -126,4 +126,47 @@ describe('createBufferedTextUpdates pending text accounting', () => {
     expect(persists).toBe(6);
     buf.cancel();
   });
+
+  it('coalesces high-frequency text into 30 fps paints with a trailing update', () => {
+    vi.useFakeTimers();
+    const frames: Array<() => void> = [];
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => {
+      frames.push(cb);
+      return frames.length;
+    });
+    vi.stubGlobal('cancelAnimationFrame', () => {});
+    const runFrame = () => {
+      for (const cb of frames.splice(0)) cb();
+    };
+
+    let msg = { content: '', events: [] } as unknown as ChatMessage;
+    let updates = 0;
+    const buf = createBufferedTextUpdates({
+      updateMessage: (u) => {
+        msg = u(msg);
+        updates += 1;
+      },
+      persistSoon: () => {},
+    });
+
+    try {
+      buf.appendContent('a');
+      runFrame();
+      expect(updates).toBe(1);
+
+      buf.appendContent('b');
+      runFrame();
+      buf.appendContent('c');
+      runFrame();
+      expect(updates).toBe(1);
+      expect(msg.content).toBe('a');
+
+      vi.advanceTimersByTime(34);
+      expect(updates).toBe(2);
+      expect(msg.content).toBe('abc');
+    } finally {
+      buf.cancel();
+      vi.useRealTimers();
+    }
+  });
 });

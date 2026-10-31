@@ -103,7 +103,6 @@ function renderChat(extraProps: Partial<ComponentProps<typeof ChatPane>> = {}) {
       onSend={vi.fn()}
       onStop={vi.fn()}
       onRetry={onRetry}
-      onSwitchToAmrAndRetry={vi.fn()}
       conversations={[
         { projectId: 'project-1', id: 'conv-1', title: 'Current', createdAt: 1, updatedAt: 1 },
       ]}

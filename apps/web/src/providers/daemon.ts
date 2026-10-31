@@ -10,7 +10,6 @@
  *                 non-zero (tail appended to the error message).
  */
 import type { AgentEvent, ChatCommentAttachment, ChatMessage } from '../types';
-import type { AmrEntryAttribution } from '../analytics/amr-attribution';
 import type {
   AmrAuthErrorKind,
   AmrAuthNetworkPath,
@@ -30,8 +29,6 @@ import type {
   ChatSseEvent,
   ChatSseStartPayload,
   DaemonAgentPayload,
-  AmrModelsResponse,
-  AmrWalletSnapshot,
   ByokChatProviderConfig,
   MediaExecutionPolicy,
   ResearchOptions,
@@ -58,10 +55,7 @@ function isRunCancelOrigin(value: unknown): value is RunCancelOrigin {
   return typeof value === 'string' && RUN_CANCEL_ORIGINS.has(value);
 }
 import { workspaceProjectHeaders } from '../state/projects';
-import { setRuntimeAmrConsoleOrigin } from '../runtime/amr-guidance';
 import { canRetainSuccessfulRunForBlockedStrategy } from '../runtime/blocked-strategy-result';
-import { coalescedGet } from '../lib/coalesced-get';
-import { currentWorkspaceAccountGeneration } from '../collab/workspace-identity';
 
 /**
  * Returns the front-end carrier that's about to send this request:
@@ -1313,51 +1307,6 @@ export interface VelaUser {
 }
 
 /**
- * Format a raw wallet `balanceUsd` string (e.g. "12.3") into a display string
- * (e.g. "$12.30"). Returns `null` when the balance is unknown/unparseable so
- * callers can simply hide the balance area.
- */
-export function formatVelaBalanceUsd(raw?: string | null): string | null {
-  if (raw == null || raw === '') return null;
-  const amount = Number(raw);
-  if (!Number.isFinite(amount)) return null;
-  // Sign before the currency symbol: an overdrawn wallet reads "-$1.25",
-  // never the malformed "$-1.25".
-  const sign = amount < 0 ? '-' : '';
-  return `${sign}$${Math.abs(amount).toFixed(2)}`;
-}
-
-/**
- * Format a raw wallet `balanceUsd` string into the bare amount (e.g. "12.30")
- * for surfaces that already name the currency some other way — the top-right
- * credits pill leads with the plan wordmark and shows the number beside it.
- * Same null contract as `formatVelaBalanceUsd`.
- */
-export function formatVelaBalanceAmount(raw?: string | null): string | null {
-  if (raw == null || raw === '') return null;
-  const amount = Number(raw);
-  if (!Number.isFinite(amount)) return null;
-  const sign = amount < 0 ? '-' : '';
-  return `${sign}${Math.abs(amount).toFixed(2)}`;
-}
-
-/** Top subscription tier — no upgrade affordance is shown at/above this. */
-export const VELA_TOP_PLAN_TIER = 'max';
-
-/**
- * Whether to surface an "Upgrade" affordance for the given plan tier. True for
- * a KNOWN tier below the top (free/plus/pro); false at the top tier AND when
- * the plan is unknown. The unknown case matters: a signed-in session whose live
- * billing summary has not resolved yet has no plan, and treating that as
- * upgradeable would flash an Upgrade CTA at top-tier users until billing loads.
- */
-export function canUpgradeVelaPlan(plan?: string | null): boolean {
-  const normalized = plan?.trim().toLowerCase();
-  if (!normalized) return false;
-  return normalized !== VELA_TOP_PLAN_TIER;
-}
-
-/**
  * Live billing projection (plan tier + wallet balance) for the signed-in
  * account, surfaced on its OWN field rather than on {@link VelaUser} so
  * env-backed sessions (where `user` is null) can show plan/balance without a
@@ -1403,211 +1352,6 @@ export interface VelaLoginAuthStage {
   occurredAt: string;
   route: AmrAuthNetworkPath;
   errorKind?: AmrAuthErrorKind;
-}
-
-// AMR (vela) login surfaces three thin endpoints on the daemon:
-//   GET  /api/integrations/vela/status   — read ~/.amr/config.json projection
-//   POST /api/integrations/vela/login    — spawn `vela login` (vela opens browser itself)
-//   POST /api/integrations/vela/login/cancel — terminate a still-pending login
-//   POST /api/integrations/vela/logout   — clear ~/.amr auth and Settings-backed AMR auth env
-// The Settings UI polls /status after kicking off /login to detect completion.
-/** One `/api/integrations/vela/status` response, before any owner interprets it. */
-export interface VelaLoginStatusRead {
-  readonly ok: boolean;
-  readonly httpStatus: number;
-  /** Parsed JSON body, or `null` when the response carried none. */
-  readonly body: unknown;
-}
-
-/**
- * The ONE transport read of the AMR status projection.
- *
- * Three independent owners ask the daemon this same question on a cold open,
- * and none of them can drop its read: `App` drives analytics identity and the
- * model refresh, `MessageCenter` drives its signed-in/anonymous message split,
- * `ChatPane` drives the inline sign-in pill. Measured on one cold conversation
- * open they produced SEVEN requests — three, two and two, each owner's effect
- * replayed while the previous request was still open.
- *
- * So they share the request, not the state: this returns the raw response and
- * every owner keeps its own mapping (see `fetchVelaLoginStatus` and
- * `isAmrLoggedIn`, which disagree about what a non-ok status means).
- *
- * SINGLE-FLIGHT ONLY (ttl 0). Nothing is retained once a read settles, so no
- * caller can ever be handed a projection it did not itself trigger — this can
- * only remove a request the browser would have opened concurrently with an
- * identical one. That matters here: `refresh: true` exists precisely to make
- * the daemon re-probe after the user returned from the browser sign-in, and a
- * shared settled answer would defeat it. It cannot, because `?refresh=1` is a
- * different URL and therefore a different key.
- *
- * The key also carries the account generation. This endpoint sends no Workspace
- * headers — it is an ACCOUNT-level projection of `~/.amr/config.json` — so the
- * account boundary IS its scope. A sign-out/sign-in leaves the URL identical
- * while the authority behind it changed, and ttl 0 does not catch that: it
- * stops settled-result reuse, not a post-boundary reader joining a request
- * issued before the boundary. Captured once, up front, before any await.
- */
-export function readVelaLoginStatus(
-  options: { refresh?: boolean } = {},
-): Promise<VelaLoginStatusRead> {
-  const query = options.refresh ? '?refresh=1' : '';
-  const url = `/api/integrations/vela/status${query}`;
-  const accountGeneration = currentWorkspaceAccountGeneration();
-  return coalescedGet(
-    `vela-login-status:${accountGeneration}:${url}`,
-    async (): Promise<VelaLoginStatusRead> => {
-      const resp = await fetch(url, { cache: 'no-store' });
-      const body = await resp.json().catch(() => null);
-      return { ok: resp.ok, httpStatus: resp.status, body };
-    },
-    // ttl 0 — join an open request, retain nothing after it settles.
-    0,
-  );
-}
-
-export async function fetchVelaLoginStatus(options: { refresh?: boolean } = {}): Promise<VelaLoginStatus | null> {
-  try {
-    const read = await readVelaLoginStatus(options);
-    if (!read.ok) return null;
-    const status = read.body as VelaLoginStatus;
-    // Every AMR status read refreshes the runtime console origin, so the console
-    // links stay correct no matter which surface (login pill, model switcher,
-    // avatar menu, low-balance dialog) triggered the fetch. Doing it here rather
-    // than in each caller is what keeps the origin out of web source: no caller
-    // needs to know the hostname of the environment it is pointed at.
-    setRuntimeAmrConsoleOrigin(status.consoleOrigin);
-    return status;
-  } catch {
-    return null;
-  }
-}
-
-export async function fetchAmrWalletSnapshot(options: { refresh?: boolean } = {}): Promise<AmrWalletSnapshot | null> {
-  try {
-    const query = options.refresh ? '?refresh=1' : '';
-    const resp = await fetch(`/api/integrations/vela/wallet${query}`, { cache: 'no-store' });
-    if (!resp.ok) return null;
-    return (await resp.json()) as AmrWalletSnapshot;
-  } catch {
-    return null;
-  }
-}
-
-export async function fetchAmrModels(): Promise<AmrModelsResponse | null> {
-  try {
-    const resp = await fetch('/api/amr/models', { cache: 'no-store' });
-    if (!resp.ok) return null;
-    return (await resp.json()) as AmrModelsResponse;
-  } catch {
-    return null;
-  }
-}
-
-export interface StartVelaLoginResult {
-  ok: boolean;
-  status: number;
-  pid?: number;
-  alreadyRunning?: boolean;
-  error?: string;
-  authAttemptId?: string;
-  authStages?: VelaLoginAuthStage[];
-  authRoute?: AmrAuthNetworkPath;
-  fallbackUsed?: boolean;
-}
-
-export async function startVelaLogin(
-  attribution?: AmrEntryAttribution | null,
-  odDeviceId?: string | null,
-  authAttemptId?: string,
-): Promise<StartVelaLoginResult> {
-  try {
-    const loginAttribution =
-      attribution && odDeviceId ? { ...attribution, odDeviceId } : attribution;
-    const canonicalAuthAttemptId = authAttemptId
-      && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(authAttemptId)
-      ? authAttemptId
-      : null;
-    const authRequestId = authAttemptId
-      && /^pending-amr-auth-[a-z0-9]+-[a-z0-9]+$/.test(authAttemptId)
-      ? authAttemptId
-      : null;
-    const payload = {
-      ...(loginAttribution ? { attribution: loginAttribution } : {}),
-      ...(canonicalAuthAttemptId ? { authAttemptId: canonicalAuthAttemptId } : {}),
-      ...(authRequestId ? { authRequestId } : {}),
-    };
-    const resp = await fetch('/api/integrations/vela/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const body = (await resp.json().catch(() => null)) as Omit<
-      StartVelaLoginResult,
-      'ok' | 'status' | 'alreadyRunning'
-    > | null;
-    if (resp.ok) {
-      return { ok: true, status: resp.status, ...(body ?? {}) };
-    }
-    return {
-      ok: false,
-      status: resp.status,
-      alreadyRunning: resp.status === 409,
-      error: body?.error ?? '',
-      ...(body?.authAttemptId ? { authAttemptId: body.authAttemptId } : {}),
-      ...(body?.authStages ? { authStages: body.authStages } : {}),
-      ...(body?.authRoute ? { authRoute: body.authRoute } : {}),
-      ...(body?.fallbackUsed !== undefined
-        ? { fallbackUsed: body.fallbackUsed }
-        : {}),
-    };
-  } catch (err) {
-    return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-export async function cancelVelaLogin(
-  authAttemptId?: string,
-): Promise<{ ok: boolean; canceled?: boolean }> {
-  const hasTarget = authAttemptId !== undefined;
-  const canonicalAuthAttemptId = authAttemptId
-    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(authAttemptId)
-    ? authAttemptId
-    : null;
-  const authRequestId = authAttemptId
-    && /^pending-amr-auth-[a-z0-9]+-[a-z0-9]+$/.test(authAttemptId)
-    ? authAttemptId
-    : null;
-  if (hasTarget && !canonicalAuthAttemptId && !authRequestId) {
-    return { ok: false };
-  }
-  try {
-    const resp = await fetch('/api/integrations/vela/login/cancel', {
-      method: 'POST',
-      ...(hasTarget
-        ? {
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(canonicalAuthAttemptId
-              ? { authAttemptId: canonicalAuthAttemptId }
-              : { authRequestId }),
-          }
-        : {}),
-    });
-    if (!resp.ok) return { ok: false };
-    const body = (await resp.json().catch(() => null)) as { canceled?: boolean } | null;
-    return { ok: true, canceled: body?.canceled };
-  } catch {
-    return { ok: false };
-  }
-}
-
-export async function velaLogout(): Promise<{ ok: boolean }> {
-  try {
-    const resp = await fetch('/api/integrations/vela/logout', { method: 'POST' });
-    return { ok: resp.ok };
-  } catch {
-    return { ok: false };
-  }
 }
 
 // Forwards the user's assistant-turn rating to the daemon so it can emit

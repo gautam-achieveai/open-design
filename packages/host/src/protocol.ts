@@ -155,6 +155,8 @@ export type OpenDesignHostBrowserClearDataOptions = {
 };
 
 export type OpenDesignHostBrowserTargetRegistration = {
+  /** Host panel activation; guest document visibility alone misses hidden retained webviews. */
+  active?: boolean;
   projectId: string;
   tabId: string;
   title?: string;
@@ -604,6 +606,8 @@ export type OpenDesignHostBridge = {
     setTheme(theme: OpenDesignHostAppearanceTheme): void;
   };
   browser: {
+    confirmPerformanceApproval?(request: { approvalId: string; workspaceContext?: OpenDesignHostWorkspaceContext | null }):
+      Promise<{ ok: true; decision: 'approved' | 'denied' } | OpenDesignHostFailure>;
     listPopups?(projectId: string): Promise<{ ok: true; popups: OpenDesignHostBrowserPopup[] } | OpenDesignHostFailure>;
     subscribePopups?(listener: (event: OpenDesignHostBrowserPopupEvent) => void): () => void;
     bindPopup?(request: OpenDesignHostBrowserPopupRequest & { tabId: string }): Promise<OpenDesignHostBrowserPopupResult>;

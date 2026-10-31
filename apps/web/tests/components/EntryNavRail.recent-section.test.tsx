@@ -272,7 +272,7 @@ describe('EntryNavRail 最近浏览过 section', () => {
       String(url) === '/api/runs?projectId=p1');
     expect(oldRequests()).toHaveLength(1);
 
-    rerender(tree(teamContext, empty ? [] : [project('p2', 2)]));
+    rerender(tree({ ...signedInContext, workspaceId: 'personal-other' }, empty ? [] : [project('p2', 2)]));
     // A replacement catalog starts its current rows immediately, without
     // waiting for IntersectionObserver to retire the previous visible IDs.
     if (!empty) {
@@ -460,60 +460,10 @@ describe('EntryNavRail 最近浏览过 section', () => {
     expect(screen.getByRole('alertdialog')).toBe(dialog);
     expect((within(dialog).getByRole('button', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(false);
   });
-
-  it('offers 转入团队空间 in a team workspace through the shared confirm dialog and reports progress in the row menu', async () => {
-    const onProjectShared = vi.fn();
-    renderRail({
-      context: teamContext,
-      onRecentProjectShared: onProjectShared,
-      isSharedRecentProject: (id) => id === 'p2',
-    });
-    fireEvent.click(screen.getAllByTestId('entry-nav-recent-more')[0]!);
-    const menu = screen.getByRole('menu');
-    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(
-      ['Rename', 'Duplicate project', 'Move to team space', 'Delete'],
-    );
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to team space' }));
-    // The same confirmation the project cards show — nothing moves yet.
-    const dialog = screen.getByRole('alertdialog', { name: 'Move to team space' });
-    expect(moveRequests()).toHaveLength(0);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm move' }));
-    await waitFor(() => expect(moveRequests()).toHaveLength(1));
-    expect(moveRequests()[0]).toBe('/api/workspaces/ws-team/projects/p1/move');
-    await waitFor(() => expect(onProjectShared).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1' })));
-    // The row menu re-opened to say 分享中… and closes on success.
-    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
-
-    // A project already in the team space says so and cannot be moved again.
-    fireEvent.click(screen.getAllByTestId('entry-nav-recent-more')[1]!);
-    const shared = within(screen.getByRole('menu')).getByRole('menuitem', { name: 'In team space' });
-    expect((shared as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it('keeps the row menu open with the failure when the move is refused', async () => {
-    MOVE_STATUS = 403;
-    const onProjectShareFailed = vi.fn();
-    renderRail({ context: teamContext, onRecentProjectShareFailed: onProjectShareFailed });
-    fireEvent.click(screen.getAllByTestId('entry-nav-recent-more')[0]!);
-    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: 'Move to team space' }));
-    fireEvent.click(
-      within(screen.getByRole('alertdialog', { name: 'Move to team space' })).getByRole('button', { name: 'Confirm move' }),
-    );
-    await waitFor(() => expect(onProjectShareFailed).toHaveBeenCalledWith('p1'));
-    const menu = await screen.findByRole('menu');
-    expect(within(menu).getByRole('alert').textContent).toBe('Could not move to team space. Try again.');
-  });
-
-  it('disables mutations on a row someone else shared', () => {
-    renderRail({
-      context: teamContext,
-      isSharedRecentProject: (id) => id === 'p1',
-      recentProjectOwnerMemberIds: new Map([['p1', 'wm-other']]),
-    });
-    fireEvent.click(screen.getAllByTestId('entry-nav-recent-more')[0]!);
-    const menu = screen.getByRole('menu');
-    for (const name of ['Rename', 'Duplicate project', 'In team space', 'Delete']) {
-      expect((within(menu).getByRole('menuitem', { name }) as HTMLButtonElement).disabled, name).toBe(true);
-    }
+  it('does not expose cached Team projects or move controls after retirement', () => {
+    renderRail({ context: teamContext });
+    expect(screen.queryByTestId('entry-nav-recent-toggle')).toBeNull();
+    expect(screen.queryByTestId('workspace-switcher')).toBeNull();
+    expect(moveRequests()).toEqual([]);
   });
 });

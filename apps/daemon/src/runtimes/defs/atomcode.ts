@@ -31,14 +31,9 @@ export const atomcodeAgentDef = {
     name: 'AtomCode CLI',
     bin: 'atomcode',
     versionArgs: ['--version'],
-    fallbackModels: [
-        DEFAULT_MODEL_OPTION,
-        { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-        { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
-        { id: 'gpt-5.2', label: 'GPT-5.2' },
-        { id: 'glm-5.2', label: 'GLM-5.2' },
-        { id: 'deepseek-v4', label: 'DeepSeek V4' },
-    ],
+    // AtomCode is provider-agnostic; custom model entry remains available
+    // without hardcoding provider catalog snapshots that quickly go stale.
+    fallbackModels: [DEFAULT_MODEL_OPTION],
     // `--prompt-file <PATH>` avoids argv length limits for long OD prompts.
     // `-y` auto-approves tool calls in headless mode (no interactive TTY).
     // `--model <id>` selects the upstream provider/model when non-default.

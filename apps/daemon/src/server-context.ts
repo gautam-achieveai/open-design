@@ -9,6 +9,7 @@ import type {
   AuthorizeProjectToolRequest,
 } from './collab/project-request-authority.js';
 import type { BrowserCommandBroker } from './services/browser-command-broker.js';
+import type { ActiveContextStore } from './services/active-context.js';
 
 export interface HttpDeps {
   createSseResponse: (...args: any[]) => any;
@@ -190,6 +191,7 @@ export interface ServerContext {
   uploads: any;
   node: any;
   projectStore: any;
+  activeContextStore: ActiveContextStore;
   browserControl: BrowserCommandBroker;
   authorizeProjectRequest: AuthorizeProjectRequest;
   authorizeProjectToolRequest: AuthorizeProjectToolRequest;

@@ -43,7 +43,7 @@ describe('local project data plane during Workspace authority outage', () => {
     closeDatabase();
   });
 
-  it('keeps preview, files, comments, runs, and routines usable when Vela returns 503', async () => {
+  it('keeps Personal preview, files, comments, runs, and routines independent of retired Cloud authority', async () => {
     const projectId = `local-outage-${randomUUID()}`;
     const mirrorProjectId = `readonly-mirror-outage-${randomUUID()}`;
     const conversationId = `conversation-${randomUUID()}`;
@@ -97,7 +97,7 @@ describe('local project data plane during Workspace authority outage', () => {
     ensureWorkspaceProject(db, {
       projectId,
       workspaceId,
-      visibility: 'team',
+      visibility: 'personal',
       resourceState: 'active',
       createdByWorkspaceMemberId: memberId,
       updatedByWorkspaceMemberId: memberId,
@@ -165,7 +165,7 @@ describe('local project data plane during Workspace authority outage', () => {
     const scope = await fetch(`${daemon.url}/api/projects/${projectId}/workspace-scope`);
     expect(scope.status).toBe(200);
     await expect(scope.json()).resolves.toMatchObject({
-      scope: { kind: 'team', workspaceId },
+      scope: { kind: 'personal', workspaceId },
     });
     expect(workspaceDirectoryRequests, 'workspace scope read').toBe(directoryRequestsAfterStartup);
 
@@ -191,8 +191,8 @@ describe('local project data plane during Workspace authority outage', () => {
       `${daemon.url}/api/projects/${mirrorProjectId}/raw/index.html`,
       { headers: staleHeaders },
     );
-    expect(mirrorRead.status).toBe(200);
-    expect(await mirrorRead.text()).toContain('Owner content');
+    expect(mirrorRead.status).toBe(403);
+    expect(await mirrorRead.text()).not.toContain('Owner content');
 
     const mirrorWrite = await fetch(
       `${daemon.url}/api/projects/${mirrorProjectId}/files`,
@@ -204,7 +204,7 @@ describe('local project data plane during Workspace authority outage', () => {
     );
     expect(mirrorWrite.status).toBe(403);
     await expect(mirrorWrite.json()).resolves.toMatchObject({
-      error: { code: 'WORKSPACE_PROJECT_PERMISSION_DENIED' },
+      error: { code: 'WORKSPACE_UNAVAILABLE' },
     });
 
     const mirrorRun = await fetch(`${daemon.url}/api/runs`, {
@@ -218,7 +218,7 @@ describe('local project data plane during Workspace authority outage', () => {
     });
     expect(mirrorRun.status).toBe(403);
     await expect(mirrorRun.json()).resolves.toMatchObject({
-      error: { code: 'WORKSPACE_PROJECT_PERMISSION_DENIED' },
+      error: { code: 'WORKSPACE_UNAVAILABLE' },
     });
 
     const mirrorComment = await fetch(
@@ -240,7 +240,7 @@ describe('local project data plane during Workspace authority outage', () => {
         }),
       },
     );
-    expect(mirrorComment.status).toBe(200);
+    expect(mirrorComment.status).toBe(403);
     expect(workspaceDirectoryRequests, 'read-only mirror access')
       .toBe(directoryRequestsAfterStartup);
 

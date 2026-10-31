@@ -24,25 +24,19 @@ export const hermesAgentDef = {
       DEFAULT_MODEL_OPTION,
       // xAI Grok — available via SuperGrok OAuth (`hermes auth add xai-oauth`)
       // or XAI_API_KEY in `~/.hermes/.env`.
-      { id: 'grok-4.3', label: 'grok-4.3 (xAI · default)' },
-      {
-        id: 'grok-4.20-reasoning',
-        label: 'grok-4.20-reasoning (xAI · deep)',
-      },
-      {
-        id: 'grok-4.20-0309-non-reasoning',
-        label: 'grok-4.20-non-reasoning (xAI · fast)',
-      },
-      {
-        id: 'grok-4.20-multi-agent-0309',
-        label: 'grok-4.20-multi-agent (xAI · orchestration)',
-      },
+      { id: 'grok-4.7', label: 'grok-4.7 (xAI)' },
       // OpenAI Codex.
-      { id: 'openai-codex:gpt-5.5', label: 'gpt-5.5 (openai-codex:gpt-5.5)' },
-      { id: 'openai-codex:gpt-5.4', label: 'gpt-5.4 (openai-codex:gpt-5.4)' },
       {
-        id: 'openai-codex:gpt-5.4-mini',
-        label: 'gpt-5.4-mini (openai-codex:gpt-5.4-mini)',
+        id: 'openai-codex:gpt-6.1-sol',
+        label: 'gpt-6.1-sol (openai-codex:gpt-6.1-sol)',
+      },
+      {
+        id: 'openai-codex:gpt-6-astra',
+        label: 'gpt-6-astra (openai-codex:gpt-6-astra)',
+      },
+      {
+        id: 'openai-codex:gpt-6-luna',
+        label: 'gpt-6-luna (openai-codex:gpt-6-luna)',
       },
     ],
     buildArgs: () => ['acp', '--accept-hooks'],

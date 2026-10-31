@@ -25,7 +25,7 @@ vi.mock('../../src/components/workspace/useConversationChat', () => ({
 }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-describe('OPEND-2807 FileWorkspace forwards the real side-chat Cloud action', () => {
+describe('OPEND-2807 FileWorkspace preserves local side-chat recovery', () => {
   it.each([false, true])('preserves the side conversation and failed message (controlled=%s)', (controlled) => {
     const failed: ChatMessage = {
       id: 'workspace-side-failed', role: 'assistant', content: '', createdAt: 1000, endedAt: 2000,
@@ -35,7 +35,6 @@ describe('OPEND-2807 FileWorkspace forwards the real side-chat Cloud action', ()
     };
     chat.messages = [{ id: 'side-user', role: 'user', content: 'Side prompt', createdAt: 0 }, failed];
     const before = structuredClone(chat.messages);
-    const onSwitchConversationToCloud = vi.fn();
     const side: Conversation = { id: 'side-conversation', projectId: 'workspace-project', title: 'Side', createdAt: 0, updatedAt: 2000 };
     const main: Conversation = { ...side, id: 'main-conversation', title: 'Main' };
     const primaryId = controlled ? side.id : main.id;
@@ -50,13 +49,11 @@ describe('OPEND-2807 FileWorkspace forwards the real side-chat Cloud action', ()
         conversationId: primaryId, messages: controlled ? chat.messages : [], streaming: false,
         error: null, onSend: vi.fn(), onRetry: chat.onRetry, onStop: vi.fn(),
       }}
-      {...{ onSwitchConversationToCloud }}
     />);
     const card = within(screen.getByTestId('side-chat-tab')).getByTestId('chat-run-error-card');
-    fireEvent.click(within(card).getByRole('button', { name: 'chat.amrCard.switchCta' }));
-    expect(onSwitchConversationToCloud).toHaveBeenCalledOnce();
-    expect(onSwitchConversationToCloud).toHaveBeenCalledWith(side.id, expect.objectContaining({ id: failed.id }));
-    expect(chat.onRetry).not.toHaveBeenCalled();
+    fireEvent.click(within(card).getByRole('button', { name: 'promptTemplates.retry' }));
+    expect(chat.onRetry).toHaveBeenCalledWith(expect.objectContaining({ id: failed.id }), 'manual_retry');
+    expect(within(card).queryByRole('button', { name: 'chat.amrCard.switchCta' })).toBeNull();
     expect(chat.messages).toEqual(before);
   });
 });

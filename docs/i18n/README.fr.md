@@ -1,6 +1,7 @@
 <h1 align="center">OpenDesign : le premier espace de travail collaboratif avec des agents de design</h1>
 
-> ✨ **[Découvrez OpenDesign Go](https://open-design.ai/pricing/)**. Le Go Plan démarre à 8 $ le premier mois, avec des crédits mensuels utilisables sur plus de 10 modèles, dont GPT-6.1 Sol, GPT-6 Luna, DeepSeek V4.1 Flash, GLM-5.3 Flash-X et MiMo V2.6 Flash. Tous les forfaits individuels incluent un accès API pour Codex, Claude Code, DSH, OpenCode et d'autres outils.
+> **Fork notice:** Vela/OpenDesign Cloud accounts, managed models and team sync are unavailable. Local agents and separately configured providers remain. See the [current README](../../README.md). Dated roadmap entries below describe upstream history.
+
 >
 > 🧩 **[DeepSeek Harness est maintenant pris en charge.](https://open-design.ai/zh/agents/deepseek-harness-design/)** Connectez l'Agent Harness officiel `dsh` de DeepSeek à OpenDesign en tant que runtime natif, avec raisonnement structuré, appels d'outils, découverte des modèles, annulation et reprise de session. Les fichiers générés restent dans le workflow OpenDesign pour la prévisualisation en direct et la livraison.
 
@@ -11,7 +12,6 @@
 <p align="center">
   <a href="https://open-design.ai/?utm_source=github&utm_medium=referral&utm_content=readme_website">Site web</a> ·
   <a href="https://open-design.ai/?utm_source=github&utm_medium=referral&utm_content=readme_download">Télécharger</a> ·
-  <a href="https://open-design.ai/cloud/?utm_source=github&utm_medium=referral&utm_content=readme_cloud">OpenDesign Cloud</a> ·
   <a href="https://discord.gg/mHAjSMV6gz">Discord</a> ·
   <a href="https://x.com/OpenDesignHQ">Suivre @OpenDesignHQ</a>
 </p>
@@ -29,7 +29,7 @@
 
 ## Qu'est-ce qu'OpenDesign
 
-OpenDesign est **un espace de travail collaboratif avec des agents de design**. Partez d'un brief, puis utilisez votre agent de code habituel ou OpenDesign Cloud pour créer un prototype fidèle à votre système de design. Partagez-le avec votre équipe, recueillez ses retours et laissez l'agent l'améliorer dans le même projet.
+OpenDesign est **un espace de travail collaboratif avec des agents de design**. Partez d'un brief, puis utilisez votre agent de code habituel pour créer un prototype fidèle à votre système de design. Partagez-le avec votre équipe, recueillez ses retours et laissez l'agent l'améliorer dans le même projet.
 
 Ce processus est ouvert et extensible. En tant qu'**alternative open source à Claude Design**, OpenDesign est sous licence Apache 2.0 et met à disposition des compétences, des modèles, des systèmes de design et des plugins que les équipes peuvent examiner et adapter à leurs méthodes.
 
@@ -121,7 +121,6 @@ Pour DeepSeek Harness, installez d'abord la CLI officielle `dsh`, puis sélectio
 ¹ La configuration automatique du serveur MCP pour Claude Desktop est actuellement prise en charge uniquement sur macOS et Windows.
 
 <p align="center">
-  <img src="https://repo-assets.open-design.ai/resources/images/coding-agents.png" alt="Les 26 CLI d'agents de code pris en charge par OpenDesign — DeepSeek Harness · Claude Code · Codex · OpenCode · Hermes · Antigravity · Vela · Grok Build · Kimi · Cursor Agent · Qwen · Qoder · GitHub Copilot · Pi · Kiro · Kilo · Mistral Vibe · DeepSeek · Reasonix · Aider · Amp · CodeBuddy · Mimo · AtomCode · Devin · Trae" width="100%" />
 </p>
 
 **Aucun CLI installé ?** Le proxy BYOK à `POST /api/proxy/{anthropic,openai,azure,google,ollama,senseaudio}/stream` vous offre la même boucle (sans spawn de processus) — collez `baseUrl` + `apiKey` + `model`, avec des préréglages pour OpenAI, Atlas Cloud, Anthropic, Azure OpenAI, Google Gemini, Ollama, LM Studio, vLLM ou tout point de terminaison compatible OpenAI. Atlas Cloud utilise `https://api.atlascloud.ai/v1` avec votre propre clé et des identifiants de modèles compatibles OpenAI comme `qwen/qwen3.5-flash`. Une protection SSRF par cible bloque les IP internes / link-local / CGNAT à la périphérie du daemon.

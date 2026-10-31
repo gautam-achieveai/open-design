@@ -81,6 +81,9 @@ Existing links: `win.workspace-tarballs` carries `workspaceBuildKey`;
 `win.resource-tree` also hashes the complete `clipper/` tree, which is copied
 into the Windows application resources for browser installation. Changes to
 extension files must invalidate this node and its downstream installers.
+Its resource inputs derive from `BUNDLED_RESOURCE_TREES`; the DSH bundling
+option and upstream workspace-build key distinguish runtime-bearing outputs.
+The resource tree contains no Vela binary or Vela OpenCode companion.
 
 **R3 — Build outputs are never direct key inputs.** `hashPackageSourcePath`
 excludes `dist`, `.next`, `out`, `node_modules`, and `.od`. A node that
@@ -110,7 +113,7 @@ Current materialization-time parameters:
   `appVersion`, and the Windows executable fixed file version.
 - **Namespace / channel and runtime endpoints.**
   `win.electron-builder-dir` omits them. `open-design-config.json` — which
-  carries `namespace`, `amrProfile`, `telemetryRelayUrl`, `updateMetadataUrl`,
+  carries `namespace`, `telemetryRelayUrl`, `updateMetadataUrl`,
   `posthogKey`/`posthogHost`, `webOutputMode`, and `namespaceBaseRoot` — is
   regenerated on the materialization path by `writePackagedConfig`.
 
@@ -136,7 +139,7 @@ both hold:
 Adding a materialization-time parameter without (2) is not permitted.
 
 > Known asymmetry: app version satisfies (2). The other regenerated config
-> fields — `namespace`, `amrProfile`, `telemetryRelayUrl`,
+> fields — `namespace`, `telemetryRelayUrl`,
 > `updateMetadataUrl`, `posthogKey`, `posthogHost`, `webOutputMode`,
 > `namespaceBaseRoot`, and the packaged entrypoint fields — currently satisfy
 > only (1): they are rewritten but not asserted.

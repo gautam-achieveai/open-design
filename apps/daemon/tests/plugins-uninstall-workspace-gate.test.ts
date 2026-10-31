@@ -113,9 +113,9 @@ describe('POST /api/plugins/:id/uninstall — workspace ownership gate', () => {
     expect(share.status).toBe(404);
   });
 
-  it('lets another same-Workspace member read a Team plugin detail', async () => {
+  it('denies retired Team plugin detail and preserves its stored files', async () => {
     const pluginId = `wsgate-team-read-${Date.now()}`;
-    await seedPluginFolder(pluginId);
+    const folder = await seedPluginFolder(pluginId);
     bindPluginToWorkspace(pluginId, 'ws-gate-team-read', 'member-owner');
     const db = openDatabase(process.cwd(), { dataDir: process.env.OD_DATA_DIR! });
     updateWorkspaceResource(db, 'plugin', 'ws-gate-team-read', pluginId, {
@@ -126,7 +126,9 @@ describe('POST /api/plugins/:id/uninstall — workspace ownership gate', () => {
       headers: workspaceHeaders('member-other', 'member', 'ws-gate-team-read'),
     });
 
-    expect(detail.status).toBe(200);
+    expect(detail.status).toBe(403);
+    expect(existsSync(folder)).toBe(true);
+    expect(db.prepare("SELECT visibility FROM workspace_resources WHERE resource_id = ?").get(pluginId)).toEqual({ visibility: 'team' });
   });
 
   it('rejects a non-owner, non-privileged member of the same workspace', async () => {

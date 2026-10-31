@@ -94,6 +94,7 @@ to the **host**, not to either strategy — if a strategy is retired, these stay
 | `id="deck-stage"` | `srcdoc.ts:3145` `isFrameworkDeck` → stage style fix, disables click-nav | ✅ | ✅ |
 | `@media print` block | Share → PDF multi-page stitching | ✅ | ✅ |
 | `<question-form>` | `AssistantMessage.tsx` → `QuestionFormView`; `runAskedUserQuestion` analytics | ✅ `discovery.ts` | ✅ `od-next-strategy.ts:434` |
+| Browser MCP tool guidance (when mounted) | Native tool descriptions, outside the frozen prompt | ✅ shared `browser-tooling.ts` | ✅ shared `browser-tooling.ts` |
 | `.od-frames/` device shells | prototype device frames | ❌ | ✅ OD Next only |
 
 Two things to read off this table.

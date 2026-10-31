@@ -111,6 +111,19 @@ describe('思考中靠事件不靠文字(S21 / W11)', () => {
 /* ── 工具行 ───────────────────────────────────────────────── */
 
 describe('工具行(D3 / D23 / §2.2b)', () => {
+  it('没有清单内容的 plan 调用不落低信息工具行(D53)', () => {
+    const blocks = buildTurnBlocks({
+      events: [
+        { kind: 'tool_use', id: 'plan-1', name: 'plan', input: {} },
+        { kind: 'tool_use', id: 'plan-2', name: 'plan', input: {} },
+        { kind: 'tool_use', id: 'plan-3', name: 'plan', input: {} },
+        ...call('read-1', 'Read', { file_path: 'a.ts' }),
+      ],
+    });
+    const rows = tools(nth(shells(blocks), 0).items);
+    expect(rows.map((row) => row.name)).toEqual(['Read']);
+  });
+
   it('调用一发出就落行,结果没回来也落 —— D3 那条「没有执行中这一档」已作废', () => {
     /*
      * ⚠️ 这一条 2026-09-02 反过来了(OPEND-2419)。原来断言的是「没有结果就不落行」,

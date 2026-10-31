@@ -600,11 +600,11 @@ test('[P0] ACP handshake refusal is actionable, persists, and does not auto-retr
     'Open Design does not currently support this agent version. Please switch to a supported version and try again.',
   );
   await expect(card).not.toContainText(rawError);
-  // OPEND-2807 / G16: a failed local CLI run has exactly these three actions.
+  // Recovery remains explicit; rendering Retry must not start another run.
   await expect(card.getByRole('button')).toHaveText([
-    'Contact us', 'Export logs', 'Switch to OpenDesign Cloud',
+    'Contact us', 'Export logs', 'Retry',
   ]);
-  await expect(card.getByRole('button', { name: /^Retry$/ })).toHaveCount(0);
+  await expect(card.getByRole('button', { name: /^Retry$/ })).toBeVisible();
   await expect.poll(() => countAcpRunSessionStarts(fakeAcpHandshakeRuntime.invocationLog)).toBe(1);
 
   const { projectId, conversationId } = await currentProjectContext(page);
@@ -630,13 +630,13 @@ test('[P1] real daemon classifies a Claude prompt-too-long result and preserves 
   await expect(card.getByTestId('chat-run-error-description')).toHaveText(
     'The current context exceeds the length the model can handle. Please start a new conversation and try again.',
   );
-  // OPEND-2807 / G16: a failed local CLI run has exactly these three actions.
+  // A supported local recovery action replaces the retired Cloud switch.
   await expect(card.getByRole('button')).toHaveText([
-    'Contact us', 'Export logs', 'Switch to OpenDesign Cloud',
+    'Contact us', 'Export logs', 'Retry',
   ]);
-  await expect(card.getByRole('button', { name: /^Retry$/ })).toHaveCount(0);
-  // The Cloud action remains in this one error card, with no separate suggestion card.
-  await expect(page.getByRole('button', { name: 'Switch to OpenDesign Cloud', exact: true })).toHaveCount(1);
+  await expect(card.getByRole('button', { name: /^Retry$/ })).toBeVisible();
+  // Cloud promotion must not appear alongside local recovery.
+  await expect(page.getByRole('button', { name: 'Switch to OpenDesign Cloud', exact: true })).toHaveCount(0);
 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await waitForLoadingToClear(page);

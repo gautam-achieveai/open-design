@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { flushSync } from 'react-dom';
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
 import { Button } from '@open-design/components';
@@ -24,7 +32,6 @@ import {
   fidelityToTracking,
 } from '@open-design/contracts/analytics';
 import type {
-  AmrModelsResponse,
   ChatSessionMode,
   CreateProjectExampleReference,
   LocalCatalogScope,
@@ -36,28 +43,15 @@ import type {
   ProjectScenarioTaskProfile,
   WorkspaceProjectSummary,
 } from '@open-design/contracts';
-import {
-  CLOUD_AGENT_ID,
-  cloudFeaturesEnabled,
-  DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID,
-} from '@open-design/contracts';
+import { DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID } from '@open-design/contracts';
 import { EntryView } from './components/EntryView';
-import type {
-  OptimisticProjectCreationHandoff,
-  ProjectTitleHint,
-} from './components/EntryShell';
-import {
-  HomeAmrBalanceGateDialogs,
-  type HomeAmrBalanceGateBlock,
-} from './components/HomeAmrBalanceGateDialogs';
+import type { OptimisticProjectCreationHandoff, ProjectTitleHint } from './components/EntryShell';
+
 import type { IntegrationTab } from './components/IntegrationsView';
 import { MarketplaceView } from './components/MarketplaceView';
 import { PluginDetailView } from './components/PluginDetailView';
 import type { CreateInput, ImportClaudeDesignOutcome } from './components/NewProjectPanel';
-import {
-  MemoryToast,
-  memoryToastSubscriptionMode,
-} from './components/MemoryToast';
+import { MemoryToast, memoryToastSubscriptionMode } from './components/MemoryToast';
 import { Toast } from './components/Toast';
 import { CenteredLoader } from './components/Loading';
 import { PetOverlay, type PetTaskCenter } from './components/pet/PetOverlay';
@@ -70,8 +64,7 @@ import {
 } from './components/ProjectView';
 import { ProjectCreationPendingView } from './components/ProjectCreationPendingView';
 import { projectsForWorkspaceChrome } from './runtime/workspace-chrome-projects';
-import { AmrArtifactUpgradeGate } from './components/AmrArtifactUpgradeGate';
-import { AmrArtifactUpgradeHomeCard } from './components/AmrArtifactUpgradeHomeCard';
+
 import { ExperienceSurvey } from './components/ExperienceSurvey';
 import { TooltipLayer } from './components/TooltipLayer';
 import { UpdateDialog } from './components/UpdateDialog';
@@ -83,24 +76,16 @@ import {
 } from './components/WorkspaceTabsBar';
 import { WorkspaceTopRightAccountCluster } from './components/EntryNavRail';
 import { ProjectWorkspaceRecoveryTip } from './components/ProjectWorkspaceRecoveryTip';
-import {
-  DesignSystemCreationFlow,
-  DesignSystemDetailView,
-} from './components/DesignSystemFlow';
-import {
-  IframeKeepAliveProvider,
-  useIframeKeepAlivePool,
-} from './components/IframeKeepAlivePool';
+import { DesignSystemCreationFlow, DesignSystemDetailView } from './components/DesignSystemFlow';
+import { IframeKeepAliveProvider, useIframeKeepAlivePool } from './components/IframeKeepAlivePool';
 import {
   SettingsDialog,
   switchApiProtocolConfig,
   updateCurrentApiProtocolConfig,
   type SettingsSection,
-  type SettingsHighlight,
 } from './components/SettingsDialog';
 import { PrivacyConsentModal } from './components/PrivacyConsentModal';
-import { TestCampaignModal } from './components/TestCampaignModal';
-import { ProductionCampaignModal } from './components/ProductionCampaignModal';
+
 import {
   clearHomeComposerAttachments,
   stashHomeComposerAttachments,
@@ -119,22 +104,10 @@ import {
   replaceProjectWorkingDir,
 } from './providers/registry';
 import { openFirstPartyExternalLinkFromClick } from './first-party-external-link';
-import {
-  RUNS_CHANGED_EVENT,
-  fetchAmrModels,
-  fetchVelaLoginStatus,
-  listProjectRunsWithScope,
-  type VelaLoginStatus,
-} from './providers/daemon';
-import {
-  AMR_LOGIN_STATUS_EVENT,
-  amrLoginStatusEventReason,
-  isAmrSessionAuthenticated,
-} from './components/amrLoginPolling';
+import { RUNS_CHANGED_EVENT, listProjectRunsWithScope } from './providers/daemon';
+
 import { CollabDemoView } from './collab/CollabDemoView';
-import {
-  WorkspaceMemberDirectoryPreloader,
-} from './collab/WorkspaceMemberDirectoryPreloader';
+import { WorkspaceMemberDirectoryPreloader } from './collab/WorkspaceMemberDirectoryPreloader';
 import {
   beginTeamProjectMetadataRefresh,
   fetchTeamProjectCatalogEntry as fetchScopedTeamProjectCatalogEntry,
@@ -146,12 +119,9 @@ import { workspaceProjectHeaders } from './collab/workspace-identity';
 import {
   beginWorkspaceScopedRead,
   currentWorkspaceAccountGeneration,
-  notifyWorkspaceContextRefresh,
   resolveBoundProjectWorkspaceContext,
   resolveCurrentWorkspaceContextReadWitness,
-  useWorkspaceBillingResponse,
   useWorkspaceContext,
-  workspaceBillingSummaryForContext,
   workspaceIdentityCacheKey,
   workspaceResourceReadContext,
 } from './collab/useWorkspaceContext';
@@ -159,8 +129,7 @@ import {
   projectResourceReadsCanStart,
   useProjectRouteWorkspaceContext,
 } from './collab/useProjectRouteWorkspaceContext';
-import { resolvePlanTier } from './collab/team-plan';
-import { deriveTabIdentityScope, UNSET_ACCOUNT_BUCKET } from './collab/tab-scope';
+
 import { CommunityView } from './components/CommunityView';
 import { seedHomeComposerPrompt } from './components/HomeView';
 import {
@@ -191,26 +160,9 @@ import { isMacPlatform } from './utils/platform';
 import { randomUUID } from './utils/uuid';
 import { summarizeProjectNameFromPrompt } from './utils/projectName';
 import { armCompletionFeedbackOnFirstGesture } from './utils/notifications';
-import {
-  amrArtifactUpgradeHomeMockOffer,
-  type AmrArtifactUpgradeHomeOffer,
-} from './runtime/amr-artifact-upgrade';
-import {
-  amrBalanceGateScopeForWorkspaceContext,
-  amrBalanceGateScopesMatch,
-  type AmrBalanceGateScope,
-} from './runtime/amr-balance-gate';
-import {
-  AMR_AUTH_RETRY_CONTINUATION_TTL_MS,
-  amrAuthRetryMatchesRouteContext,
-  routeStillMatchesAmrAuthRetryContinuation,
-  type AmrAuthRetryContinuation,
-} from './runtime/amr-auth-retry-continuation';
+
 import { installFontRecovery } from './runtime/font-recovery';
-import {
-  runWithConcurrency,
-  STAGED_UPLOAD_CONCURRENCY,
-} from './runtime/chat/staged-attachment';
+import { runWithConcurrency, STAGED_UPLOAD_CONCURRENCY } from './runtime/chat/staged-attachment';
 import {
   beginHomeAttachmentUploads,
   dismissedHomeAttachmentOrders,
@@ -291,7 +243,7 @@ type AppCreateProjectInput = Omit<CreateInput, 'metadata'> & {
   conversationMode?: ChatSessionMode;
   autoSendFirstMessage?: boolean;
   /** Exact workspace/member authority checked by the Home AMR preflight. */
-  amrGatePrecheckWitness?: AmrBalanceGateScope;
+
   /**
    * The optimistic project `beginOptimisticProjectCreation` already flushed
    * for this send (Home hands off before its admission check). The create
@@ -340,8 +292,6 @@ interface PendingProjectCreation {
 }
 
 const APP_CONFIG_CHANGED_EVENT = 'open-design:app-config-changed';
-const AMR_AGENT_ID = 'amr';
-const AMR_PROFILE_ENV_KEY = 'OPEN_DESIGN_AMR_PROFILE';
 const AGENT_FOCUS_REFRESH_THROTTLE_MS = 10_000;
 
 /**
@@ -399,11 +349,6 @@ function normalizeSavedComposioConfig(config: AppConfig['composio']): AppConfig[
   return { ...(config ?? {}) };
 }
 
-function amrProfileForConfig(config: AppConfig): string | null {
-  const profile = config.agentCliEnv?.[AMR_AGENT_ID]?.[AMR_PROFILE_ENV_KEY];
-  return typeof profile === 'string' && profile ? profile : null;
-}
-
 function mergeLinkedDirsIntoMetadata(
   metadata: ProjectMetadata | undefined,
   linkedDirs?: string[] | null,
@@ -438,21 +383,6 @@ export function mergeAgentModelChoice(
     delete merged.serviceTier;
   }
   return merged;
-}
-
-function clearStaleAmrModelChoiceOnProfileChange(
-  previous: AppConfig,
-  next: AppConfig,
-): AppConfig {
-  if (amrProfileForConfig(previous) === amrProfileForConfig(next)) return next;
-
-  const previousChoice = previous.agentModels?.[AMR_AGENT_ID];
-  const nextChoice = next.agentModels?.[AMR_AGENT_ID];
-  if (!nextChoice || !sameAgentModelChoice(previousChoice, nextChoice)) return next;
-
-  const nextAgentModels = { ...(next.agentModels ?? {}) };
-  delete nextAgentModels[AMR_AGENT_ID];
-  return { ...next, agentModels: nextAgentModels };
 }
 
 /**
@@ -538,8 +468,7 @@ export function buildPersistedConfig(next: AppConfig, current: AppConfig): AppCo
     current.privacyDecisionAt != null && next.privacyDecisionAt == null;
   return {
     ...next,
-    // Daemon-owned: only the Labs switch changes it (onCloudFeaturesChange), so
-    // a Settings snapshot taken before that write must not roll it back.
+    // Keep the legacy stored flag inert without rewriting the saved profile.
     cloudFeatures: current.cloudFeatures,
     onboardingCompleted: current.onboardingCompleted ? true : next.onboardingCompleted,
     ...(stalePrivacySnapshot
@@ -587,29 +516,7 @@ export function resolveSettingsCloseConfig(
   return base.onboardingCompleted ? base : { ...base, onboardingCompleted: true };
 }
 
-/** A saved OpenDesign Cloud agent while cloud is turned off. */
-function cloudAgentHidden(config: Pick<AppConfig, 'agentId' | 'cloudFeatures'>): boolean {
-  return config.agentId === CLOUD_AGENT_ID && !cloudFeaturesEnabled(config);
-}
-
-function mergeAmrModelsIntoAgents(
-  agents: AgentInfo[],
-  amrModels: AmrModelsResponse | null,
-): AgentInfo[] {
-  if (!amrModels || amrModels.models.length === 0) return agents;
-  return agents.map((agent) => {
-    if (agent.id !== 'amr') return agent;
-    const shouldPreferAgentModels =
-      amrModels.source === 'preset' &&
-      Array.isArray(agent.models) &&
-      agent.models.length > 0;
-    if (shouldPreferAgentModels) return agent;
-    return { ...agent, models: amrModels.models, modelsSource: 'live' };
-  });
-}
-
 const CANONICAL_AGENT_ORDER = [
-  'amr',
   'claude',
   'codex',
   'devin',
@@ -972,6 +879,7 @@ function AppInner() {
   const workspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
   const workspaceContextStateRef = useRef(workspaceContextState);
   const projectRouteWorkspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
+  const projectOpenRequestEpochRef = useRef(0);
   const projectOpenWorkspaceWitnessRef = useRef<{
     projectId: string;
     projectWorkspaceId: string;
@@ -1071,14 +979,7 @@ function AppInner() {
     });
   }, [config.notifications?.desktopEnabled, config.notifications?.soundEnabled]);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [amrArtifactUpgradeHomeMockConfig] = useState<AmrArtifactUpgradeHomeOffer | null>(
-    () => process.env.NODE_ENV === 'development' && typeof window !== 'undefined'
-      ? amrArtifactUpgradeHomeMockOffer(window.location.search)
-      : null,
-  );
-  const amrArtifactUpgradeHomeMock = amrArtifactUpgradeHomeMockConfig !== null;
-  const [amrArtifactUpgradeHomeOffer, setAmrArtifactUpgradeHomeOffer] =
-    useState<AmrArtifactUpgradeHomeOffer | null>(() => amrArtifactUpgradeHomeMockConfig);
+
   // Surfaced when a Home-picked working dir could not be applied to a freshly
   // created project (expired/invalid desktop token, daemon rejection). Without
   // this the failure was swallowed and the user believed their folder was in
@@ -1093,16 +994,14 @@ function AppInner() {
   const [deepLinkRetryRevision, setDeepLinkRetryRevision] = useState(0);
   const [settingsWelcome, setSettingsWelcome] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('execution');
-  const [settingsHighlight, setSettingsHighlight] = useState<SettingsHighlight>(null);
   const [integrationInitialTab, setIntegrationInitialTab] = useState<IntegrationTab>('mcp');
   const [daemonLive, setDaemonLive] = useState(false);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const amrModelsRef = useRef<AmrModelsResponse | null>(null);
-  const amrPollGenerationRef = useRef(0);
+
   const agentStreamRequestSeqRef = useRef(0);
   const agentStreamAbortRef = useRef<AbortController | null>(null);
   const agentFocusRefreshLastRunRef = useRef(Date.now());
-  const [amrPollRestartToken, setAmrPollRestartToken] = useState(0);
+
   const [providerModelsCache, setProviderModelsCache] = useState<
     Record<string, ProviderModelOption[]>
   >({});
@@ -1155,8 +1054,7 @@ function AppInner() {
   // Hard block from the Home pre-run balance gate. Hosted here, not in
   // EntryShell: the gate answers behind the optimistic pending frame, where
   // EntryShell is already unmounted (OPEND-2614).
-  const [homeAmrBalanceGateBlock, setHomeAmrBalanceGateBlock] =
-    useState<HomeAmrBalanceGateBlock | null>(null);
+
   const [appliedProjectListWitness, setAppliedProjectListWitness] = useState<{
     scopeKey: string;
     generation: number;
@@ -1356,7 +1254,6 @@ function AppInner() {
     null,
   );
 
-
   const [daemonMediaProviders, setDaemonMediaProviders] = useState<
     AppConfig['mediaProviders'] | null
   >(null);
@@ -1493,11 +1390,6 @@ function AppInner() {
 
   const isCurrentAgentStreamRequest = useCallback((requestId: number) => {
     return agentStreamRequestSeqRef.current === requestId;
-  }, []);
-
-  const restartAmrPolling = useCallback(() => {
-    amrPollGenerationRef.current += 1;
-    setAmrPollRestartToken((current) => current + 1);
   }, []);
 
   // v2 schema removed the standalone `app_launch` event; the initial
@@ -1716,155 +1608,12 @@ function AppInner() {
     analytics.setIdentity(config.installationId ?? null);
   }, [analytics.setIdentity, config.installationId, config.telemetry?.metrics]);
 
-  // App-level AMR sign-in state — declared here because the configure
-  // globals effect below reads it; the sync effects live next to the
-  // other AMR plumbing further down.
-  const [amrLoginStatus, setAmrLoginStatus] = useState<VelaLoginStatus | null>(null);
-  // Inline AMR auth can invalidate the caller identity and intentionally tear
-  // down ProjectView before the login poll reports success. Keep only the
-  // exact failed-turn continuation above that authorization lifetime; the
-  // fresh ProjectView must prove the same route + Workspace authority before
-  // it may consume this one-shot retry.
-  const [amrAuthRetryContinuation, setAmrAuthRetryContinuation] =
-    useState<AmrAuthRetryContinuation | null>(null);
-  const amrAuthRetryContinuationRef = useRef<AmrAuthRetryContinuation | null>(null);
-  const clearAmrAuthRetryContinuation = useCallback((expected?: AmrAuthRetryContinuation) => {
-    if (expected && amrAuthRetryContinuationRef.current !== expected) return;
-    amrAuthRetryContinuationRef.current = null;
-    setAmrAuthRetryContinuation(null);
-  }, []);
-  const armAmrAuthRetryContinuation = useCallback((
-    input: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
-  ) => {
-    const next: AmrAuthRetryContinuation = {
-      ...input,
-      accountIdAtArm:
-        isAmrSessionAuthenticated(amrLoginStatusRef.current)
-          ? amrLoginStatusRef.current?.user?.id ?? null
-          : null,
-      createdAtMs: Date.now(),
-    };
-    amrAuthRetryContinuationRef.current = next;
-    setAmrAuthRetryContinuation(next);
-  }, []);
-  const consumeAmrAuthRetryContinuation = useCallback((
-    expected: AmrAuthRetryContinuation,
-  ): boolean => {
-    if (amrAuthRetryContinuationRef.current !== expected) return false;
-    clearAmrAuthRetryContinuation(expected);
-    return true;
-  }, [clearAmrAuthRetryContinuation]);
-  useEffect(() => {
-    if (!amrAuthRetryContinuation) return;
-    const remainingMs =
-      amrAuthRetryContinuation.createdAtMs
-      + AMR_AUTH_RETRY_CONTINUATION_TTL_MS
-      - Date.now();
-    if (remainingMs <= 0) {
-      clearAmrAuthRetryContinuation(amrAuthRetryContinuation);
-      return;
-    }
-    const timeout = window.setTimeout(() => {
-      clearAmrAuthRetryContinuation(amrAuthRetryContinuation);
-    }, remainingMs);
-    return () => window.clearTimeout(timeout);
-  }, [amrAuthRetryContinuation, clearAmrAuthRetryContinuation]);
-  // Child surfaces report status snapshots, not login events. Deduplicate the
-  // signed-in transition here: restarting the model poll for every Settings
-  // snapshot updates `agents`, which makes Settings fetch status again and
-  // creates a status -> models -> agents request loop.
-  const amrLoginStatusRef = useRef<VelaLoginStatus | null>(null);
-  const applyAmrLoginStatus = useCallback((
-    status: VelaLoginStatus,
-    options: { forceModelRefresh?: boolean; restartOnSignIn?: boolean } = {},
-  ) => {
-    const previousStatus = amrLoginStatusRef.current;
-    const wasLoggedIn = isAmrSessionAuthenticated(previousStatus);
-    const isLoggedIn = isAmrSessionAuthenticated(status);
-    const pendingRetry = amrAuthRetryContinuationRef.current;
-    const accountChangedWhileAuthorizing = Boolean(
-      pendingRetry
-      && (
-        (wasLoggedIn && !isLoggedIn)
-        || (
-          isLoggedIn
-          && pendingRetry.accountIdAtArm !== null
-          && status.user?.id !== pendingRetry.accountIdAtArm
-        )
-      )
-    );
-    if (accountChangedWhileAuthorizing && pendingRetry) {
-      clearAmrAuthRetryContinuation(pendingRetry);
-    }
-    amrLoginStatusRef.current = status;
-    setAmrLoginStatus(status);
-    const currentRoute = routeRef.current;
-    if (
-      pendingRetry
-      && !accountChangedWhileAuthorizing
-      && isLoggedIn
-      && status.user?.id
-      && (
-        pendingRetry.accountIdAtArm === null
-        || pendingRetry.accountIdAtArm === status.user.id
-      )
-      && currentRoute.kind === 'home'
-      && currentRoute.view === 'settings'
-    ) {
-      // The Settings page intentionally unmounts ProjectView while AMR login
-      // completes. Return only to the exact failed conversation carried by the
-      // App-owned continuation; the fresh ProjectView must still prove its
-      // persisted Workspace authority before ChatPane may consume the retry.
-      settingsReturnTargetRef.current = null;
-      navigate({
-        kind: 'project',
-        projectId: pendingRetry.projectId,
-        conversationId: pendingRetry.conversationId,
-        fileName: null,
-      }, { replace: true });
-    }
-    if (
-      isLoggedIn
-      && (
-        options.forceModelRefresh === true
-        || (options.restartOnSignIn === true && !wasLoggedIn)
-      )
-    ) {
-      restartAmrPolling();
-    }
-  }, [clearAmrAuthRetryContinuation, restartAmrPolling]);
-
-  // Tab-scope identity key, fed to WorkspaceTabsBar so it can close every open
-  // tab down to a single fresh Home tab whenever the caller's identity
-  // changes — signing out, signing in as a different account, switching
-  // workspace, or simply never having signed into AMR at all are each their
-  // own scope, and a tab opened under one must not silently keep pointing at
-  // a project/section the next identity has no standing to see (see
-  // WorkspaceTabsBar's own doc, and deriveTabIdentityScope's, for the full
-  // design rationale — notably why the workspace half of the key LATCHES
-  // across a null `workspaceContext` instead of reacting to it directly, and
-  // why `workspaceContextLoading` must ride along: on every fresh boot
-  // (first load OR a plain refresh) `amrLoginStatus` and `workspaceContext`
-  // resolve on independent timers, and without the loading flag the
-  // in-between "logged in, workspace context not landed yet" tick reads as a
-  // confirmed no-workspace baseline — so the real workspace context landing a
-  // beat later looks exactly like a workspace switch and bounces a team
-  // member's own deep-linked/refreshed project back to Home).
-  const tabScopeWorkspaceIdRef = useRef<string>('none');
-  const tabScopeAccountIdRef = useRef<string>(UNSET_ACCOUNT_BUCKET);
-  const {
-    scopeKey: identityScopeKey,
-    nextWorkspaceBucket: nextTabScopeWorkspaceId,
-    nextAccountBucket: nextTabScopeAccountId,
-  } = deriveTabIdentityScope({
-    amrLoginStatus,
-    workspaceContext,
-    workspaceContextLoading,
-    previousWorkspaceBucket: tabScopeWorkspaceIdRef.current,
-    previousAccountBucket: tabScopeAccountIdRef.current,
-  });
-  tabScopeWorkspaceIdRef.current = nextTabScopeWorkspaceId;
-  tabScopeAccountIdRef.current = nextTabScopeAccountId;
+  // Tabs and Settings return paths use the local authority generation. Project
+  // tabs additionally pin their daemon-proved workspace below.
+  const nextTabScopeAccountId = `local:${workspaceAccountGeneration}`;
+  const identityScopeKey = workspaceContextLoading || workspaceContextState.identityChangePending
+    ? null
+    : `${nextTabScopeAccountId}::${workspaceContext?.workspaceId ?? 'none'}`;
 
   // v2 analytics requires every event to carry the configure-state
   // triplet (has_available_configure_cli / configure_type /
@@ -1895,13 +1644,12 @@ function AppInner() {
       agentId: config.agentId,
       agents: agents.map((a) => ({ id: a.id, available: a.available })),
       byokConfigured,
-      amrAuthorized: isAmrSessionAuthenticated(amrLoginStatus),
+      amrAuthorized: false,
     });
     analytics.setConfigureGlobals(globals);
   }, [
     analytics.setConfigureGlobals,
     agentsLoading,
-    amrLoginStatus,
     config.mode,
     config.agentId,
     config.apiKey,
@@ -1962,127 +1710,6 @@ function AppInner() {
     });
   }, [activeProjectId, activeFileName]);
 
-  const cloudOffered = cloudFeaturesEnabled(config);
-
-  useEffect(() => {
-    if (!daemonLive || !cloudOffered) return;
-    let cancelled = false;
-    let timer: number | null = null;
-    const pollGeneration = amrPollGenerationRef.current + 1;
-    amrPollGenerationRef.current = pollGeneration;
-    const pollDelayMs = 1_000;
-    const maxPresetPolls = 10;
-    let presetPolls = 0;
-
-    const applyAmrModels = async () => {
-      const result = await fetchAmrModels();
-      if (
-        cancelled ||
-        amrPollGenerationRef.current !== pollGeneration ||
-        !result ||
-        !Array.isArray(result.models) ||
-        result.models.length === 0
-      ) {
-        return;
-      }
-      amrModelsRef.current = result;
-      setAgents((current) => mergeAmrModelsIntoAgents(current, result));
-      const shouldPollPreset =
-        result.source === 'preset' &&
-        !result.remoteError &&
-        presetPolls < maxPresetPolls;
-      if (shouldPollPreset) {
-        presetPolls += 1;
-        timer = window.setTimeout(() => {
-          void applyAmrModels();
-        }, pollDelayMs);
-      }
-    };
-
-    void applyAmrModels();
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [amrPollRestartToken, cloudOffered, daemonLive]);
-
-  // App-level AMR sign-in state. Feeds two analytics globals: the
-  // `amr` configure_type bucket (deriveConfigureGlobals below) and the
-  // `user_id` public param (the AMR account id is the only join key
-  // between this PostHog project and the AMR-side one). Child surfaces
-  // push status changes up via onAmrLoginStatusChange; the global
-  // AMR_LOGIN_STATUS_EVENT covers logins finishing in surfaces that
-  // unmounted before their poll settled.
-  useEffect(() => {
-    let cancelled = false;
-    const sync = async (
-      options: { refresh?: boolean } = {},
-      restartOnSignIn = false,
-    ) => {
-      const status = await fetchVelaLoginStatus(options);
-      if (!cancelled && status) {
-        applyAmrLoginStatus(status, {
-          forceModelRefresh: options.refresh === true,
-          restartOnSignIn,
-        });
-      }
-    };
-    void sync();
-    const onStatusEvent = (event: Event) => {
-      if (amrLoginStatusEventReason(event) === 'login-canceled') {
-        clearAmrAuthRetryContinuation();
-      }
-      void sync({}, true);
-    };
-    const onReturnToApp = () => {
-      if (document.visibilityState === 'hidden') return;
-      void sync({ refresh: true });
-    };
-    window.addEventListener(AMR_LOGIN_STATUS_EVENT, onStatusEvent);
-    window.addEventListener('focus', onReturnToApp);
-    document.addEventListener('visibilitychange', onReturnToApp);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(AMR_LOGIN_STATUS_EVENT, onStatusEvent);
-      window.removeEventListener('focus', onReturnToApp);
-      document.removeEventListener('visibilitychange', onReturnToApp);
-    };
-  }, [applyAmrLoginStatus, clearAmrAuthRetryContinuation, daemonLive]);
-
-  useEffect(() => {
-    analytics.setUserId(
-      isAmrSessionAuthenticated(amrLoginStatus) ? amrLoginStatus?.user?.id ?? null : null,
-    );
-  }, [analytics.setUserId, amrLoginStatus]);
-
-  const handleAmrLoginStatusChange = useCallback((status: VelaLoginStatus | null) => {
-    if (status) applyAmrLoginStatus(status, { restartOnSignIn: true });
-  }, [applyAmrLoginStatus]);
-
-  useEffect(() => {
-    const usesOpenDesignCloud =
-      config.mode === 'daemon'
-      && config.agentId === AMR_AGENT_ID;
-    const cloudIdentityRejected =
-      workspaceContextState.failure === 'reauth-required'
-      || (
-        usesOpenDesignCloud
-        && (
-          amrLoginStatus?.loggedIn === false
-          || amrLoginStatus?.sessionState === 'reauth_required'
-        )
-      );
-    if (!cloudIdentityRejected) return;
-    if (route.kind === 'home' && route.view === 'onboarding') return;
-    navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
-  }, [
-    amrLoginStatus,
-    config.agentId,
-    config.mode,
-    route,
-    workspaceContextState.failure,
-  ]);
-
   // Bootstrap — detect daemon, then fan out independent fetches so each
   // entry-view tab can render the moment its own data lands. Earlier this
   // was one Promise.all behind a global "Loading workspace…" placeholder,
@@ -2129,10 +1756,7 @@ function AppInner() {
         onAgent: (agent) => {
           if (cancelled || !isCurrentAgentStreamRequest(agentRequestId)) return;
           setAgents((current) =>
-            mergeAmrModelsIntoAgents(
-              upsertAgent(current, agent),
-              amrModelsRef.current,
-            ),
+            upsertAgent(current, agent),
           );
         },
       })
@@ -2140,10 +1764,7 @@ function AppInner() {
           if (cancelled || !isCurrentAgentStreamRequest(agentRequestId)) return;
           reportAgentDetectDiagnostics(analytics.track, list);
           setAgents(
-            mergeAmrModelsIntoAgents(
-              orderAgentsByRegistry(list),
-              amrModelsRef.current,
-            ),
+            orderAgentsByRegistry(list),
           );
         })
         .catch((err) => {
@@ -2274,10 +1895,7 @@ function AppInner() {
           daemonMediaProvidersLoaded,
         );
         const next = mergeDaemonMediaProviders(
-          clearStaleAmrModelChoiceOnProfileChange(
-            baseConfig,
-            mergeDaemonConfig(baseConfig, daemonConfig),
-          ),
+          mergeDaemonConfig(baseConfig, daemonConfig),
           daemonMediaProvidersLoaded,
         );
         const hasLocalComposioKey = Boolean(next.composio?.apiKey?.trim());
@@ -2380,25 +1998,16 @@ function AppInner() {
   // probe — by the time this runs, daemonConfig has already overlaid the
   // user's previous choice, so we only fill an empty slot.
   //
-  // First-run onboarding is the one time we must NOT do this: the onboarding
-  // flow is the sole authority for the initial agent pick (AMR is the
-  // recommended default there), and AMR (vela) detection is asynchronous. If
-  // this fallback fires during onboarding while AMR is still being detected it
-  // snaps the slot to the registry-first *detected* agent (Claude) and
-  // persists it to the daemon, which then races and clobbers the user's AMR
-  // selection on the next launch. Gate on onboardingCompleted so this only
-  // backfills an empty slot for returning users.
-  //
-  // A saved OpenDesign Cloud pick counts as empty while cloud is turned off:
-  // the daemon no longer offers that runtime.
+  // Onboarding owns the first choice. An unavailable saved choice also stays
+  // explicit: selecting a replacement must not silently start another agent.
   useEffect(() => {
     if (!daemonConfigLoaded || agentsLoading) return;
     if (config.onboardingCompleted !== true) return;
-    if (config.agentId && !cloudAgentHidden(config)) return;
+    if (config.agentId) return;
     const firstAvailable = agents.find((a) => a.available);
     if (!firstAvailable) return;
     setConfig((prev) => {
-      if (prev.agentId && !cloudAgentHidden(prev)) return prev;
+      if (prev.agentId) return prev;
       const next: AppConfig = { ...prev, agentId: firstAvailable.id };
       saveConfig(next);
       void syncConfigToDaemon(next);
@@ -2409,7 +2018,6 @@ function AppInner() {
     agentsLoading,
     agents,
     config.agentId,
-    config.cloudFeatures,
     config.onboardingCompleted,
   ]);
 
@@ -2787,14 +2395,6 @@ function AppInner() {
     }
   }, [daemonMediaProviders, daemonMediaProvidersFetchState]);
 
-  // The Labs switch has already written the daemon; this only mirrors it.
-  const handleCloudFeaturesChange = useCallback((on: boolean) => {
-    const next: AppConfig = { ...latestPersistedConfigRef.current, cloudFeatures: on };
-    latestPersistedConfigRef.current = next;
-    saveConfig(next);
-    setConfig((curr) => ({ ...curr, cloudFeatures: on }));
-  }, []);
-
   const handleSettingsDraftChange = useCallback((draft: AppConfig) => {
     settingsDraftConfigRef.current = draft;
   }, []);
@@ -2859,27 +2459,6 @@ function AppInner() {
 
   // OPEND-3205: this action changes the runtime in the current project. Do not
   // optimistically acknowledge a daemon write or arm a Settings-return retry.
-  const handleSwitchToCloud = useCallback(async () => {
-    const previous = latestPersistedConfigRef.current;
-    const issuedAccount = currentWorkspaceAccountGeneration();
-    const issuedIdentity = workspaceIdentityCacheKey(workspaceContextRef.current);
-    const issuedRoute = JSON.stringify(routeRef.current);
-    const next: AppConfig = { ...previous, mode: 'daemon', agentId: 'amr' };
-    await syncConfigToDaemon(next, { throwOnError: true });
-    if (
-      latestPersistedConfigRef.current !== previous
-      || currentWorkspaceAccountGeneration() !== issuedAccount
-      || workspaceIdentityCacheKey(workspaceContextRef.current) !== issuedIdentity
-      || JSON.stringify(routeRef.current) !== issuedRoute
-    ) {
-      // The PUT already completed; this only refuses to overwrite a newer
-      // local selection or acknowledge the action in another route/identity.
-      throw new Error('Cloud configuration acknowledgement no longer owns the active selection');
-    }
-    latestPersistedConfigRef.current = next;
-    saveConfig(next);
-    setConfig(next);
-  }, []);
 
   const handleAgentModelChange = useCallback(
     (agentId: string, choice: { model?: string; reasoning?: string; serviceTier?: string }) => {
@@ -2952,12 +2531,11 @@ function AppInner() {
     async (options?: { throwOnError?: boolean; agentCliEnv?: AppConfig['agentCliEnv'] }) => {
       if (options && Object.prototype.hasOwnProperty.call(options, 'agentCliEnv')) {
         const current = latestPersistedConfigRef.current;
-        const nextConfig = clearStaleAmrModelChoiceOnProfileChange(current, {
+        const nextConfig = {
           ...current,
           agentCliEnv: options.agentCliEnv ?? {},
-        });
+        };
         latestPersistedConfigRef.current = nextConfig;
-        amrModelsRef.current = null;
         saveConfig(nextConfig);
         setConfig(nextConfig);
         await syncConfigToDaemon(nextConfig);
@@ -2970,17 +2548,14 @@ function AppInner() {
           onAgent: (agent) => {
             if (!isCurrentAgentStreamRequest(agentRequestId)) return;
             setAgents((current) =>
-              mergeAmrModelsIntoAgents(
-                upsertAgent(current, agent),
-                amrModelsRef.current,
-              ),
+              upsertAgent(current, agent),
             );
           },
         });
         const ordered = orderAgentsByRegistry(next);
         reportAgentDetectDiagnostics(analytics.track, ordered);
         if (isCurrentAgentStreamRequest(agentRequestId)) {
-          setAgents(mergeAmrModelsIntoAgents(ordered, amrModelsRef.current));
+          setAgents(ordered);
           setAgentsLoading(false);
         }
         return ordered;
@@ -3022,28 +2597,16 @@ function AppInner() {
     const handleAppConfigChanged = () => {
       void fetchDaemonConfig().then((daemonConfig) => {
         const previous = latestPersistedConfigRef.current;
-        const next = clearStaleAmrModelChoiceOnProfileChange(
-          previous,
-          mergeDaemonConfig(previous, daemonConfig),
-        );
-        const amrProfileChanged = amrProfileForConfig(previous) !== amrProfileForConfig(next);
+        const next = mergeDaemonConfig(previous, daemonConfig);
         latestPersistedConfigRef.current = next;
         saveConfig(next);
         setConfig(next);
-        // The native Develop menu changes the complete AMR account boundary,
-        // not only the agent model catalog. Retire the old workspace selection,
-        // context, directory and every account-scoped cache before refreshing
-        // the new profile; otherwise prod workspace links remain mounted while
-        // status/models/billing already point at feature-test.
-        if (amrProfileChanged) notifyWorkspaceContextRefresh();
-        amrModelsRef.current = null;
-        restartAmrPolling();
         void refreshAgents();
       });
     };
     window.addEventListener(APP_CONFIG_CHANGED_EVENT, handleAppConfigChanged);
     return () => window.removeEventListener(APP_CONFIG_CHANGED_EVENT, handleAppConfigChanged);
-  }, [refreshAgents, restartAmrPolling]);
+  }, [refreshAgents]);
 
   /**
    * Undo an optimistic hand-off that will not become a project: drop the
@@ -3188,15 +2751,7 @@ function AppInner() {
         createWorkspaceContext = createWorkspaceState.failure === 'unsupported'
           ? null
           : workspaceResourceReadContext(createWorkspaceState);
-        if (
-          input.amrGatePrecheckWitness &&
-          !amrBalanceGateScopesMatch(
-            input.amrGatePrecheckWitness,
-            amrBalanceGateScopeForWorkspaceContext(createWorkspaceContext),
-          )
-        ) {
-          throw new Error('AMR_WORKSPACE_GATE_STALE');
-        }
+
         // An auto-send create that did not come through Home's composer opens
         // its frame here; Home's own sends arrive with the frame already up.
         if (input.autoSendFirstMessage && !optimisticProjectId) {
@@ -3449,19 +3004,6 @@ function AppInner() {
                 `od:auto-send-prompt:${result.project.id}`,
               );
             }
-            if (input.amrGatePrecheckWitness) {
-              window.sessionStorage.setItem(
-                `od:auto-send-amr-gate-witness:${result.project.id}`,
-                JSON.stringify(input.amrGatePrecheckWitness),
-              );
-            } else {
-              window.sessionStorage.removeItem(
-                `od:auto-send-amr-gate-witness:${result.project.id}`,
-              );
-            }
-            window.sessionStorage.removeItem(
-              `od:auto-send-amr-gate-ok:${result.project.id}`,
-            );
             if (firstMessageAttachments.length > 0) {
               window.sessionStorage.setItem(
                 `od:auto-send-attachments:${result.project.id}`,
@@ -3885,6 +3427,7 @@ function AppInner() {
     fileName?: string,
     projectTitleHint?: ProjectTitleHint,
   ): Promise<boolean> => {
+    const openingEpoch = ++projectOpenRequestEpochRef.current;
     const routeFileName = fileName ?? null;
     const hintedProjectName = projectTitleHint?.name.trim() || null;
     const requiresBoundCatalogProject = projectTitleHint?.authoritative === true;
@@ -3909,7 +3452,8 @@ function AppInner() {
       } catch {
         pendingContextWitness = null;
       }
-      if (currentWorkspaceAccountGeneration() !== openingAccountGeneration) return false;
+      if (currentWorkspaceAccountGeneration() !== openingAccountGeneration
+        || projectOpenRequestEpochRef.current !== openingEpoch) return false;
       if (pendingContextWitness) {
         if (!pendingContextWitness.isStillCurrent()) return false;
         openingContext = pendingContextWitness.context;
@@ -3942,7 +3486,8 @@ function AppInner() {
       openingContext,
     );
     const openingScopeIsCurrent = () => {
-      if (currentWorkspaceAccountGeneration() !== openingAccountGeneration) return false;
+      if (currentWorkspaceAccountGeneration() !== openingAccountGeneration
+        || projectOpenRequestEpochRef.current !== openingEpoch) return false;
       if (!pendingContextWitness) {
         return projectAuthorizationGenerationRef.current === openingAuthorizationGeneration
           && projectListScopeKey(workspaceContextRef.current) === openingScopeKey;
@@ -3961,24 +3506,65 @@ function AppInner() {
       if (project.workspaceId) return project.workspaceId === expectedWorkspaceId;
       return !requiresBoundCatalogProject;
     };
-    const navigateToOpenedProject = (project: Project) => {
+    const navigateToOpenedProject = (project: Project, context = openingContext) => {
+      if (!openingScopeIsCurrent()) return false;
       const projectWorkspaceId = project.workspaceId?.trim() ?? '';
       projectOpenWorkspaceWitnessRef.current =
         projectWorkspaceId
-        && openingContext?.workspaceId === projectWorkspaceId
-        && openingContext.workspaceMemberId.trim().length > 0
-        && openingContext.memberStatus === 'active'
-        && openingContext.lifecycleState !== 'deleted'
+        && context?.workspaceId === projectWorkspaceId
+        && context.workspaceMemberId.trim().length > 0
+        && context.memberStatus === 'active'
+        && context.lifecycleState !== 'deleted'
           ? {
               projectId: project.id,
               projectWorkspaceId,
-              context: openingContext,
+              context,
               accountGeneration: openingAccountGeneration,
             }
           : null;
       navigate({ kind: 'project', projectId: id, fileName: routeFileName });
       return true;
     };
+    const openLocalPersonalProject = async (project: Project): Promise<boolean> => {
+      const bootstrap = await bootstrapProjectRoute(id, {
+        accountGeneration: openingAccountGeneration,
+        fresh: true,
+      });
+      if (!openingScopeIsCurrent()) return false;
+      const context = bootstrap.kind === 'found' ? bootstrap.scope.context : null;
+      if (bootstrap.kind !== 'found'
+        || bootstrap.project.id !== id
+        || bootstrap.scope.projectId !== id
+        || bootstrap.project.workspaceId !== project.workspaceId
+        || bootstrap.scope.workspaceId !== project.workspaceId
+        || !context
+        || context.workspaceId !== project.workspaceId
+        || context.workspaceType !== 'personal'
+        || !context.workspaceMemberId.trim()
+        || context.memberStatus !== 'active'
+        || context.lifecycleState === 'deleted') {
+        setProjectOpenError(t(bootstrap.kind === 'unavailable'
+          ? 'connectors.unavailable'
+          : 'project.missing'));
+        return false;
+      }
+      routeProjectSnapshotRef.current = {
+        project: bootstrap.project,
+        accountGeneration: openingAccountGeneration,
+        capturedAfterListGeneration: latestAppliedProjectListGenerationRef.current,
+        workspaceScope: bootstrap.scope,
+        workspaceContext: context,
+        resolvedDir: bootstrap.resolvedDir,
+      };
+      setProjects((current) => openingScopeIsCurrent()
+        ? [bootstrap.project, ...current.filter((candidate) => candidate.id !== id)]
+        : current);
+      return navigateToOpenedProject(bootstrap.project, context);
+    };
+    const localBoundProject = !openingContext && !requiresBoundCatalogProject
+      ? projectsRef.current.find((project) => project.id === id && project.workspaceId)
+      : undefined;
+    if (localBoundProject) return openLocalPersonalProject(localBoundProject);
     const rememberHintAuthority = () => {
       if (projectTitleHint?.authoritative && catalogName && openingScopeIsCurrent()) {
         // A catalog card is an authority response too. Invalidate any older
@@ -4045,6 +3631,9 @@ function AppInner() {
     try {
       const project = await getProject(id, openingContext);
       if (!openingScopeIsCurrent()) return false;
+      if (project?.workspaceId && !openingContext && !requiresBoundCatalogProject) {
+        return openLocalPersonalProject(project);
+      }
       if (project && canUseLocalProject(project)) {
         const openedProject = catalogName ? { ...project, name: catalogName } : project;
         setProjects((curr) => openingScopeIsCurrent()
@@ -4622,6 +4211,7 @@ function AppInner() {
       ? routeProjectSnapshotRef.current?.workspaceContext
         ?? routeProjectSnapshotRef.current?.workspaceScope?.context
       : null,
+    loadedActiveProject?.id,
   );
   // Never mount ProjectView around the synthetic "Untitled" placeholder. Its
   // effects immediately fan out project-owned reads, but before the project
@@ -4634,69 +4224,7 @@ function AppInner() {
     ? projectRouteWorkspaceContext.context
     : null;
   projectRouteWorkspaceContextRef.current = activeProjectWorkspaceContext;
-  // The post-generation upgrade gate belongs to the project that owns the
-  // conversation, not whichever Workspace the navigation shell currently
-  // selects. A bound project stays fail-closed until its exact membership and
-  // billing snapshot resolve; borrowing the ambient/account Free plan here is
-  // what interrupted paid Team members with the Free upsell.
-  const amrUpgradeWorkspaceContext = activeProject?.workspaceId
-    ? activeProjectWorkspaceContext
-    : workspaceContext;
-  const amrUpgradeWorkspaceContextLoading = activeProject?.workspaceId
-    ? activeProjectWorkspaceContext === null
-    : workspaceContextLoading;
-  const amrUpgradeBillingResponse = useWorkspaceBillingResponse({
-    context: amrUpgradeWorkspaceContext,
-    loading: amrUpgradeWorkspaceContextLoading,
-  });
-  const amrUpgradeBilling = workspaceBillingSummaryForContext(
-    amrUpgradeBillingResponse,
-    amrUpgradeWorkspaceContext,
-  );
-  const resolvedAmrPlan = resolvePlanTier({
-    billing: amrUpgradeBilling,
-    context: amrUpgradeWorkspaceContext,
-    accountPlan:
-      amrUpgradeWorkspaceContextLoading
-      || amrUpgradeWorkspaceContext?.workspaceType === 'team'
-        ? null
-        : amrLoginStatus?.account?.plan?.trim()
-          || amrLoginStatus?.user?.plan?.trim()
-          || null,
-  });
-  useEffect(() => {
-    const pending = amrAuthRetryContinuationRef.current;
-    if (!pending) return;
-    if (route.kind === 'home' && route.view === 'settings') {
-      // This is the one permitted non-project route: the failed-turn CTA
-      // deliberately opens AMR Settings and ProjectView unmounts while the
-      // authorization attempt is in flight. Every other route exit clears the
-      // continuation below.
-      return;
-    }
-    if (!routeStillMatchesAmrAuthRetryContinuation(pending, route)) {
-      clearAmrAuthRetryContinuation(pending);
-      return;
-    }
-    if (projectRouteWorkspaceContext.failure) {
-      clearAmrAuthRetryContinuation(pending);
-      return;
-    }
-    // A null context is the expected fail-closed refresh window. Wait for the
-    // fresh exact witness rather than borrowing or latching the old one.
-    if (
-      activeProjectWorkspaceContext
-      && !amrAuthRetryMatchesRouteContext(pending, activeProjectWorkspaceContext)
-    ) {
-      clearAmrAuthRetryContinuation(pending);
-    }
-  }, [
-    activeProjectWorkspaceContext,
-    amrAuthRetryContinuation,
-    clearAmrAuthRetryContinuation,
-    projectRouteWorkspaceContext.failure,
-    route,
-  ]);
+
   // Project tabs belong to the project's persisted Workspace authority, not
   // the shell's ambient selection. On a cold deep link the ambient context can
   // settle (or switch A -> B) after the exact project scope has already loaded;
@@ -4976,7 +4504,6 @@ function AppInner() {
 
   const openSettings = useCallback((
     section: SettingsSection = 'execution',
-    opts?: { highlight?: SettingsHighlight },
   ) => {
     if (section === 'composio' || section === 'mcpClient' || section === 'integrations') {
       settingsReturnTargetRef.current = null;
@@ -5001,16 +4528,8 @@ function AppInner() {
         : null;
     setSettingsWelcome(false);
     setSettingsInitialSection(section);
-    setSettingsHighlight(opts?.highlight ?? null);
     navigate({ kind: 'home', view: 'settings' });
   }, [identityScopeKey]);
-
-  // Entry point from the failed-run AMR nudge: open Settings on the execution
-  // section and flag the AMR agent card for a one-shot scroll-into-view +
-  // highlight (and a sign-in coachmark when not yet authorized).
-  const openAmrSettings = useCallback(() => {
-    openSettings('execution', { highlight: 'amr' });
-  }, [openSettings]);
 
   const openPetSettings = useCallback(() => {
     const currentRoute = routeRef.current;
@@ -5024,7 +4543,6 @@ function AppInner() {
         : null;
     setSettingsWelcome(false);
     setSettingsInitialSection('pet');
-    setSettingsHighlight(null);
     navigate({ kind: 'home', view: 'settings' });
   }, [identityScopeKey]);
 
@@ -5190,7 +4708,6 @@ function AppInner() {
     }
     setSettingsOpen(false);
     settingsDraftConfigRef.current = null;
-    setSettingsHighlight(null);
     if (route.kind === 'home' && route.view === 'settings') {
       const returnTarget = settingsReturnTargetRef.current;
       settingsReturnTargetRef.current = null;
@@ -5214,21 +4731,7 @@ function AppInner() {
     setConfig(next);
     setSettingsOpen(false);
     settingsDraftConfigRef.current = null;
-    setSettingsHighlight(null);
     navigate({ kind: 'home', view: 'onboarding' });
-  }, []);
-
-  const handleActiveCloudSignOut = useCallback(async () => {
-    const next = resetExecutionConfigAfterSignOut(latestPersistedConfigRef.current);
-    latestPersistedConfigRef.current = next;
-    saveConfig(next);
-    setConfig(next);
-    setProviderModelsCache({});
-    setSettingsOpen(false);
-    settingsDraftConfigRef.current = null;
-    setSettingsHighlight(null);
-    navigate({ kind: 'home', view: 'onboarding' });
-    await syncConfigToDaemon(next, { allowOnboardingReset: true });
   }, []);
 
   const renderSettingsSurface = (presentation: 'modal' | 'page') => (
@@ -5241,7 +4744,6 @@ function AppInner() {
       appVersionInfo={appVersionInfo}
       welcome={presentation === 'modal' ? settingsWelcome : false}
       initialSection={settingsInitialSection}
-      initialHighlight={settingsHighlight}
       persistedProjectWorkspaceId={
         route.kind === 'project'
           ? projects.find((project) => project.id === route.projectId)?.workspaceId ?? null
@@ -5249,15 +4751,15 @@ function AppInner() {
       }
       composioConfigLoading={composioConfigLoading}
       onPersist={handleConfigPersist}
-      onCloudFeaturesChange={handleCloudFeaturesChange}
+
       onSilentUpdatePreferenceChange={handleSilentUpdatePreferenceChange}
       onDraftChange={handleSettingsDraftChange}
       onPersistComposioKey={handleConfigPersistComposioKey}
       onClose={handleCloseSettings}
       onResetOnboarding={handleResetOnboarding}
-      onAmrSignedOut={handleActiveCloudSignOut}
+
       onRefreshAgents={refreshAgents}
-      onAmrLoginStatusChange={handleAmrLoginStatusChange}
+
       daemonMediaProviders={daemonMediaProviders}
       daemonMediaProvidersFetchState={daemonMediaProvidersFetchState}
       mediaProvidersNotice={mediaProvidersNotice}
@@ -5569,10 +5071,7 @@ function AppInner() {
           projectAuthorizationKey={
             activeProjectAuthorizationKey ?? activeProject.id
           }
-          amrAuthRetryContinuation={amrAuthRetryContinuation}
-          onArmAmrAuthRetryContinuation={armAmrAuthRetryContinuation}
-          onConsumeAmrAuthRetryContinuation={consumeAmrAuthRetryContinuation}
-          onDiscardAmrAuthRetryContinuation={clearAmrAuthRetryContinuation}
+
           authoritativeProjectName={activeAuthoritativeProjectName}
           resolveAuthoritativeProjectName={resolveAuthoritativeProjectName}
           routeFileName={route.fileName}
@@ -5585,12 +5084,11 @@ function AppInner() {
           daemonLive={daemonLive}
           onModeChange={handleModeChange}
           onAgentChange={handleAgentChange}
-          onSwitchToCloud={cloudOffered ? handleSwitchToCloud : undefined}
           onAgentModelChange={handleAgentModelChange}
           onApiModelChange={handleApiModelChange}
           onRefreshAgents={refreshAgents}
           onOpenSettings={openSettings}
-          onOpenAmrSettings={openAmrSettings}
+
           onOpenMcpSettings={openMcpSettings}
           onBrowsePlugins={openPluginRegistry}
           onOpenConnectors={openConnectorIntegrations}
@@ -5625,7 +5123,7 @@ function AppInner() {
     appMain = (
       <EntryView
         onBeginProjectCreation={beginOptimisticProjectCreation}
-        onAmrBalanceGateBlockChange={setHomeAmrBalanceGateBlock}
+
         skills={enabledSkills}
         designTemplates={enabledDesignTemplates}
         designSystems={enabledDS}
@@ -5636,14 +5134,7 @@ function AppInner() {
         defaultDesignSystemId={config.designSystemId}
         agents={agents}
         agentsLoading={agentsLoading}
-        amrLoggedIn={amrLoginStatus?.loggedIn ?? null}
-        amrSessionState={amrLoginStatus?.sessionState}
-        amrAccountPlan={
-          amrLoginStatus?.account?.plan?.trim()
-          || amrLoginStatus?.user?.plan?.trim()
-          || null
-        }
-        amrAccountId={amrLoginStatus?.user?.id ?? amrLoginStatus?.credentialRevision ?? null}
+
         config={config}
         providerModelsCache={providerModelsCache}
         onProviderModelsCacheChange={setProviderModelsCache}
@@ -5691,41 +5182,7 @@ function AppInner() {
         onPersistComposioKey={handleConfigPersistComposioKey}
         onOpenSettings={openSettings}
         onCompleteOnboarding={handleCompleteOnboarding}
-        onSignedOut={handleActiveCloudSignOut}
-        onAmrLoginStatusChange={handleAmrLoginStatusChange}
-        artifactUpgradeSlot={
-          amrArtifactUpgradeHomeOffer ? (
-            <AmrArtifactUpgradeHomeCard
-              key={amrArtifactUpgradeHomeOffer.sessionKey}
-              profile={amrLoginStatus?.profile ?? null}
-              metricsConsent={config.telemetry?.metrics === true}
-              installationId={config.installationId}
-              onViewArtifact={() => {
-                if (
-                  !amrArtifactUpgradeHomeOffer.projectId
-                  || !amrArtifactUpgradeHomeOffer.conversationId
-                ) {
-                  navigate({ kind: 'home', view: 'projects' });
-                  return;
-                }
-                navigate({
-                  kind: 'project',
-                  projectId: amrArtifactUpgradeHomeOffer.projectId,
-                  conversationId: amrArtifactUpgradeHomeOffer.conversationId,
-                  fileName: amrArtifactUpgradeHomeOffer.fileName,
-                });
-              }}
-              onDismiss={() => {
-                if (amrArtifactUpgradeHomeMock) return;
-                setAmrArtifactUpgradeHomeOffer((current) =>
-                  current?.sessionKey === amrArtifactUpgradeHomeOffer.sessionKey
-                    ? null
-                    : current,
-                );
-              }}
-            />
-          ) : undefined
-        }
+
       />
     );
   }
@@ -5755,15 +5212,10 @@ function AppInner() {
           onDuplicateProject={handleDuplicateProject}
           onDeleteProject={handleDeleteProject}
         />
-        {/* Avatar + credits keep their home-view spot (the top-right actions
-            host inside the tabs chrome) while a project tab is open, even
-            though EntryShell — the cluster's usual owner — is unmounted here.
-            Home and the other entry views mount theirs through EntryNavRail;
-            the routes are mutually exclusive, so exactly one is on screen. */}
+        {/* Keep the updater in the top-right host while a project is open. */}
         {route.kind === 'project' ? (
           <WorkspaceTopRightAccountCluster
-            onOpenSettings={openSettings}
-            onSignedOut={handleActiveCloudSignOut}
+
             updaterSlot={
               <UpdaterPopup
                 allowSilentUpdates={config.allowSilentUpdates}
@@ -5771,25 +5223,6 @@ function AppInner() {
                 onAllowSilentUpdatesChange={handleSilentUpdatePreferenceChange}
               />
             }
-            workspaceContextOverride={
-              activeProject?.workspaceId
-                ? activeProjectWorkspaceContext
-                : undefined
-            }
-            workspaceContextLoading={
-              activeProject?.workspaceId
-                ? projectRouteWorkspaceContext.loading
-                : undefined
-            }
-            amrLoggedIn={amrLoginStatus?.loggedIn ?? null}
-            amrAccountPlan={
-              amrLoginStatus?.account?.plan?.trim()
-              || amrLoginStatus?.user?.plan?.trim()
-              || null
-            }
-            amrAccountId={amrLoginStatus?.user?.id ?? amrLoginStatus?.credentialRevision ?? null}
-            metricsConsent={config.telemetry?.metrics === true}
-            installationId={config.installationId}
           />
         ) : null}
         {route.kind === 'project'
@@ -5809,22 +5242,6 @@ function AppInner() {
           dockLine
         />
       )}
-      {/* Every placement these hosts may render is a home placement
-          (`opend.home.*`), so the home view is where they belong: not over a
-          project workbench, not over another entry tab, and — since account
-          restoration can finish while login is still up — not over onboarding. */}
-      {route.kind === 'home' && route.view === 'home' && (
-        <>
-          <TestCampaignModal
-            authenticated={isAmrSessionAuthenticated(amrLoginStatus)}
-            sessionSubject={amrLoginStatus?.user?.id ?? null}
-          />
-          <ProductionCampaignModal
-            authenticated={isAmrSessionAuthenticated(amrLoginStatus)}
-            sessionSubject={amrLoginStatus?.user?.id ?? null}
-          />
-        </>
-      )}
       <TooltipLayer />
       <UpdateDialog />
       {/* Mounted at shell level, outside the route views, so a survey armed by
@@ -5835,28 +5252,6 @@ function AppInner() {
         onExposure={() => trackExperienceSurveyShown(analytics.track)}
         onDismiss={() => trackExperienceSurveyDismissed(analytics.track)}
         onSubmit={(answers) => trackExperienceSurveySent(analytics.track, answers)}
-      />
-      <AmrArtifactUpgradeGate
-        cloudModelSelected={cloudOffered && config.mode === 'daemon' && config.agentId === CLOUD_AGENT_ID}
-        homeVisible={route.kind === 'home' && route.view === 'home'}
-        activeProjectId={route.kind === 'project' ? route.projectId : null}
-        activeConversationId={
-          route.kind === 'project' ? route.conversationId ?? null : null
-        }
-        activeFileName={route.kind === 'project' ? route.fileName : null}
-        plan={resolvedAmrPlan}
-        planResolved={
-          amrLoginStatus !== null
-          && (!isAmrSessionAuthenticated(amrLoginStatus) || resolvedAmrPlan !== null)
-        }
-        profile={amrLoginStatus?.profile ?? null}
-        metricsConsent={config.telemetry?.metrics === true}
-        installationId={config.installationId}
-        onHomeOfferChange={
-          amrArtifactUpgradeHomeMock
-            ? undefined
-            : setAmrArtifactUpgradeHomeOffer
-        }
       />
       <AnimatePresence>
       {settingsOpen ? (
@@ -5894,11 +5289,6 @@ function AppInner() {
           onDismiss={() => setProjectCreateError(null)}
         />
       ) : null}
-      <HomeAmrBalanceGateDialogs
-        block={homeAmrBalanceGateBlock}
-        metricsConsent={config.telemetry?.metrics === true}
-        installationId={config.installationId}
-      />
       {projectOpenError ? (
         <Toast
           message={projectOpenError}

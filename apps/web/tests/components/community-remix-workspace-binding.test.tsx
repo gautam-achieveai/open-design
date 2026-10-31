@@ -358,7 +358,6 @@ function renderEntryShellCommunity(
         onRefreshAgents={vi.fn(() => [codexAgent()])}
         onCreateProject={handlers.onCreateProject ?? vi.fn(async () => true)}
         onBeginProjectCreation={() => ({ projectId: 'optimistic-project', rollback: () => undefined })}
-        onAmrBalanceGateBlockChange={() => undefined}
         onCreatePluginShareProject={vi.fn()}
         onImportClaudeDesign={vi.fn()}
         onOpenProject={handlers.onOpenProject ?? vi.fn()}

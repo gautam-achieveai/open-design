@@ -97,7 +97,6 @@ interface Props {
   onNewConversation?: () => void;
   /** Live ProjectView state for the primary conversation when this tab mirrors it. */
   activeConversationChat?: ActiveConversationChatState;
-  onSwitchConversationToCloud?: (conversationId: string, message: ChatMessage) => void;
   recoveryActionsBlockedReason?: RecoveryActionBlockReason | null;
   /** Forward produced-file / tool-card open requests to the workspace. */
   onRequestOpenFile?: (name: string) => void;
@@ -124,7 +123,6 @@ export function SideChatTab({
   onSessionModeChange,
   onNewConversation,
   activeConversationChat,
-  onSwitchConversationToCloud,
   recoveryActionsBlockedReason = null,
   onRequestOpenFile,
 }: Props) {
@@ -184,12 +182,6 @@ export function SideChatTab({
           recoveryActionsBlockedReason={recoveryBlock}
           retryPendingAssistantId={controlledChat?.retryPendingAssistantId}
           supersededErrorAssistantIds={controlledChat?.supersededErrorAssistantIds}
-          onSwitchToAmrAndRetry={onSwitchConversationToCloud
-            ? (failedAssistant) => {
-                if (recoveryBlock !== null) return;
-                onSwitchConversationToCloud(conversationId, failedAssistant);
-              }
-            : undefined}
           onStop={controlledChat?.onStop ?? chat.onStop}
           onAssistantFeedback={controlledChat?.onAssistantFeedback}
           onRequestOpenFile={onRequestOpenFile}

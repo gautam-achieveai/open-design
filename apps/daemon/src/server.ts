@@ -1,4 +1,9 @@
 // @ts-nocheck
+
+import { buildAcpRunHttpMcpServer, prepareClaudeRunMcpConfig, reassertClaudeRunEnvironment,
+  buildCodexRunMcpConfig, composeOpenCodeRunMcpConfig } from './runtimes/mcp.js';
+import { createClaudeOutputGuard, CLAUDE_OUTPUT_FAILURE, CLAUDE_OUTPUT_FAILURE_OVERRIDE } from './runtimes/claude-output-guard.js';
+import { createExactTokenStreamRedactor } from './runtimes/exact-token-redaction.js';
 import { startEvidenceDelivery } from './services/evidence-delivery.js';
 import type {
   DesktopExportArtifactInput,
@@ -20,20 +25,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
-import {
-  composeOdNextStrategyBundleHeadV2,
-  composeOdNextStrategyCorePromptV2,
-  OD_NEXT_BUNDLE_ECHO_GUARD_V2,
-  odNextStrategyRecipeIdentityV2,
-  renderOdNextRuntimeFactsV2,
-  composeOdNextStrategyStableRequestContextV2,
-  executionProfileFromStreamFormat,
-  PLUGIN_SHARE_ACTION_PLUGIN_IDS,
-  renderChatTurnHostProtocolInstructions,
-  resolveOdNextDeckFrameworkMode,
-  CLOUD_AGENT_ID,
-  cloudFeaturesEnabled,
-} from '@open-design/contracts';
+import { composeOdNextStrategyBundleHeadV2, composeOdNextStrategyCorePromptV2, OD_NEXT_BUNDLE_ECHO_GUARD_V2, odNextStrategyRecipeIdentityV2, renderOdNextRuntimeFactsV2, composeOdNextStrategyStableRequestContextV2, executionProfileFromStreamFormat, PLUGIN_SHARE_ACTION_PLUGIN_IDS, renderChatTurnHostProtocolInstructions, resolveOdNextDeckFrameworkMode } from '@open-design/contracts';
 import {
   advanceAuthenticatedDoneCapture,
   BROWSER_ANNOTATION_SCREENSHOT_DIR,
@@ -286,30 +278,14 @@ import {
   persistPlainStreamArtifactList,
   plainStdoutFromRunEvents,
 } from './runtimes/plain-stream.js';
-import {
-  readVelaLoginStatus,
-  resolveAmrProfile,
-} from './integrations/vela.js';
+
 import { isAbortedOperationError } from './integrations/aborted-error.js';
 import { projectResourceIdFor } from './integrations/vela-team-projects.js';
-import {
-  getTeamProjectMaterialization,
-  latestTeamProjectMaterializationVersion,
-  materializePulledTeamMirror,
-  teamProjectMaterializationMatches,
-  teamProjectMaterializationSupersedes,
-} from './collab/team-mirror-materializer.js';
-import { recoverAuthorizedTeamProjectPromotions } from './collab/team-mirror-promotion.js';
-import {
-  amrAccountFailureDetails,
-  classifyAmrAccountFailureSignal,
-} from './integrations/vela-errors.js';
-import { amrModelLoadingCache } from './runtimes/amr-model-cache.js';
-import {
-  fetchVelaPresetModels,
-  fetchVelaRemoteModelsWithRetry,
-  isVelaChatCapableModelId,
-} from './runtimes/defs/amr.js';
+import { getTeamProjectMaterialization, latestTeamProjectMaterializationVersion, materializePulledTeamMirror } from './collab/team-mirror-materializer.js';
+
+
+
+
 import { migrateLegacyDataDirSync } from './migration/index.js';
 import {
   consumedImportNonces,
@@ -474,9 +450,10 @@ import {
 } from './memory.js';
 import { runAutoExtractionCleanup } from './memory-cleanup.js';
 import { attachAcpSession } from './agent-protocol/index.js';
+import { isHostSynthesizedAcpEmission, withAcpEmissionProvenance } from './agent-protocol/acp/emission-provenance.js';
 import { attachPiRpcSession } from './agent-protocol/index.js';
 import { attachDshProfileSession } from './agent-protocol/index.js';
-import { stageAmrImagePaths } from './media/amr-image-staging.js';
+
 import { ingestRoutineConnectorEvolution } from './automation-routine-evolution.js';
 import { createClaudeStreamHandler } from './runtimes/claude-stream.js';
 import { createAgentTitleMarkerStripper } from './title-marker.js';
@@ -544,12 +521,7 @@ import { renderDesignSystemPreview } from './design-systems/preview.js';
 import { renderDesignSystemShowcase } from './design-systems/showcase.js';
 import { createChatRunService } from './runtimes/runs.js';
 import { reapLeftoverAgentProcesses, spawnAgentProcess } from './runtimes/agent-process.js';
-import {
-  createAmrTerminalReportDeliveryService,
-  createAmrTerminalReportFinalizer,
-  createAmrTerminalReportOutboxStore,
-  type AmrTerminalReportDeliveryService,
-} from './storage/amr-terminal-report-outbox.js';
+import { type AmrTerminalReportDeliveryService } from './storage/amr-terminal-report-outbox.js';
 import { createInternalRunCreationService } from './services/internal-run-service.js';
 import {
   createRunAnalyticsLifecycle,
@@ -609,12 +581,7 @@ import {
   decidePostToolResumeRecovery,
   decideSafeRunRetry,
 } from './run-retry-policy.js';
-import {
-  amrUserIdForRunAnalytics,
-  createRunPerRequestUsageLedger,
-  foldEventIntoPerRequestUsageLedger,
-  scanRunEventsForUsageAnalytics,
-} from './run-analytics-observability.js';
+import { createRunPerRequestUsageLedger, foldEventIntoPerRequestUsageLedger, scanRunEventsForUsageAnalytics } from './run-analytics-observability.js';
 import {
   createRunArtifactBaselines,
   diffRunArtifacts,
@@ -786,90 +753,7 @@ import {
 } from './projects.js';
 import { validateArtifactManifestInput } from './artifacts/manifest.js';
 import { ArtifactPublicationBlockedError } from './artifacts/publication-guard.js';
-import {
-  appendMessageStatusEvent,
-  confirmPreviewCommentPinSeq,
-  deleteConversation,
-  deletePreviewComment,
-  deleteProject as dbDeleteProject,
-  deleteWorkspaceProject,
-  deleteWorkspaceResourceByResourceId,
-  deleteTemplate,
-  getConversation,
-  getDeployment,
-  getDeploymentById,
-  getMessage,
-  getMessageTelemetryFinalizationState,
-  getPreviewComment,
-  getProjectCommentAnchorConversationId,
-  getProjectPreviewComment,
-  getProject,
-  countWorkspaceProjectRefs,
-  findTeamWorkspaceIdForProject,
-  getWorkspaceProject,
-  getWorkspaceProjectByProjectId,
-  listWorkspaceProjectBindings,
-  getTemplate,
-  ensureWorkspaceProject,
-  ensureTeamProjectCommentConversations,
-  ensureWorkspaceResource,
-  getWorkspaceResource,
-  getWorkspaceResourceByResourceId,
-  insertConversation,
-  insertProject,
-  insertRoutine,
-  insertRoutineRun,
-  insertScheduledRoutineRun,
-  insertTemplate,
-  latchConversationIntentSignals,
-  latestTodoWriteInputForConversation,
-  readConversationIntentSignals,
-  findTemplateByNameAndProject,
-  updateTemplate,
-  listProjectsAwaitingInput,
-  listConversations,
-  listDeployments,
-  listLatestProjectRunStatuses,
-  listMessages,
-  listPreviewComments,
-  listProjectPreviewComments,
-  listProjects,
-  listUnboundProjects,
-  listTeamWorkspaceProjectShares,
-  listTeamWorkspaceResourceWorkspaceIds,
-  listWorkspaceProjects,
-  listWorkspaceResources,
-  listRoutines,
-  listRoutineRuns,
-  listTabs,
-  listTemplates,
-  getLatestRoutineRun,
-  getRoutine,
-  mergeSyncedPreviewComment,
-  normalizeConversationSessionMode,
-  deleteRoutine as dbDeleteRoutine,
-  openDatabase,
-  reorderPreviewComment,
-  repairTeamProjectCommentAnchorConversations,
-  setTabs,
-  SYNC_KEEPS_UPDATED_AT,
-  updateConversation,
-  updatePreviewCommentAnchor,
-  updatePreviewCommentStatus,
-  updateProject,
-  updateWorkspaceProject,
-  setWorkspaceProjectMetadataRefreshPending,
-  updateWorkspaceResource,
-  rebindWorkspaceProject,
-  updateRoutine,
-  updateRoutineRun,
-  clearAgentSession,
-  upsertAgentSession,
-  upsertDeployment,
-  upsertMessage,
-  upsertPreviewComment,
-  userRequestBeforeAssistantMessage,
-} from './db.js';
+import { appendMessageStatusEvent, confirmPreviewCommentPinSeq, deleteConversation, deletePreviewComment, deleteProject as dbDeleteProject, deleteWorkspaceProject, deleteWorkspaceResourceByResourceId, deleteTemplate, getConversation, getDeployment, getDeploymentById, getMessage, getMessageTelemetryFinalizationState, getPreviewComment, getProjectCommentAnchorConversationId, getProjectPreviewComment, getProject, countWorkspaceProjectRefs, findTeamWorkspaceIdForProject, getWorkspaceProject, getWorkspaceProjectByProjectId, listWorkspaceProjectBindings, getTemplate, ensureWorkspaceProject, ensureTeamProjectCommentConversations, ensureWorkspaceResource, getWorkspaceResource, getWorkspaceResourceByResourceId, insertConversation, insertProject, insertRoutine, insertRoutineRun, insertScheduledRoutineRun, insertTemplate, latchConversationIntentSignals, latestTodoWriteInputForConversation, readConversationIntentSignals, findTemplateByNameAndProject, updateTemplate, listProjectsAwaitingInput, listConversations, listDeployments, listLatestProjectRunStatuses, listMessages, listPreviewComments, listProjectPreviewComments, listProjects, listUnboundProjects, listTeamWorkspaceResourceWorkspaceIds, listWorkspaceProjects, listWorkspaceResources, listRoutines, listRoutineRuns, listTabs, listTemplates, getLatestRoutineRun, getRoutine, mergeSyncedPreviewComment, normalizeConversationSessionMode, deleteRoutine as dbDeleteRoutine, openDatabase, reorderPreviewComment, setTabs, SYNC_KEEPS_UPDATED_AT, updateConversation, updatePreviewCommentAnchor, updatePreviewCommentStatus, updateProject, updateWorkspaceProject, setWorkspaceProjectMetadataRefreshPending, updateWorkspaceResource, rebindWorkspaceProject, updateRoutine, updateRoutineRun, clearAgentSession, upsertAgentSession, upsertDeployment, upsertMessage, upsertPreviewComment, userRequestBeforeAssistantMessage } from './db.js';
 import {
   createPhysicalAgentSessionUsageTracker,
   computeIncludeStable,
@@ -904,6 +788,8 @@ import {
 } from './live-artifacts/http-helpers.js';
 import { registerConnectorRoutes } from './connectors/routes.js';
 import { registerActiveContextRoutes } from './routes/active-context.js';
+import { registerActiveContextMcpTool } from './mcp-http/active-context-tools.js';
+import type { ActiveContextStore } from './services/active-context.js';
 import { registerAutomationRoutes } from './routes/automation.js';
 import { registerAttributionRoutes } from './routes/attribution.js';
 import { registerDaemonRoutes } from './routes/daemon.js';
@@ -938,8 +824,8 @@ import { associateRunProducedFiles } from './runtimes/run-produced-files.js';
 import { chatArtifactCaptureResultProps } from './chat-artifacts/telemetry.js';
 import { freezeAndRenderChatArtifactCovers } from './chat-artifacts/cover.js';
 import { setMessageArtifactHtmlVersionIds } from './chat-artifacts/store.js';
-import { registerVelaRoutes } from './routes/vela.js';
-import { CLOUD_FEATURES_DISABLED_MESSAGE, cloudFeaturesGate } from './cloud-features.js';
+
+import { cloudFeaturesGate } from './cloud-features.js';
 import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRoutes } from './import-export-routes.js';
 import { registerHandoffRoutes } from './routes/handoff.js';
 import { EmptyTranscriptError, synthesizeHandoffPrompt } from './design/index.js';
@@ -950,6 +836,41 @@ import { registerStrategyRolloutRoutes } from './routes/strategy-rollout.js';
 import { registerTerminalRoutes } from './routes/terminal.js';
 import { registerBrowserSessionRoutes } from './routes/browser-sessions.js';
 import { registerBrowserControlRoutes } from './routes/browser-control.js';
+import { registerBrowserPerformanceRoutes } from './routes/browser-performance.js';
+import { BrowserPerformanceService } from './services/browser-performance.js';
+import { BrowserPerformanceReports } from './services/browser-performance-reports.js';
+import { BrowserPerformanceOverrides } from './services/browser-performance-overrides.js';
+import { LOCAL_PERFORMANCE_PRINCIPAL_ID, type ApprovalPrincipal } from './mcp-http/approval-store.js';
+import { isRevokedProjectFileAccess } from './services/project-file-read.js';
+import { registerBrowserPerformanceMcpTools } from './mcp-http/browser-performance-tools.js';
+import { createMcpToolRegistry } from './mcp-http/registry.js';
+import { createMcpCredentialStore } from './mcp-http/credentials.js';
+import { resolveMcpGrant } from './mcp-http/auth.js';
+import { registerMcpHttpRoutes, registerMcpCredentialRoutes } from './mcp-http/routes.js';
+import { registerCoreMcpTools } from './mcp-http/tools.js';
+import { registerBrowserMcpTools } from './mcp-http/browser-tools.js';
+import { createBrowserReadAuthority } from './mcp-http/browser-read-authority.js';
+import { registerLiveArtifactMcpTools } from './mcp-http/live-artifact-tools.js';
+import { registerProjectFileMcpTools } from './mcp-http/project-file-tools.js';
+import { registerArtifactReadMcpTool } from './mcp-http/artifact-read-tools.js';
+import { registerAgentCatalogMcpTool } from './mcp-http/agent-catalog-tools.js';
+import { registerSkillCatalogMcpTool } from './mcp-http/skill-catalog-tools.js';
+import { registerBriefMcpTools } from './mcp-http/brief-tools.js';
+import { createMcpHttpResources } from './mcp-http/resources.js';
+import { registerProjectFileMutationMcpTools } from './mcp-http/project-file-mutation-tools.js';
+import { registerProjectRunCommandMcpTools } from './mcp-http/project-run-command-tools.js';
+import { createProjectRunCommandService } from './services/project-run-commands.js';
+import { registerPluginCatalogMcpTool } from './mcp-http/plugin-catalog-tools.js';
+import { registerUnboundProjectCatalogMcpTool } from './mcp-http/unbound-project-catalog-tools.js';
+import { loopbackOriginFromListener, registerUnboundProjectDetailMcpTool } from './mcp-http/unbound-project-detail-tools.js';
+import { registerExternalRunStatusMcpTool } from './mcp-http/external-run-status-tools.js';
+import { registerExternalRunCancelMcpTool } from './mcp-http/external-run-cancel-tools.js';
+import { readOfferedAgentCatalog } from './services/agent-catalog.js';
+import { registerConnectorMcpTools } from './mcp-http/connector-tools.js';
+import { createMcpApprovalStore } from './mcp-http/approval-store.js';
+import { registerMcpApprovalRoutes } from './mcp-http/approval-routes.js';
+import { createApprovalPrincipalResolver, createApprovalViewPrincipalCheck } from './mcp-http/approval-principal.js';
+import type { AcpMcpServerInput } from './agent-protocol/acp/session-params.js';
 import { registerEdgeAnnotationRoutes } from './routes/edge-annotations.js';
 import { pairedMemberRelayContext } from './routes/project/comments.js';
 import { createEdgeAnnotationBroker } from './services/edge-annotation-broker.js';
@@ -978,55 +899,22 @@ import { registerTeamResourceRoutes } from './routes/team-resources.js';
 import { registerTeamResourceShareRoutes } from './routes/team-resource-share.js';
 import { createCollabRuntime } from './collab/runtime.js';
 import { createSqlitePublicFilePublicationStore } from './collab/public-file-publication-store.js';
-import {
-  createActiveWorkspaceSelectionStore,
-} from './collab/active-workspace-selection.js';
-import {
-  headerValue,
-  resolveOptionalLocalWorkspaceRequestAuthority,
-  workspaceResourceContext,
-  workspaceResourceContextFromRequest,
-} from './collab/workspace-resource-mutation.js';
+
+import { resolveOptionalLocalWorkspaceRequestAuthority, workspaceResourceContextFromRequest } from './collab/workspace-resource-mutation.js';
 import {
   createAuthorizeProjectRequest,
+  createProjectRequestDecision,
+  createSynchronousProjectRequestDecision,
 } from './collab/project-request-authority.js';
 import { withLastKnownWorkspaceContext } from './collab/workspace-context.js';
-import {
-  createWorkspaceTypeRegistry,
-  impossibleTeamShareRows,
-  projectCollabScope,
-} from './collab/team-share-scope.js';
+import { createWorkspaceTypeRegistry } from './collab/team-share-scope.js';
 import { resolveWorkspaceScope } from './collab/workspace-scope.js';
-import {
-  AmrWorkspaceScopeRequiredError,
-  openDesignAmrTraceEnvForRun,
-  pinRunWorkspaceScopeForProject,
-  type RunWorkspaceScope,
-} from './runtimes/project-amr-trace-env.js';
-import {
-  createWorkspaceDirectoryAuthorityBroker,
-  createWorkspaceContextProviderFromEnv,
-  fetchVelaWorkspaceDirectory,
-  resolveVelaWorkspaceHubEventsEndpoint,
-  velaWorkspaceDirectoryIdentity,
-  workspaceContextFromDirectoryItem,
-} from './collab/vela-workspace-context.js';
-import { verifyWorkspaceRequestContext } from './collab/request-workspace-context.js';
-import {
-  createWorkspaceBillingRuntimeCoordinator,
-  shouldEmitWorkspaceBillingRuntimeNudge,
-  WorkspaceBillingAccessRevokedError,
-} from './collab/workspace-billing-runtime.js';
-import {
-  AUTHORITATIVE_PROJECT_PRESENCE_CAPABILITY,
-  CODING_PLAN_USAGE_EVENTS_CAPABILITY,
-  startHubEventsSubscriber,
-  WORKSPACE_DIRECTORY_EVENTS_CAPABILITY,
-} from './collab/hub-events-subscriber.js';
-import {
-  createWorkspaceAuthorityHealthCoordinator,
-  resolveWorkspaceAuthorityCacheMode,
-} from './collab/workspace-authority-health.js';
+import { pinRunWorkspaceScopeForProject, type RunWorkspaceScope } from './runtimes/project-amr-trace-env.js';
+import { createWorkspaceDirectoryAuthorityBroker, workspaceContextFromDirectoryItem } from './collab/vela-workspace-context.js';
+
+
+
+import { resolveWorkspaceAuthorityCacheMode } from './collab/workspace-authority-health.js';
 import {
   recordWorkspaceAuthorityDecision,
   recordWorkspaceAuthorityInvalidation,
@@ -1034,10 +922,7 @@ import {
   recordWorkspaceAuthorityRevocationClear,
   recordWorkspaceAuthoritySuppressedRequest,
 } from './metrics/workspace-authority.js';
-import {
-  createWorkspaceHubSubscriptionManager,
-  type WorkspaceHubSubscriptionManager,
-} from './collab/workspace-hub-subscriptions.js';
+
 import {
   activeTeamWorkspaceIdentity,
   createProactiveContentPull,
@@ -1057,43 +942,27 @@ import {
   sharedProjectPullProfileEnabled,
 } from './collab/pull-profile.js';
 import { createSyncDigestReader } from './collab/sync-digest.js';
-import {
-  createCollabSyncSnapshotStore,
-  parseMemberDirectorySnapshot,
-  parseTeamProjectSnapshot,
-} from './collab/sync-snapshot-store.js';
+import { createCollabSyncSnapshotStore, parseTeamProjectSnapshot } from './collab/sync-snapshot-store.js';
 import { createPersistentSyncCache } from './collab/persistent-sync-cache.js';
 import { createSwrCache } from './collab/swr-cache.js';
 import {
   COLLAB_VELA_FANOUT_CONCURRENCY,
   ConcurrencyGate,
 } from './collab/concurrency-gate.js';
-import {
-  createTeamResourceListCache,
-  invalidateTeamResourceListingCaches,
-} from './collab/team-resource-list-cache.js';
+import { createTeamResourceListCache } from './collab/team-resource-list-cache.js';
 import { createVelaResourcePullBatcher } from './collab/vela-cli-resource-pull-batcher.js';
-import {
-  createRememberedTeamResourceScopes,
-  type RememberedTeamResourceScopeLease,
-} from './collab/remembered-team-resource-scopes.js';
-import { readVelaControlApiContext } from './integrations/vela.js';
-import {
-  fetchBillingCheckoutUrl,
-  fetchVelaBillingCatalog,
-  fetchVelaBillingSummary,
-  fetchVelaWorkspaceBillingProjection,
-  isVelaWorkspaceAuthorizationError,
-} from './integrations/vela-billing.js';
-import { createAccountBillingSummaryCache } from './collab/account-billing-summary-cache.js';
-import { createEventRefreshCoordinator } from './collab/event-refresh-coordinator.js';
+import { createRememberedTeamResourceScopes } from './collab/remembered-team-resource-scopes.js';
+
+
+
+
 import { createWorkspaceExactAuthorityCache } from './collab/workspace-exact-authority-cache.js';
 import { createCollabPublishWatcher } from './collab/collab-publish-watcher.js';
 import {
   isUnmaterializedSharedPlaceholder,
   SHARED_PROJECT_PLACEHOLDER_METADATA_KEY,
 } from './collab/shared-project-placeholder.js';
-import { recoverPersistedTeamShareOwnership } from './collab/persisted-team-share.js';
+
 import { resolveProjectShareDir } from './collab/project-share-dir.js';
 import { createTeamProjectsLister } from './collab/team-projects.js';
 import {
@@ -1118,37 +987,18 @@ import {
   contextToResourceHubPrincipal,
   type ResourceHubPrincipal,
 } from './collab/resource-principal.js';
-import { createCollabCloudClientFromEnv } from './integrations/collab-cloud.js';
+
 import { createCollabCloudService } from './collab/collab-cloud-service.js';
 import {
   commentRelayLocalBindingMatches,
   createCommentRelayOutboxStore,
 } from './collab/comment-relay-outbox.js';
-import { createWorkspaceInvalidationPoller } from './collab/workspace-invalidation-poller.js';
+
 import { createWorkspaceExactContextCache } from './collab/workspace-exact-context-cache.js';
-import {
-  handleHubProjectMetadataChanged,
-  handleHubTeamProjectsChanged,
-  handlePolledWorkspaceInvalidation,
-  reconcileWorkspaceProjectMetadataWithRemote,
-  reconcileWorkspaceProjectsWithRemote,
-  reconcilerRemoteTeamProjects,
-  type LocalTeamProjectBinding,
-  type WorkspaceProjectsReconcilerDeps,
-} from './collab/workspace-projects-reconciler.js';
-import {
-  createWorkspaceTeamResourceEventCoordinator,
-  reconcileWorkspaceResourcesWithRemote,
-  type LocalTeamResourceBinding,
-  type MaterializedTeamResourceRef,
-  type WorkspaceTeamResourceRefreshReason,
-} from './collab/workspace-resources-reconciler.js';
-import { createVelaCliCollabClientFromEnv } from './collab/vela-cli-collab-client.js';
-import {
-  createScopedVelaTeamProjectCatalogClientCache,
-  createVelaCliTeamProjectCatalogClientFromEnv,
-  createVelaCliTeamProjectCatalogFromEnv,
-} from './collab/vela-cli-team-projects.js';
+import { reconcilerRemoteTeamProjects, type LocalTeamProjectBinding, type WorkspaceProjectsReconcilerDeps } from './collab/workspace-projects-reconciler.js';
+import { createWorkspaceTeamResourceEventCoordinator, reconcileWorkspaceResourcesWithRemote, type LocalTeamResourceBinding, type MaterializedTeamResourceRef } from './collab/workspace-resources-reconciler.js';
+
+
 import { createTeamProjectsChangeEmitter } from './collab/team-projects-change-emitter.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
 import {
@@ -1163,7 +1013,7 @@ import {
   bindProjectToPersistedAutomationWorkspace,
   normalizePersistedAutomationWorkspaceScope,
 } from './automations/workspace-scope.js';
-import { resolveAmrModelProbe } from './runtimes/amr-model-probe.js';
+
 import { createPluginInstallationHelpers, normalizeProjectPluginFolderPath, resolveProjectChildDirectory } from './services/plugin-installation.js';
 import { createPluginShareTaskStore } from './services/plugin-share-tasks.js';
 import { getRouteRegistrationInventory, installRouteRegistrationGuard } from './route-registration-guard.js';
@@ -1821,6 +1671,8 @@ const critiqueWarnedAdapters = new Set<string>();
 // Created once per process; not persisted across daemon restarts.
 const critiqueRunRegistry = createRunRegistry();
 export const SSE_KEEPALIVE_INTERVAL_MS = 25_000;
+// Nonpersisted attempt hook. A retry replaces this closure before launching.
+const claudeAttemptOutputSeals = new WeakMap<object, () => boolean>();
 
 export function createAgentRuntimeEnv(
   baseEnv: NodeJS.ProcessEnv | Record<string, string | undefined>,
@@ -1924,7 +1776,8 @@ export function createAgentRuntimeToolPrompt(
     '',
     '## Browser: UI debugging and testing',
     '',
-    '- Use OpenDesign\'s Browser through the `browser` CLI commands as the preferred way to debug and test UI changes. Reproduce the issue in the intended live tab before editing; inspect DOM, screenshots, console and network evidence as relevant; then verify the same flow after the change. Check desktop/tablet/mobile viewports when the change affects responsive behavior. Supplement live browser checks with focused automated tests. If browser access is unavailable, report the missing UI verification and continue useful code checks without claiming a browser pass.',
+    '- When OpenDesign browser MCP tools are available in this run, prefer `browser_snapshot`, `browser_inspect`, `browser_screenshot`, `browser_console` and network tools for the selected tab. For a mutation, call the tool without an approval id; if approval is required, wait for approval and repeat the exact call with its `approvalRequestId`. Each approval applies once. Do not supply an `approved` field. If the MCP tools are unavailable, use the CLI below.',
+    '- Use OpenDesign\'s Browser as the preferred way to debug and test UI changes. Reproduce the issue in the intended live tab before editing; inspect DOM, screenshots, console and network evidence as relevant; then verify the same flow after the change. Check desktop/tablet/mobile viewports when the change affects responsive behavior. Supplement live browser checks with focused automated tests. If browser access is unavailable, report the missing UI verification and continue useful code checks without claiming a browser pass.',
     '- Discover commands with `"$OD_NODE_BIN" "$OD_BIN" browser --help`, then list registered tabs with `"$OD_NODE_BIN" "$OD_BIN" browser tabs --project "$OD_PROJECT_ID" --json`. On PowerShell use `& $env:OD_NODE_BIN $env:OD_BIN browser tabs --project $env:OD_PROJECT_ID --json`; on cmd.exe use `"%OD_NODE_BIN%" "%OD_BIN%" browser tabs --project "%OD_PROJECT_ID%" --json`. Use the same shell syntax for the other browser commands.',
     '- Do not claim browser access until discovery succeeds. If `OD_PROJECT_ID` is missing, no matching tab is registered, or discovery fails, report that limitation. Inspect the intended tab with `browser snapshot` or `browser inspect` and an explicit `--tab <tab-id>`; a URL/title alone is not page evidence. Consequential operations require user authorization and `--approve`.',
     '- Walk the DOM with `browser snapshot --depth <n>` (default 12, maximum 64; the tree is capped at 2000 nodes and reports `truncated`). When it is truncated, drill into one element with `browser snapshot --selector <css> --depth <n>`. Run JavaScript in the page with `browser eval --expression <js> --approve` (or `--script-file <path|->` for longer scripts); it awaits a returned promise and returns the JSON value, so return plain data such as strings, numbers, arrays, or objects rather than DOM nodes. A script that only reads the page is covered by the user\'s request to inspect or debug it; a script that changes page state needs the same authorization as `click` or `type`.',
@@ -3174,6 +3027,7 @@ export async function startServer({
 }: StartServerOptions = {}) {
   host = normalizeDaemonBindHost(host);
   let resolvedPort = port;
+  let readListenerAddress: () => net.AddressInfo | string | null = () => null;
   let daemonShuttingDown = false;
   const extraAllowedOrigins = configuredAllowedOrigins();
   const workspaceAuthorityCacheMode = resolveWorkspaceAuthorityCacheMode(
@@ -3390,9 +3244,11 @@ export async function startServer({
     ensureUserDesignSystemWorkspaceProject,
     isProjectUsableDesignSystem,
     listAllDesignSystems,
+    listAllDesignSystemsSnapshot,
     listAllDesignTemplates,
     listAllSkillLikeEntries,
     listAllSkills,
+    listAllSkillsSnapshot,
     readAvailableDesignSystem,
     readAvailableDesignSystemPackageInfo,
     readAvailableDesignSystemStaticFile,
@@ -3530,17 +3386,6 @@ export async function startServer({
   });
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
   daemonHealth?.setStorageProbe(() => readSqlitePageStats({ db, file: db.name }));
-  const amrTerminalReportOutbox = createAmrTerminalReportOutboxStore(db);
-  const amrTerminalReportDelivery = createAmrTerminalReportDeliveryService({
-    store: amrTerminalReportOutbox,
-    env: { ...process.env, OD_DATA_DIR: RUNTIME_DATA_DIR },
-  });
-  const commentAnchorRepair = repairTeamProjectCommentAnchorConversations(db);
-  if (commentAnchorRepair.created > 0) {
-    console.warn(
-      `[comments] repaired ${commentAnchorRepair.created} historical Team project comment anchor(s)`,
-    );
-  }
   // Restore paired browser-extension origins into the in-memory allowlist the
   // /api origin middleware above consults, so a paired clipper survives daemon
   // restarts without re-pairing.
@@ -3800,60 +3645,25 @@ export async function startServer({
       ...(project.metadata ? { metadata: project.metadata } : {}),
     };
   };
-  const activeWorkspace = createActiveWorkspaceSelectionStore(RUNTIME_DATA_DIR);
   const teamMirrorPromotionJournalDir = path.join(
     RUNTIME_DATA_DIR,
     'team-mirror-promotions',
   );
-  await recoverAuthorizedTeamProjectPromotions({
-    journalDir: teamMirrorPromotionJournalDir,
-    allowedProjectsRoot: PROJECTS_DIR,
-    isCommitted: (entry) => {
-      const stored = getTeamProjectMaterialization(
-        db,
-        entry.receipt.workspaceId,
-        entry.receipt.projectId,
-      );
-      return teamProjectMaterializationMatches(stored, entry.receipt);
-    },
-    isSuperseded: (entry) => {
-      const stored = getTeamProjectMaterialization(
-        db,
-        entry.receipt.workspaceId,
-        entry.receipt.projectId,
-      );
-      return teamProjectMaterializationSupersedes(stored, entry.receipt);
-    },
-    onError: (error) => {
-      console.warn('[od] failed to recover authorized team mirror promotion:', error);
-    },
-  });
   // What this daemon has learned about each workspace's type, memoized from
   // exact directory/context reads it already performs. It is the
   // second witness behind the team-share invariant: a team share may only be
   // recorded in — and a project-scoped collab call may only be pinned to — a
   // workspace that can actually host a team plane. See collab/team-share-scope.ts.
   const workspaceTypes = createWorkspaceTypeRegistry();
-  const configuredAmrEnv = () =>
-    agentCliEnvForAgent(readAppConfigSync(RUNTIME_DATA_DIR).agentCliEnv, 'amr');
+  const projectHasUnavailableTeamBinding = (projectId: string): boolean =>
+    findTeamWorkspaceIdForProject(db, projectId) !== null;
+  const configuredAmrEnv = (): Record<string, string> => ({});
   const workspaceExactAuthorityCache = createWorkspaceExactAuthorityCache({
-    identity: () => velaWorkspaceDirectoryIdentity(
-      readVelaControlApiContext,
-      configuredAmrEnv(),
-    ),
+    identity: () => 'local-retired-cloud',
   });
   const workspaceDirectoryAuthority = createWorkspaceDirectoryAuthorityBroker({
-    fetchDirectory: async () => {
-      const result = await fetchVelaWorkspaceDirectory({
-        configuredEnv: configuredAmrEnv(),
-      });
-      if (result.ok) workspaceTypes.learn(result.items);
-      return result;
-    },
-    identityKey: () => velaWorkspaceDirectoryIdentity(
-      readVelaControlApiContext,
-      configuredAmrEnv(),
-    ),
+    fetchDirectory: async () => ({ ok: false as const, items: [], error: 'Cloud support has been removed.' }),
+    identityKey: () => 'local-retired-cloud',
     onDecision: (input) => recordWorkspaceAuthorityDecision({
       mode: workspaceAuthorityCacheMode,
       ...input,
@@ -3874,24 +3684,17 @@ export async function startServer({
     workspaceDirectoryAuthority.fresh;
   const fetchFreshBackgroundWorkspaceDirectory =
     workspaceDirectoryAuthority.backgroundFresh;
-  let workspaceHubSubscriptions: WorkspaceHubSubscriptionManager | null = null;
-  const quotaHealthyConnections = new Set<string>();
   const verifyExplicitWorkspaceRequestContext = async (input: {
     req: any;
     requireTeam?: boolean;
   }, options: { fresh?: boolean; backgroundFresh?: boolean } = {}) => {
-    if (process.env.OD_WORKSPACE_CONTEXT_SOURCE?.trim() === 'vela') {
-      let fetchDirectory = fetchFreshMutationWorkspaceDirectory;
-      if (options.fresh === false) {
-        fetchDirectory = fetchWorkspaceDirectory;
-      } else if (options.backgroundFresh) {
-        fetchDirectory = fetchFreshBackgroundWorkspaceDirectory;
-      }
-      return verifyWorkspaceRequestContext({
-        ...input,
-        fetchWorkspaceDirectory: fetchDirectory,
-        configuredEnv: configuredAmrEnv(),
-      });
+    const requested = workspaceResourceContextFromRequest(input.req);
+    const storedTeamWorkspace = requested && requested !== 'missing' && Boolean(db.prepare(
+      "SELECT 1 FROM workspace_projects WHERE workspace_id = ? AND visibility = 'team' UNION ALL SELECT 1 FROM workspace_resources WHERE workspace_id = ? AND visibility = 'team' LIMIT 1",
+    ).get(requested.workspaceId, requested.workspaceId));
+    if (input.requireTeam || storedTeamWorkspace || (requested && requested !== 'missing' && requested.workspaceType === 'team')) {
+      return { ok: false as const, status: 403 as const, code: 'WORKSPACE_UNAVAILABLE' as const,
+        message: 'Team resources are unavailable because Cloud support has been removed. Stored data has been preserved.' };
     }
     // Local/dev has no signed membership directory. Its explicit request
     // headers are the complete, static authority; still never consult the
@@ -3942,28 +3745,8 @@ export async function startServer({
     verifyExplicitWorkspaceRequestContext({ req }, { fresh: false });
   const verifyWorkspaceRequestAuthority = (req: unknown) =>
     verifyExplicitWorkspaceRequestContext({ req });
-  const verifyPersonalProjectDeleteLeaseAuthority =
-    process.env.OD_WORKSPACE_CONTEXT_SOURCE?.trim() === 'vela'
-      ? (req: unknown) => verifyWorkspaceRequestContext({
-          req,
-          // A miss is intentionally returned as unavailable. The project gate
-          // then falls through to the existing fresh authority verifier.
-          fetchWorkspaceDirectory: workspaceDirectoryAuthority.cached,
-          configuredEnv: configuredAmrEnv(),
-        })
-      : undefined;
-  // Project-creation writes must be authorized by AMR in production, while
-  // local/dev and explicitly anonymous clients keep their legacy behavior.
-  // Keep this separate from read-side directory fetches so an unconfigured
-  // daemon never turns ordinary local creation into a network-dependent path.
-  const fetchProjectCreationWorkspaceDirectory =
-    process.env.OD_WORKSPACE_CONTEXT_SOURCE?.trim() === 'vela'
-      ? fetchFreshMutationWorkspaceDirectory
-      : undefined;
-  const listWorkspaceDirectory = async () => {
-    const result = await fetchWorkspaceDirectory();
-    return result.items;
-  };
+  const verifyPersonalProjectDeleteLeaseAuthority = undefined;
+  const fetchProjectCreationWorkspaceDirectory = undefined;
   const resolveAuthoritativeTeamWorkspaceContext = async (
     workspaceId: string | null | undefined,
     options: { fresh?: boolean; backgroundFresh?: boolean } = {},
@@ -4094,10 +3877,9 @@ export async function startServer({
   // round-trip entirely. Snapshots live in the daemon database, which was
   // opened from the resolved runtime data root. See collab/persistent-sync-cache.ts.
   const collabSyncSnapshots = createCollabSyncSnapshotStore(db);
-  const velaCliCollabClient = createVelaCliCollabClientFromEnv(process.env);
-  const velaCliTeamProjectCatalog = createVelaCliTeamProjectCatalogFromEnv();
-  const velaCliWorkspaceTeamProjectCatalog =
-    createVelaCliTeamProjectCatalogClientFromEnv();
+  const velaCliCollabClient = null;
+  const velaCliTeamProjectCatalog = null;
+  const velaCliWorkspaceTeamProjectCatalog = null;
   // Generic stale-while-revalidate cache (with an `invalidate()` escape hatch)
   // — see collab/swr-cache.ts.
   // Cache the workspace-scoped team catalog behind /api/workspaces/:id/projects
@@ -4105,31 +3887,14 @@ export async function startServer({
   // the verified request principal in both its key and its upstream call, so
   // navigation stays instant without letting an active-workspace switch retarget
   // an in-flight read.
-  const workspaceTeamProjectCatalog = velaCliWorkspaceTeamProjectCatalog
-    ? createScopedVelaTeamProjectCatalogClientCache(
-        velaCliWorkspaceTeamProjectCatalog,
-      )
-    : velaCliWorkspaceTeamProjectCatalog;
+  const workspaceTeamProjectCatalog = null;
   // Preserve the legacy observation API for compatibility tests and dev
   // tooling. Production data-plane routes never read current/lastKnown; they
   // verify the exact Workspace/member carried by each request.
-  const workspaceContext = withLastKnownWorkspaceContext(
-    createWorkspaceContextProviderFromEnv(process.env, {
-      configuredEnv: configuredAmrEnv,
-      fetchWorkspaceDirectory,
-      getActiveWorkspaceId: () => activeWorkspace.get(),
-      // The expected value keeps a directory-derived bootstrap/recovery write
-      // from overwriting a newer user switch queued by another tab.
-      replaceLocalSelection: (expectedWorkspaceId, workspaceId) =>
-        activeWorkspace.replaceIf(expectedWorkspaceId, workspaceId),
-    }),
-  );
+  const workspaceContext = withLastKnownWorkspaceContext({ current: async () => null, resolveExact: async () => null });
   const workspaceExactContextCache = createWorkspaceExactContextCache({
     provider: workspaceContext,
-    identity: () => velaWorkspaceDirectoryIdentity(
-      readVelaControlApiContext,
-      configuredAmrEnv(),
-    ),
+    identity: () => 'local-retired-cloud',
     onDecision: (input) => recordWorkspaceAuthorityDecision({
       mode: workspaceAuthorityCacheMode,
       ...input,
@@ -4143,86 +3908,8 @@ export async function startServer({
       ...input,
     }),
   });
-  let workspaceHubAccountIdentity = velaWorkspaceDirectoryIdentity(
-    readVelaControlApiContext,
-    configuredAmrEnv(),
-  );
-  let workspaceHubAmrProfile = resolveAmrProfile({
-    ...process.env,
-    ...configuredAmrEnv(),
-  });
-  const resetWorkspaceIdentityCaches = (): void => {
-    quotaHealthyConnections.clear();
-    workspaceDirectoryAuthority.resetIdentity();
-    workspaceExactAuthorityCache.resetIdentity();
-    workspaceExactContextCache.resetIdentity();
-  };
-  const refreshWorkspaceHubAccountIdentity = (): void => {
-    const currentAmrProfile = resolveAmrProfile({
-      ...process.env,
-      ...configuredAmrEnv(),
-    });
-    const currentIdentity = velaWorkspaceDirectoryIdentity(
-      readVelaControlApiContext,
-      configuredAmrEnv(),
-    );
-    if (currentIdentity === workspaceHubAccountIdentity) return;
-    const environmentChanged = currentAmrProfile !== workspaceHubAmrProfile;
-    workspaceHubAccountIdentity = currentIdentity;
-    workspaceHubAmrProfile = currentAmrProfile;
-    resetWorkspaceIdentityCaches();
-    if (environmentChanged) {
-      workspaceHubSubscriptions?.resetForEnvironmentChange();
-      workspaceBillingRuntime.resetIdentity();
-    } else {
-      workspaceHubSubscriptions?.refreshEndpoints();
-    }
-  };
-  const fetchWorkspaceDirectoryForAccountSurface = () => {
-    refreshWorkspaceHubAccountIdentity();
-    return fetchWorkspaceDirectory();
-  };
+  const refreshWorkspaceHubAccountIdentity = (): void => {};
   const workspaceContextProvider = workspaceExactContextCache.provider;
-  const cachedWorkspaceContextForRequest = (
-    req: unknown,
-    requestedWorkspaceId?: string,
-  ): WorkspaceCollabContext | null => {
-    refreshWorkspaceHubAccountIdentity();
-    const claimed = workspaceResourceContextFromRequest(req);
-    if (!claimed || claimed === 'missing') return null;
-    if (
-      requestedWorkspaceId &&
-      claimed.workspaceId !== requestedWorkspaceId.trim()
-    ) {
-      return null;
-    }
-    const cached = workspaceExactContextCache.cached(claimed.workspaceId);
-    return cached &&
-      cached.workspaceMemberId === claimed.workspaceMemberId &&
-      cached.memberStatus === 'active' &&
-      cached.lifecycleState !== 'deleted'
-      ? cached
-      : null;
-  };
-  const verifyWorkspaceContextReadAuthority = async (req: unknown) => {
-    refreshWorkspaceHubAccountIdentity();
-    const claimed = workspaceResourceContextFromRequest(req);
-    if (claimed && claimed !== 'missing') {
-      const cached = workspaceExactAuthorityCache.cached(
-        claimed.workspaceId,
-        claimed.workspaceMemberId,
-      );
-      if (cached) {
-        return {
-          ok: true as const,
-          context: workspaceContextFromDirectoryItem(cached, configuredAmrEnv()),
-        };
-      }
-    }
-    // The exact cache is directory-sourced and usable only under strict SSE
-    // health. Every miss preserves the legacy directory verification.
-    return verifyWorkspaceReadAuthority(req);
-  };
   /**
    * Where a created project belongs for the surfaces with no authorization gate
    * of their own. An explicit pair is verified through the same fresh directory
@@ -4364,72 +4051,7 @@ export async function startServer({
       emitProjectEvent(projectId, { type: 'presence-changed', projectId, at: Date.now() });
     },
   });
-  for (const share of listTeamWorkspaceProjectShares(db)) {
-    const restored = recoverPersistedTeamShareOwnership(share);
-    if (!restored) continue;
-    collab.rememberTeamShare(
-      restored.projectId,
-      restored.principal,
-      share.syncState === 'synced' || share.syncState === 'sync_failed' || share.syncState === 'pending_upload'
-        ? share.syncState
-        : 'pending_upload',
-      { metadataRefreshPending: Boolean(share.metadataRefreshPending) },
-    );
-  }
-  /**
-   * Heal `workspace_projects` rows that already violate the team-share
-   * invariant: `visibility: 'team'` pinned to a PERSONAL workspace (see
-   * collab/team-share-scope.ts). Older builds let a share taken while the client
-   * sat on its personal workspace persist such a row, and the code guards alone
-   * leave an affected user permanently stuck — the row 403s every collab call it
-   * scopes and nothing ever rewrites it.
-   *
-   * Reconciliation at startup rather than a schema migration: the contradiction
-   * is only decidable against the workspace DIRECTORY (which ids are teams),
-   * which is a signed-in network fact a migration cannot see. Demotion is
-   * therefore evidence-gated — a workspace the directory does not name is left
-   * exactly as-is, and `visibility: 'personal'` rows are never candidates.
-   *
-   * A demoted row goes back to a local draft rather than being re-pointed at
-   * some team: which team was intended is not recoverable, and the user can
-   * simply re-share from the team workspace, which now writes a valid row. This
-   * touches local state only — no hub resource is deleted — and deliberately
-   * leaves `cloudTombstonedAt` null, so a copy that genuinely exists in the team
-   * catalog keeps showing up instead of being suppressed as "unshared here".
-   */
-  const reconcileImpossibleTeamShares = async (): Promise<number> => {
-    await listWorkspaceDirectory();
-    const broken = impossibleTeamShareRows(listTeamWorkspaceProjectShares(db), workspaceTypes);
-    for (const row of broken) {
-      console.warn(
-        `[od] healing project ${row.projectId}: its team share pointed at personal workspace ` +
-          `${row.workspaceId}, which has no team plane. Re-share it from a team workspace.`,
-      );
-      updateWorkspaceProject(db, row.workspaceId, row.projectId, {
-        visibility: 'personal',
-        resourceHubResourceId: null,
-        cloudTombstonedAt: null,
-        syncState: 'local_only',
-        // A startup heal of a row that was never valid; nobody changed the
-        // project — see SYNC_KEEPS_UPDATED_AT.
-        updatedAt: SYNC_KEEPS_UPDATED_AT,
-      });
-    }
-    return broken.length;
-  };
-  void reconcileImpossibleTeamShares().catch((error) => {
-    console.warn('[od] team-share scope reconciliation failed:', error);
-  });
-  // Spec 9.2 one-time backfill: claim every pre-existing user design system
-  // whose metadata.json already names a workspace into the generic
-  // `workspace_resources` table too. Idempotent (see
-  // `backfillDesignSystemWorkspaceResources`'s own doc comment), so running
-  // it unconditionally on every startup is deliberate, same as
-  // `reconcileImpossibleTeamShares` just above.
-  void backfillDesignSystemWorkspaceResources(db, USER_DESIGN_SYSTEMS_DIR).catch((error) => {
-    console.warn('[od] design-system workspace-resource backfill failed:', error);
-  });
-  const collabCloudClient = velaCliCollabClient ?? createCollabCloudClientFromEnv();
+  const collabCloudClient = velaCliCollabClient;
   const resolveBoundProjectWorkspaceContext = async (
     projectId: string,
     options: { fresh?: boolean } = {},
@@ -4554,7 +4176,6 @@ export async function startServer({
   // The poller registers each open project's exact bound membership before it
   // pulls. There is deliberately no ambient startup registration: no project
   // scope exists yet, so active-workspace state is not data-plane authority.
-  collabCloud?.start();
   // Server-authoritative owner lookup for register-on-pull: read the shared
   // project's owner from the team hub (the same list the discovery endpoint
   // serves) rather than trusting a client-supplied id, so a pulled project is
@@ -4911,18 +4532,6 @@ export async function startServer({
       onError: (error) => console.warn('[od] workspace-projects reconciliation error:', error),
     };
   };
-  const reconcileWorkspaceProjectsFromRemote = (
-    requestedWorkspaceId: string,
-  ) => reconcileWorkspaceProjectsWithRemote(
-    workspaceProjectsReconcilerDeps(requestedWorkspaceId),
-  );
-  const reconcileWorkspaceProjectMetadataFromRemote = (
-    requestedWorkspaceId: string,
-    projectId: string,
-  ) => reconcileWorkspaceProjectMetadataWithRemote(
-    workspaceProjectsReconcilerDeps(requestedWorkspaceId),
-    projectId,
-  );
   const resolveSharedProject = async (
     projectId: string,
     scope?: TeamMirrorPullScope | null,
@@ -5071,7 +4680,6 @@ export async function startServer({
     },
     onError: (error) => console.warn('[od] collab publish watcher error:', error),
   });
-  collabPublishWatcher.start();
   const sharedProjectPullProfiling =
     sharedProjectPullProfileEnabled(process.env);
   const verifyProjectWorkspaceContextForRequest = async (
@@ -5117,6 +4725,10 @@ export async function startServer({
     projectId: string,
   ) => {
     const binding = getWorkspaceProjectByProjectId(db, projectId);
+    if (projectHasUnavailableTeamBinding(projectId)) {
+      return { ok: false as const, status: 403 as const, code: 'WORKSPACE_UNAVAILABLE',
+        message: 'Team projects are unavailable because Cloud support has been removed. Stored data has been preserved.' };
+    }
     if (revokedTeamProjectMirrors.has(projectId)) {
       return {
         ok: false as const,
@@ -5667,434 +5279,14 @@ export async function startServer({
   // Same two-layer split as the catalog above: the persistent snapshot answers
   // the cold read (digest token unchanged -> serve the roster off disk), the SWR
   // above it answers the burst of consumers one navigation mounts at once.
-  const teamMembersCache = collabCloud
-    ? (() => {
-        const snapshots = new Map<
-          string,
-          ReturnType<typeof createPersistentSyncCache<CollabCloudMemberDirectoryEntry[]>>
-        >();
-        const lists = new Map<
-          string,
-          ReturnType<typeof createSwrCache<CollabCloudMemberDirectoryEntry[]>>
-        >();
-        const read = (
-          context: WorkspaceCollabContext,
-        ): Promise<CollabCloudMemberDirectoryEntry[]> => {
-          const scope = teamProjectsDisplayScopeFromContext(context);
-          if (!scope) return Promise.resolve([]);
-          const key = teamProjectsDisplayScopeKey(scope);
-          let snapshot = snapshots.get(key);
-          if (!snapshot) {
-            const capturedContext = { ...context };
-            snapshot = createPersistentSyncCache({
-              face: 'members',
-              fetch: () => collabCloud.listMembers(capturedContext),
-              readDigest: createSyncDigestReader({
-                env: process.env,
-                getWorkspaceId: () => scope.workspaceId,
-                onError: (error) =>
-                  console.warn('[od] team members digest error:', error),
-              }),
-              store: collabSyncSnapshots,
-              parseSnapshot: parseMemberDirectorySnapshot,
-              onError: (error) =>
-                console.warn('[od] team members snapshot cache error:', error),
-            });
-            snapshots.set(key, snapshot);
-          }
-          let list = lists.get(key);
-          if (!list) {
-            const capturedSnapshot = snapshot;
-            list = createSwrCache(
-              () => capturedSnapshot(),
-              () => key,
-              3000,
-            );
-            lists.set(key, list);
-          }
-          return list();
-        };
-        return Object.assign(read, {
-          invalidate(context?: WorkspaceCollabContext) {
-            const scope = context
-              ? teamProjectsDisplayScopeFromContext(context)
-              : null;
-            if (scope) {
-              const key = teamProjectsDisplayScopeKey(scope);
-              lists.get(key)?.invalidate();
-              lists.delete(key);
-              snapshots.get(key)?.invalidate();
-              snapshots.delete(key);
-              return;
-            }
-            for (const list of lists.values()) list.invalidate();
-            for (const snapshot of snapshots.values()) snapshot.invalidate();
-            lists.clear();
-            snapshots.clear();
-          },
-        });
-      })()
-    : null;
-  const teamMembersForDisplay = async (
-    context: WorkspaceCollabContext | null,
-  ): Promise<CollabCloudMemberDirectoryEntry[]> => {
-    if (!teamMembersCache) return [];
-    return context ? teamMembersCache(context) : [];
-  };
-  const accountBillingSummary = createAccountBillingSummaryCache({
-    identity: () => velaWorkspaceDirectoryIdentity(
-      readVelaControlApiContext,
-      configuredAmrEnv(),
-    ),
-    fetch: () => fetchVelaBillingSummary({ configuredEnv: configuredAmrEnv() }),
-  });
-  const workspaceBillingRuntime = createWorkspaceBillingRuntimeCoordinator({
-    fetchProjection: async ({ workspaceId }) => {
-      try {
-        // The Vela CLI sends only the Bearer credential plus workspace-id
-        // candidate. Vela re-derives the member principal server-side, and
-        // the runtime validates the returned member id before accepting it.
-        return await fetchVelaWorkspaceBillingProjection(workspaceId, {
-          configuredEnv: configuredAmrEnv(),
-        });
-      } catch (error) {
-        if (isVelaWorkspaceAuthorizationError(error)) {
-          throw new WorkspaceBillingAccessRevokedError();
-        }
-        throw error;
-      }
-    },
-    onAccessRevoked: ({ workspaceId }) => {
-      workspaceDirectoryAuthority.invalidate('auth_reject');
-      workspaceExactAuthorityCache.invalidate(workspaceId);
-      workspaceExactContextCache.invalidate(workspaceId, 'auth_reject');
-    },
-    onStateChange: (state) => {
-      // The request that created a runtime already receives this state in its
-      // response. Background catch-up/retry/poll completion needs a thin nudge
-      // so old and new web clients re-read the same explicit route.
-      if (!shouldEmitWorkspaceBillingRuntimeNudge(state)) return;
-      emitWorkspaceEvent(state.workspaceId, {
-        type: 'billing-changed',
-        workspaceId: state.workspaceId,
-        revision: `runtime:${state.revision}`,
-        at: Date.now(),
-      });
-    },
-    onInterestSetChange: (interests) => {
-      workspaceHubSubscriptions?.setBillingInterests(
-        interests.map((interest) => interest.workspaceId),
-      );
-    },
-    onPollSuppressed: () => recordWorkspaceAuthoritySuppressedRequest({
-      mode: workspaceAuthorityCacheMode,
-      source: 'billing',
-      reason: 'safety_floor',
-    }),
-  });
-  /**
-   * Warm or revalidate both digest faces for one exact directory-verified
-   * Workspace/member identity. A UI switch uses the lightweight warm path;
-   * reconnect/source-gap recovery invalidates only that scope first so a
-   * still-fresh SWR entry cannot hide changes that happened while disconnected.
-   */
-  const refreshWorkspaceDigestFaces = async (
-    workspaceId: string,
-    options: { revalidate?: boolean; freshAuthority?: boolean } = {},
-  ): Promise<void> => {
-    if (!workspaceId) return;
-    const context =
-      await resolveAuthoritativeTeamWorkspaceContext(workspaceId, {
-        fresh: options.freshAuthority,
-      });
-    if (options.revalidate) {
-      const scope = teamProjectsDisplayScopeFromContext(context);
-      if (scope) teamProjectsDisplayCache.invalidate(scope);
-      teamMembersCache?.invalidate(context ?? undefined);
-    }
-    await Promise.all([
-      teamProjectsForDisplay(context),
-      teamMembersForDisplay(context),
-    ]);
-  };
-  const warmWorkspaceDigestFaces = (workspaceId: string) => {
-    if (!workspaceId) return;
-    void refreshWorkspaceDigestFaces(workspaceId, {
-      freshAuthority: true,
-    }).catch(() => undefined);
-  };
   let workspaceAnalyticsService: AnalyticsService | null = null;
-  registerCollabContextRoutes(app, {
-    workspaceContext: collab.workspaceContext,
-    configuredEnv: configuredAmrEnv,
-    verifyWorkspaceReadAuthority: verifyWorkspaceContextReadAuthority,
-    readCachedWorkspaceAuthority: cachedWorkspaceContextForRequest,
-    activeWorkspace,
-    // A tab-local selection leaves this exact Workspace's scoped caches cold.
-    // Warm only the directory-verified id announced by that request; the
-    // daemon-global legacy pin is neither read nor updated.
-    onWorkspaceSwitched: (workspaceId) => warmWorkspaceDigestFaces(workspaceId),
-    fetchBilling: accountBillingSummary.read,
-    billingRuntime: workspaceBillingRuntime,
-    quotaRealtimeHealthy: (workspaceId) => quotaHealthyConnections.has(
-      directoryConnectionKey(workspaceId, currentWorkspaceDirectoryIdentity()),
-    ),
-    fetchBillingCatalog: (workspaceId) => fetchVelaBillingCatalog(workspaceId, {
-      configuredEnv: configuredAmrEnv(),
-    }),
-    startCheckout: (input) => fetchBillingCheckoutUrl({
-      ...input,
-      configuredEnv: configuredAmrEnv(),
-    }),
-    // Same directory read the route would have made on its own, wrapped so every
-    // workspace type it carries is memoized for the team-share invariant.
-    listWorkspaceDirectory,
-    fetchWorkspaceDirectory: fetchWorkspaceDirectoryForAccountSurface,
-    refreshWorkspaceDirectoryAfterMutation:
-      workspaceDirectoryAuthority.refreshAfterMutation,
-    // Reuse the shared team-projects lister (which holds the shared vela-cli
-    // catalog adapter). Without this the endpoint built a fresh adapter per
-    // request and re-ran the one-off `vela team-projects --help` capability
-    // probe — an extra CLI spawn (and, on the current CLI, a blocking analytics
-    // POST) on every workspace projects load.
-    //
-    // Use the DISPLAY cache, not the uncached exact lookup. This is the read
-    // behind the Home team-project grid and the deep-link "is this shared to my
-    // team?" check, and `teamProjectsDisplayCache` was built for exactly this
-    // route — see its doc comment, which names it. Wired to the uncached lister
-    // instead, every call spawned `vela team-projects list`: measured at ~1.1s
-    // per request against a live workspace, cold and warm alike, on a path the
-    // UI hits on every launch and every deep link.
-    //
-    // These routes are display reads: the Home team-project grid and the
-    // deep-link "is this shared to my team?" check. Nothing here gates data
-    // access — the pull gate and the comment/presence relays reach
-    // `teamProjectsLister` on their own and still observe an unshare
-    // immediately.
-    //
-    // Display freshness does not rest on the 3s TTL alone: share, unshare and
-    // workspace-change invalidate this cache explicitly, via
-    // `invalidateTeamProjectCatalog` (collab-sync and the project routes) and
-    // the per-scope invalidations beside the cache itself.
-    //
-    // This was the last caller of the uncached `teamProjectsForRequest`
-    // wrapper, so that helper is removed with it rather than left orphaned.
-    listTeamProjects: teamProjectsForDisplay,
-    // Expose the collab-cloud member directory so the web client can resolve
-    // comment authors + owner names to a name + role.
-    ...(teamMembersCache ? { listMembers: teamMembersForDisplay } : {}),
-    // Collab realtime hop-2: the workspace-scoped invalidation SSE. The route
-    // registers/deregisters its sink here; the poller below feeds them.
-    createSseResponse,
-    workspaceEventSinks,
-    retainWorkspaceEventInterest: (workspaceId) =>
-      workspaceHubSubscriptions?.retainEventInterest(workspaceId)
-      ?? (() => undefined),
-    observeWorkspace: async (req, context, properties) => {
-      const service = workspaceAnalyticsService;
-      const analyticsContext = readAnalyticsContext(req);
-      if (!service || !analyticsContext) return;
-      await service.identifyGroup({
-        context: analyticsContext,
-        groupType: 'workspace',
-        groupKey: context.workspaceId,
-        properties: properties ?? {},
-      });
-    },
-  });
-  // Reconnect/source-gap recovery belongs to the Workspace whose upstream
-  // subscription observed the gap. Keep one signature state per Workspace so
-  // recovering subscribed A while B is the UI selection neither compares A
-  // against B's digest nor drops A's refresh.
-  const scopedWorkspaceInvalidationPollers = new Map<
-    string,
-    ReturnType<typeof createWorkspaceInvalidationPoller>
-  >();
-  const workspaceInvalidationPollerFor = (workspaceIdInput: string) => {
-    const workspaceId = workspaceIdInput.trim();
-    let poller = scopedWorkspaceInvalidationPollers.get(workspaceId);
-    if (!poller) {
-      poller = createWorkspaceInvalidationPoller({
-        getWorkspaceContext: async () => {
-          const context =
-            await resolveAuthoritativeTeamWorkspaceContext(workspaceId);
-          workspaceTypes.learn(context);
-          return context;
-        },
-        listTeamProjects: (context) => teamProjectsForDisplay(context),
-        listMembers: (context) => teamMembersForDisplay(context),
-        emit: (payload, context) => {
-          handlePolledWorkspaceInvalidation(
-            payload,
-            (scopedPayload) =>
-              emitWorkspaceEvent(workspaceId, scopedPayload),
-            () => reconcileWorkspaceProjectsFromRemote(
-              activeTeamWorkspaceIdentity(context)?.workspaceId ?? workspaceId,
-            ),
-          );
-        },
-        onTeamProjectsObserved: ({ workspaceId: observedWorkspaceId }) =>
-          proactiveContentPull.advanceRecoveryFloor(observedWorkspaceId),
-        onPollSuppressed: () => recordWorkspaceAuthoritySuppressedRequest({
-          mode: workspaceAuthorityCacheMode,
-          source: 'directory',
-          reason: 'safety_floor',
-        }),
-        onError: (error) =>
-          console.warn(
-            `[od] workspace ${workspaceId} invalidation recovery error:`,
-            error,
-          ),
-      });
-      scopedWorkspaceInvalidationPollers.set(workspaceId, poller);
-    }
-    return poller;
-  };
-  const pollWorkspaceInvalidationForWorkspace = (
-    workspaceIdInput: string,
-  ): Promise<void> => {
-    const workspaceId = workspaceIdInput.trim();
-    if (!workspaceId) return Promise.resolve();
-    return workspaceInvalidationPollerFor(workspaceId).pollOnce();
-  };
-  const workspaceAuthorityHealth = createWorkspaceAuthorityHealthCoordinator({
-    mode: workspaceAuthorityCacheMode,
-    catchUp: async (workspaceId) => {
-      // A healthy transport is not enough to suppress legacy polling. First
-      // cross a fresh directory boundary and close the exact Workspace gap.
-      workspaceDirectoryAuthority.invalidate('catch_up');
-      workspaceExactAuthorityCache.invalidate(workspaceId);
-      workspaceExactContextCache.invalidate(workspaceId, 'catch_up');
-      const directory = await fetchFreshBackgroundWorkspaceDirectory();
-      const membership = directory.ok
-        ? directory.items.find((item) =>
-            item.workspaceId === workspaceId
-            && item.memberStatus === 'active'
-            && item.lifecycleState !== 'deleted')
-        : undefined;
-      if (!membership) {
-        throw new Error('exact workspace directory catch-up was unavailable');
-      }
-      const exactContext = await workspaceExactContextCache.refresh(
-        { workspaceId },
-        'catch_up',
-      );
-      if (!exactContext || exactContext.workspaceId !== workspaceId) {
-        throw new Error('exact workspace catch-up was unavailable');
-      }
-      await refreshWorkspaceDigestFaces(workspaceId, {
-        revalidate: true,
-      });
-      await pollWorkspaceInvalidationForWorkspace(workspaceId);
-      workspaceBillingRuntime.reconnect(workspaceId);
-    },
-    setDirectoryPollingHealthy: (workspaceId, healthy) =>
-      workspaceInvalidationPollerFor(workspaceId).setRealtimeHealthy(healthy),
-    setBillingPollingHealthy: (workspaceId, healthy) =>
-      workspaceBillingRuntime.setRealtimeHealthy(workspaceId, healthy),
-    setContextCachingHealthy: (workspaceId, healthy) => {
-      workspaceExactAuthorityCache.setRealtimeHealthy(workspaceId, healthy);
-      workspaceExactContextCache.setRealtimeHealthy(workspaceId, healthy);
-    },
-    onDecision: (input) => recordWorkspaceAuthorityDecision({
-      mode: workspaceAuthorityCacheMode,
-      ...input,
-    }),
-    onError: (error) => {
-      console.warn(
-        '[od] workspace authority catch-up failed; retaining legacy polling:',
-        String(error),
-      );
-    },
-  });
+  registerCollabContextRoutes(app, { workspaceContext });
   // Collab realtime hop-1: cloud hub → daemon push channel. The hub emits the
   // same thin invalidation signals the web would otherwise discover by
   // polling. Every upstream stream comes from an explicit leased Workspace
   // interest; reconnect/source-gap handlers run one exact-scope poller cycle
   // to close the disconnect gap.
   const dirtyCommentProjects = new Set<string>();
-  // Thin events are invalidation hints, so repeated events for one resource
-  // may share refresh work. Authorization revocation and project content stay
-  // outside this coordinator: both have immediate, domain-specific handling.
-  const hubEventRefreshes = createEventRefreshCoordinator({
-    onError: (error, key) => {
-      console.warn(`[od] hub event refresh failed key=${key}:`, String(error));
-    },
-  });
-  const workspaceDirectoryRefreshes = createEventRefreshCoordinator({
-    // Directory events are account-wide and can be duplicated over several
-    // Workspace streams. Preserve an immediate leading refresh plus the final
-    // state while bounding a sustained storm to one upstream read per second.
-    minIntervalMs: 1_000,
-    onError: (error) => {
-      console.warn('[od] workspace directory event refresh failed:', String(error));
-    },
-  });
-  const directoryConnectionIdentities = new Map<string, string>();
-  const directoryHealthyConnections = new Set<string>();
-  const directoryConnectionKey = (
-    workspaceId: string,
-    identityKey: string,
-  ) => `${identityKey}\0${workspaceId}`;
-  const currentWorkspaceDirectoryIdentity = () =>
-    velaWorkspaceDirectoryIdentity(
-      readVelaControlApiContext,
-      configuredAmrEnv(),
-    );
-  const setQuotaRealtimeHealthy = (workspaceId: string, identityKey: string, healthy: boolean) => {
-    const key = directoryConnectionKey(workspaceId, identityKey);
-    const previous = quotaHealthyConnections.has(key);
-    if (healthy) quotaHealthyConnections.add(key);
-    else quotaHealthyConnections.delete(key);
-    if (previous !== healthy && identityKey === currentWorkspaceDirectoryIdentity()) {
-      emitWorkspaceEvent(workspaceId, {
-        type: 'billing-changed',
-        at: Date.now(),
-      });
-    }
-  };
-  const syncWorkspaceDirectoryRealtimeHealth = (): void => {
-    const currentIdentity = currentWorkspaceDirectoryIdentity();
-    workspaceDirectoryAuthority.setRealtimeHealthy(
-      [...directoryHealthyConnections].some((key) =>
-        key.startsWith(`${currentIdentity}\0`)),
-    );
-  };
-  const requestWorkspaceDirectoryRefresh = (
-    reason: 'event_dirty' | 'auth_reject' | 'catch_up',
-    token?: string,
-    expectedIdentity = currentWorkspaceDirectoryIdentity(),
-  ): void => {
-    workspaceDirectoryRefreshes.request(
-      'workspace-directory',
-      async () => {
-        if (currentWorkspaceDirectoryIdentity() !== expectedIdentity) return;
-        workspaceDirectoryAuthority.invalidate(reason);
-        const directory = await fetchFreshBackgroundWorkspaceDirectory();
-        if (currentWorkspaceDirectoryIdentity() !== expectedIdentity) return;
-        if (!directory.ok) return;
-        emitWorkspaceDirectoryChanged();
-      },
-      token,
-    );
-  };
-  const restoreDirtyCommentProject = (projectId: string) => {
-    dirtyCommentProjects.add(projectId);
-    // The upstream hub event has already proved that this project changed.
-    // If the daemon's eager pull lost a transient race (for example a failed
-    // Vela CLI/TLS attempt), wake the open view once so its exact-scoped list
-    // read can redeem the retained dirty mark immediately. That read awaits
-    // its pull before serializing comments; a failed read deliberately does
-    // not signal again, avoiding a retry storm while the 30s poll remains the
-    // recovery floor.
-    if (activeProjectEventSinks.has(projectId)) {
-      emitProjectEvent(projectId, {
-        type: 'comment-changed',
-        projectId,
-        at: Date.now(),
-      });
-    }
-  };
   const emitTeamProjectsChanged = createTeamProjectsChangeEmitter({
     invalidateWorkspace: (workspaceId) => {
       teamProjectsDisplayCache.invalidateWorkspace(workspaceId);
@@ -6106,609 +5298,6 @@ export async function startServer({
       await teamProjectsForDisplay(context);
     },
   });
-  const startWorkspaceHubSubscriber = (subscribedWorkspaceId: string) =>
-    startHubEventsSubscriber({
-    resolveEndpoint: async () => {
-      // Same gating as the workspace-context provider: only the vela source
-      // has a hub to subscribe to (dev daemons must not dial production).
-      if (process.env.OD_WORKSPACE_CONTEXT_SOURCE?.trim() !== 'vela') return null;
-      return resolveVelaWorkspaceHubEventsEndpoint(
-        subscribedWorkspaceId,
-        process.env,
-        configuredAmrEnv(),
-      );
-    },
-    onStateChange: (state, connection) => {
-      if (state === 'disconnected') {
-        authoritativePresenceWorkspaces.delete(subscribedWorkspaceId);
-        const identityKey =
-          connection.identityKey
-          ?? directoryConnectionIdentities.get(subscribedWorkspaceId);
-        if (
-          !identityKey
-          || directoryConnectionIdentities.get(subscribedWorkspaceId)
-            === identityKey
-        ) {
-          directoryConnectionIdentities.delete(subscribedWorkspaceId);
-        }
-        if (identityKey) {
-          setQuotaRealtimeHealthy(subscribedWorkspaceId, identityKey, false);
-          directoryHealthyConnections.delete(
-            directoryConnectionKey(subscribedWorkspaceId, identityKey),
-          );
-        }
-        syncWorkspaceDirectoryRealtimeHealth();
-      }
-      console.info(`[od] hub events channel ${state}`);
-    },
-    onAuthorityHealthChange: ({
-      workspaceId,
-      identityKey,
-      healthy,
-      capabilities,
-      listenerStatus,
-    }) => {
-      if (
-        identityKey
-        && identityKey !== currentWorkspaceDirectoryIdentity()
-      ) {
-        return;
-      }
-      const exactWorkspaceId = workspaceId ?? subscribedWorkspaceId;
-      const exactIdentityKey =
-        identityKey
-        ?? directoryConnectionIdentities.get(exactWorkspaceId)
-        ?? currentWorkspaceDirectoryIdentity();
-      if (capabilities.includes(WORKSPACE_DIRECTORY_EVENTS_CAPABILITY)) {
-        directoryConnectionIdentities.set(exactWorkspaceId, exactIdentityKey);
-      } else {
-        directoryConnectionIdentities.delete(exactWorkspaceId);
-      }
-      const connectionKey = directoryConnectionKey(
-        exactWorkspaceId,
-        exactIdentityKey,
-      );
-      setQuotaRealtimeHealthy(
-        exactWorkspaceId,
-        exactIdentityKey,
-        healthy && capabilities.includes(CODING_PLAN_USAGE_EVENTS_CAPABILITY),
-      );
-      if (
-        healthy
-        && capabilities.includes(WORKSPACE_DIRECTORY_EVENTS_CAPABILITY)
-      ) {
-        directoryHealthyConnections.add(connectionKey);
-      } else {
-        directoryHealthyConnections.delete(connectionKey);
-      }
-      syncWorkspaceDirectoryRealtimeHealth();
-      recordWorkspaceAuthorityRealtimeTransition({
-        mode: workspaceAuthorityCacheMode,
-        healthy,
-        memberEvents: capabilities.includes('workspace-member-events-v1'),
-        listenerStatus: capabilities.includes(
-          'workspace-event-listener-status-v1',
-        ),
-        sourceGap: listenerStatus?.sourceGap === true,
-      });
-      void workspaceAuthorityHealth.update({
-        workspaceId: exactWorkspaceId,
-        healthy,
-      });
-    },
-    onConnect: ({ reconnect, workspaceId, identityKey, capabilities }) => {
-      if (
-        identityKey
-        && identityKey !== currentWorkspaceDirectoryIdentity()
-      ) {
-        return;
-      }
-      const verifiedWorkspaceId = workspaceId ?? subscribedWorkspaceId;
-      const verifiedIdentityKey =
-        identityKey ?? currentWorkspaceDirectoryIdentity();
-      if (capabilities.includes(AUTHORITATIVE_PROJECT_PRESENCE_CAPABILITY)) {
-        authoritativePresenceWorkspaces.add(verifiedWorkspaceId);
-      } else {
-        authoritativePresenceWorkspaces.delete(verifiedWorkspaceId);
-      }
-      if (capabilities.includes(WORKSPACE_DIRECTORY_EVENTS_CAPABILITY)) {
-        const hadDirectoryCarrier = [
-          ...directoryConnectionIdentities.values(),
-        ].includes(verifiedIdentityKey);
-        directoryConnectionIdentities.set(
-          verifiedWorkspaceId,
-          verifiedIdentityKey,
-        );
-        // One account signal is fanned to every capable stream. Only the first
-        // live carrier needs a snapshot boundary; additional Workspace streams
-        // would produce the same GET and are intentionally free.
-        if (!hadDirectoryCarrier) {
-          requestWorkspaceDirectoryRefresh(
-            'catch_up',
-            undefined,
-            verifiedIdentityKey,
-          );
-        }
-      }
-      console.info(
-        `[od] hub events workspace verified workspaceId=${workspaceId ?? 'unknown'} reconnect=${reconnect}`,
-      );
-      handleHubVerifiedConnection(
-        verifiedWorkspaceId,
-        (exactWorkspaceId) =>
-          proactiveContentPull.catchUpPublishedHeads(exactWorkspaceId),
-        (exactWorkspaceId) => {
-          // A reconnect is closed exactly once by onReconnect below. Keep
-          // this initial-connect hook from scheduling a duplicate catch-up.
-          if (!reconnect) workspaceBillingRuntime.reconnect(exactWorkspaceId);
-        },
-      );
-    },
-    onDrop: ({ reason, eventName, expectedWorkspaceId, actualWorkspaceId }) => {
-      console.warn(
-        `[od] hub event dropped reason=${reason} event=${eventName} ` +
-          `expectedWorkspaceId=${expectedWorkspaceId ?? 'unknown'} ` +
-          `actualWorkspaceId=${actualWorkspaceId ?? 'unknown'}`,
-      );
-    },
-    onAccessRevoked: ({ workspaceId, identityKey, reason }) => {
-      if (
-        identityKey
-        && identityKey !== currentWorkspaceDirectoryIdentity()
-      ) {
-        return;
-      }
-      const revocationReceivedAt = performance.now();
-      const exactWorkspaceId = workspaceId ?? subscribedWorkspaceId;
-      console.info(
-        `[od] hub workspace access revoked workspaceId=${exactWorkspaceId} reason=${reason ?? 'unknown'}`,
-      );
-      handleHubWorkspaceAccessRevoked(
-        exactWorkspaceId,
-        () => pollWorkspaceInvalidationForWorkspace(exactWorkspaceId),
-        () => {
-          workspaceDirectoryAuthority.invalidate('auth_reject');
-          workspaceExactAuthorityCache.invalidate(exactWorkspaceId);
-          workspaceExactContextCache.invalidate(
-            exactWorkspaceId,
-            'auth_reject',
-          );
-        },
-        (revokedWorkspaceId) =>
-          workspaceBillingRuntime.revokeWorkspace(
-            revokedWorkspaceId,
-            'vela-access-revoked',
-          ),
-      );
-      recordWorkspaceAuthorityRevocationClear(
-        workspaceAuthorityCacheMode,
-        performance.now() - revocationReceivedAt,
-      );
-      requestWorkspaceDirectoryRefresh(
-        'auth_reject',
-        `revoked:${exactWorkspaceId}`,
-      );
-    },
-    onDirectoryEvent: (event, connection) => {
-      if (
-        connection.identityKey
-        && connection.identityKey !== currentWorkspaceDirectoryIdentity()
-      ) {
-        return;
-      }
-      requestWorkspaceDirectoryRefresh(
-        'event_dirty',
-        event.at
-          ? [event.type, event.workspaceId, event.change, event.at].join(':')
-          : undefined,
-        connection.identityKey ?? currentWorkspaceDirectoryIdentity(),
-      );
-    },
-    onEvent: (event, connection) => {
-      if (
-        connection.identityKey
-        && connection.identityKey !== currentWorkspaceDirectoryIdentity()
-      ) {
-        return;
-      }
-      const eventWorkspaceId =
-        event.workspaceId ?? subscribedWorkspaceId;
-      console.info(
-        `[od] hub workspace event received type=${event.type} ` +
-          `workspaceId=${eventWorkspaceId} ` +
-          `projectId=${event.projectId ?? 'unknown'} version=${event.version ?? 'unknown'}`,
-      );
-      switch (event.type) {
-        case 'team-projects-changed': {
-          // Catalog changed (share/unshare). Refresh the display cache and
-          // signal the web, AND run a real `workspace_projects`
-          // reconciliation pass — see `collab/workspace-projects-reconciler.ts`.
-          hubEventRefreshes.request(
-            `team-projects:${eventWorkspaceId}`,
-            () => handleHubTeamProjectsChanged(
-              () => emitTeamProjectsChanged(
-                eventWorkspaceId,
-                {
-                  ...(event.projectId ? { projectId: event.projectId } : {}),
-                  kind: 'catalog',
-                },
-              ),
-              () => reconcileWorkspaceProjectsFromRemote(
-                eventWorkspaceId,
-              ),
-            ),
-            hubEventRefreshToken(event),
-          );
-          // Hub catalog writes carry the affected project id on current Vela
-          // deployments, so keep the latency-sensitive recovery targeted. An
-          // older/unscoped event still refreshes and reconciles the catalog;
-          // the poller's throttled 30s bounded full recovery remains its
-          // safety floor.
-          if (event.workspaceId && event.projectId) {
-            void proactiveContentPull.materializeMissingProjects(
-              event.workspaceId,
-              event.projectId,
-            );
-          }
-          break;
-        }
-        case 'project-metadata-changed': {
-          const targetProjectId = event.projectId?.trim() ?? '';
-          const emitMetadataChanged = () => {
-            emitTeamProjectsChanged(
-              eventWorkspaceId,
-              {
-                ...(event.projectId ? { projectId: event.projectId } : {}),
-                kind: 'metadata',
-              },
-            );
-            if (event.projectId) {
-              emitProjectEvent(event.projectId, {
-                type: 'project-metadata-changed',
-                projectId: event.projectId,
-                at: Date.now(),
-              });
-            }
-          };
-          hubEventRefreshes.request(
-            `project-metadata:${eventWorkspaceId}:${targetProjectId || '*'}`,
-            () => handleHubProjectMetadataChanged(
-              emitMetadataChanged,
-              targetProjectId
-                ? () => reconcileWorkspaceProjectMetadataFromRemote(
-                    eventWorkspaceId,
-                    targetProjectId,
-                  )
-                : async () => false,
-            ),
-            hubEventRefreshToken(event),
-          );
-          break;
-        }
-        case 'comment-changed': {
-          const projectId = event.projectId;
-          if (!projectId) break;
-          if (activeProjectEventSinks.has(projectId)) {
-            // Project is open here — pull IT now instead of waiting for the
-            // next poll tick; the merge emits `comment-changed` to the web.
-            // A consumed dirty mark is only redeemed by a pull that actually
-            // ran; on a no-op/failed pull restore it so the next comment read
-            // retries instead of losing the event outright.
-            dirtyCommentProjects.delete(projectId);
-            void resolveBoundProjectWorkspaceContext(projectId)
-              .then((context) =>
-                context?.workspaceId === eventWorkspaceId
-                  ? collabCloud?.pullProject(projectId, context) ?? false
-                  : false,
-              )
-              .then((pulled) => {
-                if (!pulled) restoreDirtyCommentProject(projectId);
-              })
-              .catch(() => restoreDirtyCommentProject(projectId));
-          } else {
-            // Closed project: just mark dirty. The open-project path pulls
-            // immediately, and an unopened project costs zero requests.
-            dirtyCommentProjects.add(projectId);
-          }
-          break;
-        }
-        case 'presence-changed': {
-          if (event.projectId) {
-            const projectId = event.projectId;
-            markPresenceReadCacheStale(projectId, eventWorkspaceId);
-            void resolveBoundProjectWorkspaceContext(projectId)
-              .then((context) => {
-                if (context?.workspaceId !== eventWorkspaceId) return;
-                emitProjectEvent(projectId, {
-                  type: 'presence-changed',
-                  projectId,
-                  at: Date.now(),
-                });
-              })
-              .catch(() => undefined);
-          }
-          break;
-        }
-        case 'project-content-changed': {
-          // A teammate published a new version. Pull it daemon-side NOW so
-          // the local mirror stays fresh even with no tab open; after the
-          // pull lands, the existing post-pull signals (`file-changed` +
-          // `project-metadata-changed`) reach any open view over the same
-          // SSE path a web-triggered pull uses. All ownership/binding guards
-          // live in collab/proactive-content-pull.ts — an owner daemon
-          // receiving its own publish echo never pulls over its working
-          // tree, and failures degrade silently to the web's status polling.
-          if (sharedProjectPullProfiling) {
-            const profileReceivedAtMs = Date.now();
-            emitSharedProjectPullTiming({
-              phase: 'event-received',
-              projectId: event.projectId ?? 'unknown',
-              ...(event.version != null ? { version: event.version } : {}),
-              receivedAtMs: profileReceivedAtMs,
-              atMs: profileReceivedAtMs,
-            });
-            void proactiveContentPull.handleContentChanged({
-              ...event,
-              workspaceId: eventWorkspaceId,
-              profileReceivedAtMs,
-            });
-          } else {
-            void proactiveContentPull.handleContentChanged({
-              ...event,
-              workspaceId: eventWorkspaceId,
-            });
-          }
-          // Keep the thin nudge for an OPEN project view so its status/banner
-          // refreshes immediately rather than on the next ~5s poll tick.
-          if (event.projectId && activeProjectEventSinks.has(event.projectId)) {
-            emitProjectEvent(event.projectId, {
-              type: 'project-metadata-changed',
-              projectId: event.projectId,
-              at: Date.now(),
-            });
-          }
-          break;
-        }
-        case 'workspace-context-changed':
-          // Cache invalidation is an authorization boundary and must happen for
-          // every event in the caller's turn. Only the downstream snapshot work
-          // is coalesced below.
-          workspaceDirectoryAuthority.invalidate('event_dirty');
-          workspaceExactAuthorityCache.invalidate(eventWorkspaceId);
-          workspaceExactContextCache.invalidate(
-            eventWorkspaceId,
-            'event_dirty',
-          );
-          hubEventRefreshes.request(
-            `workspace-context:${eventWorkspaceId}`,
-            () => handleHubWorkspaceContextChanged(
-              eventWorkspaceId,
-              () => pollWorkspaceInvalidationForWorkspace(eventWorkspaceId),
-            ),
-            hubEventRefreshToken(event),
-          );
-          // Revalidate exact membership before the next billing projection.
-          // A removed/rebound member must clear money and entitlement state,
-          // even when no billing-specific event accompanies the roster change.
-          workspaceBillingRuntime.reconnect(subscribedWorkspaceId);
-          break;
-        case 'workspace-members-changed':
-          workspaceDirectoryAuthority.invalidate('event_dirty');
-          workspaceExactAuthorityCache.invalidate(eventWorkspaceId);
-          workspaceExactContextCache.invalidate(
-            eventWorkspaceId,
-            'event_dirty',
-          );
-          hubEventRefreshes.request(
-            `workspace-context:${eventWorkspaceId}`,
-            () => handleHubWorkspaceContextChanged(
-              eventWorkspaceId,
-              () => pollWorkspaceInvalidationForWorkspace(eventWorkspaceId),
-            ),
-            hubEventRefreshToken(event),
-          );
-          // A role update or removal changes both authorization and the
-          // billing member projection even when no billing event accompanies
-          // the roster mutation.
-          workspaceBillingRuntime.reconnect(subscribedWorkspaceId);
-          break;
-        case 'coding-plan-usage-changed':
-          if (!event.workspaceId || !event.workspaceMemberId || !event.eventId) break;
-          emitWorkspaceEvent(event.workspaceId, {
-            type: 'coding-plan-usage-changed',
-            workspaceId: event.workspaceId,
-            workspaceMemberId: event.workspaceMemberId,
-            eventId: event.eventId,
-            at: Date.now(),
-          });
-          break;
-        case 'billing-changed':
-          accountBillingSummary.invalidate(accountBillingInvalidationToken(event));
-          workspaceBillingRuntime.invalidate({
-            domain: 'legacy',
-            ...(event.workspaceId ? { workspaceId: event.workspaceId } : {}),
-            ...(event.revision ? { revision: event.revision } : {}),
-            ...(event.revisionClock ? { revisionClock: event.revisionClock } : {}),
-            reason: 'vela-billing-changed',
-          });
-          hubEventRefreshes.request(
-            `billing-signal:${eventWorkspaceId}`,
-            () => {
-              emitWorkspaceEvent(eventWorkspaceId, {
-                type: 'billing-changed',
-                workspaceId: eventWorkspaceId,
-                ...(event.revision ? { revision: event.revision } : {}),
-                at: Date.now(),
-              });
-            },
-            hubEventRefreshToken(event),
-          );
-          break;
-        case 'billing-subscription-changed':
-          if (!event.workspaceId) break;
-          accountBillingSummary.invalidate(accountBillingInvalidationToken(event));
-          workspaceBillingRuntime.invalidate({
-            domain: 'subscription',
-            workspaceId: event.workspaceId,
-            ...(event.revision ? { revision: event.revision } : {}),
-            ...(event.revisionClock ? { revisionClock: event.revisionClock } : {}),
-            reason: 'vela-billing-subscription-changed',
-          });
-          hubEventRefreshes.request(
-            `billing-signal:${event.workspaceId}`,
-            () => {
-              emitWorkspaceEvent(event.workspaceId!, {
-                type: 'billing-subscription-changed',
-                workspaceId: event.workspaceId!,
-                ...(event.revision ? { revision: event.revision } : {}),
-                at: Date.now(),
-              });
-            },
-            hubEventRefreshToken(event),
-          );
-          break;
-        case 'wallet-balance-changed':
-          if (!event.workspaceId || !event.workspaceMemberId) break;
-          accountBillingSummary.invalidate(accountBillingInvalidationToken(event));
-          workspaceBillingRuntime.invalidate({
-            domain: 'wallet',
-            workspaceId: event.workspaceId,
-            workspaceMemberId: event.workspaceMemberId,
-            ...(event.revision ? { revision: event.revision } : {}),
-            ...(event.revisionClock ? { revisionClock: event.revisionClock } : {}),
-            reason: 'vela-wallet-balance-changed',
-          });
-          hubEventRefreshes.request(
-            `billing-signal:${event.workspaceId}:${event.workspaceMemberId}`,
-            () => {
-              emitWorkspaceEvent(event.workspaceId!, {
-                type: 'wallet-balance-changed',
-                workspaceId: event.workspaceId!,
-                workspaceMemberId: event.workspaceMemberId!,
-                ...(event.revision ? { revision: event.revision } : {}),
-                at: Date.now(),
-              });
-            },
-            hubEventRefreshToken(event),
-          );
-          break;
-        case 'team-resources-changed': {
-          // Project publish/retract operations are Resource Hub mutations and
-          // therefore arrive on this generic event family. Projects have their
-          // own binding model and non-destructive mirror quarantine; the
-          // generic resource coordinator intentionally handles only design
-          // systems, plugins, and skills.
-          if (event.resourceKind === 'project') {
-            hubEventRefreshes.request(
-              `team-projects:${eventWorkspaceId}`,
-              () => handleHubTeamProjectsChanged(
-                () => emitTeamProjectsChanged(
-                  eventWorkspaceId,
-                  {
-                    ...(event.projectId ? { projectId: event.projectId } : {}),
-                    kind: 'catalog',
-                  },
-                ),
-                () => reconcileWorkspaceProjectsFromRemote(eventWorkspaceId),
-              ),
-              hubEventRefreshToken(event),
-            );
-            break;
-          }
-          // A design-system/plugin/skill resource was shared (moved the
-          // 'published' ref) or retracted (removed) on the resource hub.
-          // `resourceKind` routes to just that kind's reconciler instead of
-          // re-checking all of them on every event — see
-          // `reconcileTeamResourcesFromRemote` below (declared
-          // later in this function; referencing it here is safe because this
-          // callback only ever RUNS once an actual SSE event arrives, well
-          // after the rest of `startServer`'s synchronous setup — including
-          // that declaration — has completed).
-          hubEventRefreshes.request(
-            `team-resources:${eventWorkspaceId}:${event.resourceKind ?? '*'}`,
-            () => reconcileTeamResourcesFromRemote(
-              event.resourceKind,
-              eventWorkspaceId,
-              'push',
-              event.resourceId,
-            ),
-            hubEventRefreshToken(event),
-          );
-          break;
-        }
-      }
-    },
-    onReconnect: (connection) => {
-      if (
-        connection.identityKey
-        && connection.identityKey !== currentWorkspaceDirectoryIdentity()
-      ) {
-        return;
-      }
-      // Close the disconnect gap: one catch-up cycle over the same reads the
-      // pollers watch, plus a comment pull for open projects.
-      void refreshWorkspaceDigestFaces(
-        subscribedWorkspaceId,
-        { revalidate: true },
-      )
-        .then(() =>
-          pollWorkspaceInvalidationForWorkspace(subscribedWorkspaceId),
-        )
-        .catch(() => undefined);
-      void reconcileWorkspaceProjectsFromRemote(subscribedWorkspaceId)
-        .catch(() => undefined);
-      void proactiveContentPull.catchUpPublishedHeads(subscribedWorkspaceId)
-        .catch(() => undefined);
-      void collabCloud?.pollOnce().catch(() => undefined);
-      workspaceBillingRuntime.reconnect(subscribedWorkspaceId);
-      // Same catch-up principle for the design-system/plugin/skill resource
-      // reconciler: a missed 'team-resources-changed' push during the
-      // disconnect window is closed by one full re-check across every kind
-      // this daemon drives it for (no resourceKind => reconcile all).
-      void reconcileTeamResourcesFromRemote(undefined, subscribedWorkspaceId, 'catch-up')
-        .catch(() => undefined);
-    },
-    onSourceGap: ({ workspaceId, identityKey, listenerEpoch }) => {
-      if (
-        identityKey
-        && identityKey !== currentWorkspaceDirectoryIdentity()
-      ) {
-        return;
-      }
-      console.warn(
-        `[od] hub source gap detected listenerEpoch=${listenerEpoch} ` +
-          `workspaceId=${workspaceId ?? 'unknown'}`,
-      );
-      const exactWorkspaceId = workspaceId ?? subscribedWorkspaceId;
-      requestWorkspaceDirectoryRefresh(
-        'catch_up',
-        `source-gap:${listenerEpoch}`,
-        identityKey ?? currentWorkspaceDirectoryIdentity(),
-      );
-      void refreshWorkspaceDigestFaces(exactWorkspaceId, { revalidate: true })
-        .then(() => pollWorkspaceInvalidationForWorkspace(exactWorkspaceId))
-        .catch(() => undefined);
-      void reconcileWorkspaceProjectsFromRemote(exactWorkspaceId)
-        .catch(() => undefined);
-      void proactiveContentPull.catchUpPublishedHeads(exactWorkspaceId)
-        .catch(() => undefined);
-      workspaceBillingRuntime.reconnect(exactWorkspaceId);
-      void collabCloud?.pollOnce().catch(() => undefined);
-      void reconcileTeamResourcesFromRemote(undefined, exactWorkspaceId, 'catch-up')
-        .catch(() => undefined);
-    },
-    onError: (error) => {
-      console.warn('[od] hub events channel error (will reconnect):', String(error));
-    },
-  });
-  workspaceHubSubscriptions = createWorkspaceHubSubscriptionManager({
-    start: startWorkspaceHubSubscriber,
-  });
-  workspaceHubSubscriptions.setBillingInterests(
-    workspaceBillingRuntime.interestedKeys().map((interest) => interest.workspaceId),
-  );
-
-  registerTeamResourceRoutes(app, { teamResources: collab.teamResources });
 
   // Team resource sharing is request-scoped. The browser's explicit Workspace
   // headers choose a membership, then the signed-in account's authoritative
@@ -7746,83 +6335,6 @@ export async function startServer({
     onError: (error, resourceKind) =>
       console.warn(`[od] workspace-resources (${resourceKind}) refresh error:`, error),
   });
-  // `resourceKind` scopes the pass to just the kind the event was about;
-  // omitted (hub reconnect catch-up, the poll fallback) reconciles every
-  // kind this daemon drives it for.
-  const reconcileTeamResourcesFromRemote = async (
-    resourceKind?: string,
-    workspaceId?: string,
-    reason: WorkspaceTeamResourceRefreshReason = 'poll',
-    resourceId?: string,
-    rememberedLease?: RememberedTeamResourceScopeLease,
-  ): Promise<void> => {
-    const requestedWorkspaceId = workspaceId?.trim();
-    if (!requestedWorkspaceId) return;
-    // Background events carry only a Workspace id, not an HTTP request. Resolve
-    // that exact membership from the directory at execution time rather than
-    // relying on whichever resource request happened to run first in this
-    // process (or on the daemon's mutable active context).
-    const scope = await resolveTeamResourceScopeForWorkspaceId(requestedWorkspaceId);
-    if (!scope) return;
-    // The authority read above may finish after an offscreen compatibility
-    // lease expired or was LRU-evicted. Do not let that late completion keep
-    // prewarming the scope. Subscribed and persisted workspace polls do not
-    // carry this token and therefore retain their existing correctness floor.
-    if (
-      rememberedLease &&
-      !rememberedTeamResourceScopes.isLeaseCurrent(rememberedLease)
-    ) return;
-    const kinds = resourceKind
-      ? RECONCILED_TEAM_RESOURCE_KINDS.filter((kind) => kind === resourceKind)
-      : RECONCILED_TEAM_RESOURCE_KINDS;
-    if (kinds.length === 0) return;
-    // A Team listing has two SWR layers: the per-kind parsed/materialized
-    // response and the raw shared command underneath it. Drop both before the
-    // authoritative reconciliation pass so the next UI read cannot keep
-    // serving a pre-retraction outer response after the binding is tombstoned.
-    invalidateTeamResourceListingCaches({
-      ...(resourceKind ? { resourceKind } : {}),
-      scope,
-      providers: teamResourceListByKind,
-      invalidateSharedCommand: (exactWorkspaceId) =>
-        sharedTeamResourcesCommand.invalidate(exactWorkspaceId),
-    });
-    await teamResourceEventCoordinator.refresh({
-      workspaceId: requestedWorkspaceId,
-      scope,
-      ...(resourceKind ? { resourceKind } : {}),
-      ...(resourceId ? { resourceId } : {}),
-      reason,
-      ...(rememberedLease
-        ? {
-            isRefreshCurrent: () =>
-              rememberedTeamResourceScopes.isLeaseCurrent(rememberedLease),
-          }
-        : {}),
-    });
-  };
-  const persistentTeamResourceBackgroundWorkspaceIds = (): string[] => {
-    const ids = new Set<string>();
-    for (const workspaceId of workspaceHubSubscriptions?.activeWorkspaceIds() ?? []) {
-      if (workspaceId.trim()) ids.add(workspaceId.trim());
-    }
-    for (const share of listTeamWorkspaceProjectShares(db)) {
-      const workspaceId = String(share.workspaceId ?? '').trim();
-      if (workspaceId) ids.add(workspaceId);
-    }
-    for (const workspaceId of listTeamWorkspaceResourceWorkspaceIds(db)) {
-      if (workspaceId.trim()) ids.add(workspaceId.trim());
-    }
-    return [...ids];
-  };
-  const teamResourceBackgroundWorkspaceIds = (
-    rememberedLeases = rememberedTeamResourceScopes.activeWorkspaceLeases(),
-    persistentWorkspaceIds = persistentTeamResourceBackgroundWorkspaceIds(),
-  ): string[] => {
-    const ids = new Set(persistentWorkspaceIds);
-    for (const lease of rememberedLeases) ids.add(lease.workspaceId);
-    return [...ids];
-  };
   // Dedicated ~15s poll fallback — the "poll-as-floor" half of the same
   // architecture principle `workspaceInvalidationPoller` follows for
   // project/member/context signals (push accelerates delivery; the poll
@@ -7834,36 +6346,6 @@ export async function startServer({
   // resource set change" digest in Vela's `/api/v1/collab/sync-digest`, so
   // this re-reads on its own cadence. The coordinator derives a stable
   // id+version signature after materialization and suppresses unchanged emits.
-  const teamResourcesPollTimer = setInterval(() => {
-    const rememberedLeases = rememberedTeamResourceScopes.activeWorkspaceLeases();
-    const rememberedLeasesByWorkspace = new Map(
-      rememberedLeases.map((lease) => [lease.workspaceId, lease]),
-    );
-    const persistentWorkspaceIds = persistentTeamResourceBackgroundWorkspaceIds();
-    const persistentWorkspaceIdSet = new Set(persistentWorkspaceIds);
-    for (const workspaceId of teamResourceBackgroundWorkspaceIds(
-      rememberedLeases,
-      persistentWorkspaceIds,
-    )) {
-      const rememberedLease = persistentWorkspaceIdSet.has(workspaceId)
-        ? undefined
-        : rememberedLeasesByWorkspace.get(workspaceId);
-      void reconcileTeamResourcesFromRemote(
-        undefined,
-        workspaceId,
-        'poll',
-        undefined,
-        rememberedLease,
-      ).catch((error) =>
-        console.warn(
-          `[od] workspace ${workspaceId} resources poll error:`,
-          error,
-        ),
-       );
-    }
-  }, 15_000);
-  teamResourcesPollTimer.unref?.();
-
   registerMemoryRoutes(app, {
     http: { createSseResponse, requireLocalDaemonRequest },
     paths: { RUNTIME_DATA_DIR, PROJECT_ROOT, PROJECTS_DIR },
@@ -7994,8 +6476,9 @@ export async function startServer({
           : null;
         if (promptBudget) run.promptBudgetDiagnostics = promptBudget;
       },
-      onTerminal: createAmrTerminalReportFinalizer(amrTerminalReportOutbox),
       beforeFinish: (run, status, _code, _signal, terminalAt) => {
+        const guardFailed = claudeAttemptOutputSeals.get(run)?.() === false;
+        if (guardFailed) status = 'failed';
         if (run.deliverableSyntaxValidation?.metrics) {
           run.deliverableSyntaxValidation = {
             ...run.deliverableSyntaxValidation,
@@ -8017,6 +6500,7 @@ export async function startServer({
           // not let terminal reconciliation throw and prevent persistence of
           // that failure, and never attempt any live Skill reconstruction.
         }
+        if (guardFailed) return CLAUDE_OUTPUT_FAILURE_OVERRIDE;
       },
     }),
     analytics: analyticsService,
@@ -8057,6 +6541,26 @@ export async function startServer({
   const terminalService = createTerminalService();
   const browserSessionService = createBrowserSessionService();
   const browserControl = createBrowserCommandBroker();
+  const browserPerformance = new BrowserPerformanceService(new BrowserPerformanceReports(RUNTIME_DATA_DIR), browserControl, {
+    allowedOrigins: () => allowedBrowserPorts(resolvedPort).flatMap((sourcePort) =>
+      ['127.0.0.1', 'localhost', '[::1]'].map((sourceHost) => new URL(`http://${sourceHost}:${sourcePort}`).origin)),
+    getBinding: async (projectId) => {
+      const project = getProject(db, projectId);
+      if (!project || isRevokedProjectFileAccess(project)) throw new Error('Project source unavailable');
+      const metadata = JSON.stringify(project.metadata ?? null);
+      const root = await fs.promises.realpath(resolveProjectDir(PROJECTS_DIR, projectId, project.metadata));
+      const current = getProject(db, projectId);
+      if (!current || isRevokedProjectFileAccess(current) || JSON.stringify(current.metadata ?? null) !== metadata) {
+        throw new Error('Project source binding changed');
+      }
+      return createHash('sha256').update(JSON.stringify([root, metadata])).digest('hex');
+    },
+    resolveFile: async (projectId, relativePath) => {
+      const project = getProject(db, projectId);
+      if (!project || isRevokedProjectFileAccess(project)) throw new Error('Project source unavailable');
+      return resolveProjectFilePath(PROJECTS_DIR, projectId, relativePath, project.metadata);
+    },
+  });
   const edgeAnnotations = createEdgeAnnotationBroker();
 
   // Tracks runs whose finalized assistant message has already been forwarded
@@ -8151,7 +6655,6 @@ export async function startServer({
     db,
     recoverBeforeInterrupt: (state, states, now) => recoverPlanningIntentResolution(db, state, states, now),
     reportLangfuse: reportRunCompletedFromDaemon,
-    finalizeTerminalLocally: createAmrTerminalReportFinalizer(amrTerminalReportOutbox),
     taskObservationModeForRun: (runId) => taskObservationRollout.modeForRun(runId),
     taskObservationRepresentationForRun: (runId) =>
       taskObservationRollout.representationForRun(runId),
@@ -8245,26 +6748,8 @@ export async function startServer({
 
   app.get('/api/health', async (_req, res) => {
     const versionInfo = await readCurrentAppVersionInfo();
-    const {
-      pending,
-      delivered,
-      unsupported,
-      terminalFailed,
-      oldestPendingAgeMs,
-    } = amrTerminalReportOutbox.diagnostics();
     res.setHeader('Cache-Control', 'no-store');
-    res.json({
-      ok: true,
-      version: versionInfo.version,
-      amrTerminalReporter: {
-        status: 'active',
-        pending,
-        delivered,
-        unsupported,
-        terminalFailed,
-        oldestPendingAgeMs,
-      },
-    });
+    res.json({ ok: true, version: versionInfo.version });
   });
 
   app.get('/api/ready', async (_req, res) => {
@@ -8363,12 +6848,6 @@ export async function startServer({
   });
 
   // Detailed terminal-report activity is local diagnostics, not public health.
-  app.get(
-    '/api/diagnostics/amr-terminal-reports',
-    requireLocalDaemonRequest,
-    (_req, res) => res.json(amrTerminalReportOutbox.diagnostics()),
-  );
-
   // Gate the diagnostics export behind requireLocalDaemonRequest so it stays
   // unreachable when daemon binds to a non-loopback address (Tailscale,
   // 0.0.0.0, etc.). The bundle contains daemon/web/desktop logs, host
@@ -8424,16 +6903,19 @@ export async function startServer({
     stageProjectDirsForDelete,
     validateLinkedDirs,
   };
-  const authorizeProjectRequest = createAuthorizeProjectRequest({
+  const projectAuthorityDeps = {
     db,
     getWorkspaceProject,
     getWorkspaceProjectByProjectId,
+    isProjectUnavailable: (_db, projectId) => projectHasUnavailableTeamBinding(projectId),
     isProjectRevoked: (_db, projectId) =>
       revokedTeamProjectMirrors.has(projectId),
     isProjectUnmaterializedPlaceholder: (_db, projectId) =>
       projectIsUnmaterializedSharedPlaceholder(projectId),
-    sendApiError,
-  });
+  };
+  const authorizeProjectRequest = createAuthorizeProjectRequest({ ...projectAuthorityDeps, sendApiError });
+  const decideProjectRequest = createProjectRequestDecision(projectAuthorityDeps);
+  const decideProjectRequestSync = createSynchronousProjectRequestDecision(projectAuthorityDeps);
   // Legacy registrars still receive the historical bound mutation-gate shape,
   // but production delegates it to the same central authorizer as newer route
   // modules. This keeps placeholder stamps authoritative across Figma import,
@@ -8443,11 +6925,7 @@ export async function startServer({
     undefined,
     authorizeProjectRequest,
   );
-  const authorizeProjectToolRequest = async (
-    res,
-    projectId,
-    options,
-  ) => {
+  const projectToolRequestContext = (projectId: string) => {
     const binding = getWorkspaceProjectByProjectId(db, projectId);
     const localRequest = {
       query: {},
@@ -8462,6 +6940,14 @@ export async function startServer({
         return undefined;
       },
     };
+    return { binding, localRequest };
+  };
+  const authorizeProjectToolRequest = async (
+    res,
+    projectId,
+    options,
+  ) => {
+    const { binding, localRequest } = projectToolRequestContext(projectId);
     if (!await authorizeProjectRequest(localRequest, res, projectId, options)) return null;
     if (!binding?.workspaceId) return { workspace: null };
     return {
@@ -8660,7 +7146,202 @@ export async function startServer({
   };
 
   // External services
-  registerMcpRoutes(app, {
+  const activeContextStore: ActiveContextStore = { current: null };
+  const mcpHttpRegistry = createMcpToolRegistry({
+    log: (entry) => console.info('[mcp-http]', entry),
+  });
+  const mcpCredentialStore = createMcpCredentialStore({
+    filePath: path.join(RUNTIME_DATA_DIR, 'mcp-credentials.json'),
+  });
+  const mcpApprovalStore = createMcpApprovalStore();
+  const unsubscribeMcpApprovalRevocation = toolTokenRegistry.onTokenRevoked(
+    (runId) => mcpApprovalStore.invalidatePrincipal('run', runId),
+  );
+  const approvalTargetFingerprint = mcpApprovalStore.captureTarget.bind(mcpApprovalStore);
+  const resolveCurrentApprovalPrincipal = createApprovalPrincipalResolver({
+    toolTokenRegistry,
+    credentialStore: mcpCredentialStore,
+    getRun: (runId) => design.runs.get(runId),
+    projectExists: (projectId) => Boolean(getProject(db, projectId)),
+    getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+    decideProjectRequest: decideProjectRequestSync,
+  });
+  const approvalPrincipalIsCurrent = createApprovalViewPrincipalCheck({
+    credentialStore: mcpCredentialStore,
+    getRun: (runId) => design.runs.get(runId),
+  });
+  const authorizeApprovalView = (request, approval) => {
+    if (approval.principal.kind === 'local') {
+      if (approval.principal.id !== LOCAL_PERFORMANCE_PRINCIPAL_ID || !approval.nativeConfirmationRequired
+        || approval.operation !== 'browser_devtools') return false;
+    } else if ((approval.principal.kind !== 'run' && approval.principal.kind !== 'external') || !approvalPrincipalIsCurrent(approval)) return false;
+    const workspaceId = request.get('x-od-workspace-id');
+    const workspaceMemberId = request.get('x-od-workspace-member-id');
+    if (approval.scope) {
+      if (workspaceId !== approval.scope.workspaceId || workspaceMemberId !== approval.scope.workspaceMemberId) return false;
+    } else if (workspaceId !== undefined || workspaceMemberId !== undefined) {
+      return false;
+    }
+    return Boolean(getProject(db, approval.projectId)) && decideProjectRequestSync(request, approval.projectId, {
+      mode: 'write', capability: 'writeFiles',
+    }).ok;
+  };
+  const resolveLocalPerformancePrincipal = (request, projectId: string): ApprovalPrincipal | null => {
+    if (!getProject(db, projectId) || !decideProjectRequestSync(request, projectId, { mode: 'write', capability: 'writeFiles' }).ok) return null;
+    const workspaceId = request.get('x-od-workspace-id');
+    const workspaceMemberId = request.get('x-od-workspace-member-id');
+    if ((workspaceId === undefined) !== (workspaceMemberId === undefined)) return null;
+    if (workspaceId !== undefined && (!workspaceId.trim() || !workspaceMemberId?.trim())) return null;
+    return { kind: 'local', id: LOCAL_PERFORMANCE_PRINCIPAL_ID, projectId,
+      scope: workspaceId === undefined ? null : { workspaceId, workspaceMemberId } };
+  };
+  const browserPerformanceOverrides = new BrowserPerformanceOverrides({ broker: browserControl, captures: browserPerformance,
+    store: mcpApprovalStore, principal: resolveLocalPerformancePrincipal });
+  registerCoreMcpTools(mcpHttpRegistry);
+  registerBrowserPerformanceMcpTools(mcpHttpRegistry, {
+    service: browserPerformance,
+    authorizeCurrentRead: createBrowserReadAuthority({
+      toolTokenRegistry,
+      credentialStore: mcpCredentialStore,
+      getRun: (runId) => design.runs.get(runId),
+      projectExists: (projectId) => Boolean(getProject(db, projectId)),
+      getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+      decideProjectRequest: decideProjectRequestSync,
+    }),
+    authorizeProject: async (request, projectId) => Boolean(getProject(db, projectId))
+      && (await decideProjectRequest(request, projectId, { mode: 'read' })).ok,
+  });
+  registerBrowserMcpTools(mcpHttpRegistry, {
+    broker: browserControl,
+    authorizeCurrentRead: createBrowserReadAuthority({
+      toolTokenRegistry,
+      credentialStore: mcpCredentialStore,
+      getRun: (runId) => design.runs.get(runId),
+      projectExists: (projectId) => Boolean(getProject(db, projectId)),
+      getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+      decideProjectRequest: decideProjectRequestSync,
+    }),
+    authorizeProject: async (request, projectId) => Boolean(getProject(db, projectId))
+      && (await decideProjectRequest(request, projectId, { mode: 'read' })).ok,
+    approval: { store: mcpApprovalStore, resolveCurrentPrincipal: resolveCurrentApprovalPrincipal },
+  });
+  registerLiveArtifactMcpTools(mcpHttpRegistry, {
+    tokenRegistry: toolTokenRegistry,
+    projectsRoot: PROJECTS_DIR,
+    getRun: (runId) => design.runs.get(runId),
+    getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+    decideProjectRequest: decideProjectRequestSync,
+    projectExists: (projectId) => Boolean(getProject(db, projectId)),
+    listLiveArtifacts,
+    createLiveArtifact,
+    updateLiveArtifact,
+    refreshLiveArtifact,
+    emitLiveArtifactEvent,
+    emitLiveArtifactRefreshEvent,
+    authorizeProjectTool: async (projectId) => {
+      const { localRequest } = projectToolRequestContext(projectId);
+      return (await decideProjectRequest(localRequest, projectId, { mode: 'read' })).ok;
+    },
+    authorizeProjectToolWrite: async (projectId) => {
+      const { localRequest } = projectToolRequestContext(projectId);
+      return (await decideProjectRequest(localRequest, projectId, { mode: 'write', capability: 'writeFiles' })).ok;
+    },
+  });
+  registerProjectFileMcpTools(mcpHttpRegistry, {
+    tokenRegistry: toolTokenRegistry,
+    credentialStore: mcpCredentialStore,
+    readUnboundProjectDetail: (id) => projectRoutes.readUnboundProjectDetail(id),
+    projectsRoot: PROJECTS_DIR,
+    getRun: (runId) => design.runs.get(runId),
+    getProject: (projectId) => getProject(db, projectId),
+    getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+    decideProjectRequest: decideProjectRequestSync,
+    listFiles,
+    readProjectFile,
+    searchProjectFiles,
+  });
+  registerArtifactReadMcpTool(mcpHttpRegistry, {
+    tokenRegistry: toolTokenRegistry,
+    credentialStore: mcpCredentialStore,
+    readUnboundProjectDetail: (id) => projectRoutes.readUnboundProjectDetail(id),
+    projectsRoot: PROJECTS_DIR,
+    getRun: (runId) => design.runs.get(runId),
+    getProject: (projectId) => getProject(db, projectId),
+    getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+    decideProjectRequest: decideProjectRequestSync,
+    listFiles,
+    readProjectFile,
+  });
+  registerAgentCatalogMcpTool(mcpHttpRegistry, {
+    tokenRegistry: toolTokenRegistry,
+    credentialStore: mcpCredentialStore,
+    getRun: (runId) => design.runs.get(runId),
+    projectExists: (projectId) => Boolean(getProject(db, projectId)),
+    getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+    decideProjectRequest: decideProjectRequestSync,
+    listOfferedAgents: () => readOfferedAgentCatalog(RUNTIME_DATA_DIR),
+  });
+  registerSkillCatalogMcpTool(mcpHttpRegistry, {
+    tokenRegistry: toolTokenRegistry,
+    credentialStore: mcpCredentialStore,
+    projectExists: (projectId) => Boolean(getProject(db, projectId)),
+    getRun: (runId) => design.runs.get(runId),
+    getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+    decideProjectRequest: decideProjectRequestSync,
+    listSkillsSnapshot: (scope) => listAllSkillsSnapshot(scope),
+  });
+  const mcpCatalogAccess = {
+    tokenRegistry: toolTokenRegistry, credentialStore: mcpCredentialStore,
+    projectExists: (projectId) => Boolean(getProject(db, projectId)),
+    getRun: (runId) => design.runs.get(runId),
+    getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+    decideProjectRequest: decideProjectRequestSync,
+  };
+  registerBriefMcpTools(mcpHttpRegistry, mcpCatalogAccess);
+  const mcpResources = createMcpHttpResources(mcpHttpRegistry, {
+    ...mcpCatalogAccess,
+    listSkillsSnapshot: (scope) => listAllSkillsSnapshot(scope),
+    listDesignSystemsSnapshot: (scope) => listAllDesignSystemsSnapshot(scope),
+    readDesignSystem: async (id, scope, exactTeam) => (await readAvailableDesignSystem(id, { ...scope, exactTeam })) ?? null,
+  });
+  registerActiveContextMcpTool(mcpHttpRegistry, {
+    tokenRegistry: toolTokenRegistry,
+    credentialStore: mcpCredentialStore,
+    readUnboundProjectDetail: (id) => projectRoutes.readUnboundProjectDetail(id),
+    store: activeContextStore,
+    getProject: (projectId) => getProject(db, projectId),
+    now: Date.now,
+    getRun: (runId) => design.runs.get(runId),
+    getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+    decideProjectRequest: decideProjectRequestSync,
+  });
+  registerConnectorMcpTools(mcpHttpRegistry, {
+    tokenRegistry: toolTokenRegistry,
+    projectsRoot: PROJECTS_DIR,
+    service: connectorService,
+    getRun: (runId) => design.runs.get(runId),
+    getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+    decideProjectRequest: decideProjectRequestSync,
+    projectExists: (projectId) => Boolean(getProject(db, projectId)),
+  });
+  registerMcpHttpRoutes(app, {
+    registry: mcpHttpRegistry,
+    resources: mcpResources,
+    resolveGrant: (req) => resolveMcpGrant(req, { toolTokenRegistry, credentialStore: mcpCredentialStore }),
+    serverInfo: { name: 'open-design', version: currentAppVersionInfo()?.version ?? UNKNOWN_APP_VERSION },
+  });
+  registerMcpCredentialRoutes(app, {
+    credentialStore: mcpCredentialStore,
+    onRevoked: (id) => mcpApprovalStore.invalidatePrincipal('external', id),
+  });
+  registerMcpApprovalRoutes(app, {
+    store: mcpApprovalStore,
+    authorize: async (request, approval) => authorizeApprovalView(request, approval),
+    authorizeCurrent: authorizeApprovalView,
+    targetCurrent: (target) => browserControl.isApprovalTargetCurrent(target, approvalTargetFingerprint),
+    desktopSecret: getDesktopAuthSecret,
+  });
+  const mcpRoutes = registerMcpRoutes(app, {
     http: httpDeps,
     paths: pathDeps,
     mcp: { pendingAuth: mcpPendingAuth, daemonUrlRef, inheritedEnvironment },
@@ -8674,6 +7355,7 @@ export async function startServer({
     db,
     http: httpDeps,
     projectStore: projectStoreDeps,
+    activeContextStore,
   });
   registerHostToolsRoutes(app, {
     db,
@@ -8690,6 +7372,13 @@ export async function startServer({
     browserControl,
     authorizeProjectRequest,
   });
+  registerBrowserPerformanceRoutes(app, {
+    db,
+    http: httpDeps,
+    projectStore: projectStoreDeps,
+    browserControl,
+    authorizeProjectRequest,
+  }, browserPerformance, browserPerformanceOverrides);
   const clipperPinRelayContext = (
     projectId: string,
     workspace?: { workspaceId: string; workspaceMemberId: string },
@@ -8728,7 +7417,8 @@ export async function startServer({
     verifyPairedWorkspace: async (workspace, projectId) => {
       const binding = getWorkspaceProjectByProjectId(db, projectId);
       if (!binding || binding.workspaceId !== workspace.workspaceId || binding.resourceState !== 'active') return false;
-      if (process.env.OD_WORKSPACE_CONTEXT_SOURCE?.trim() !== 'vela') return true;
+      if (projectHasUnavailableTeamBinding(projectId)) return false;
+      return true;
       const directory = await fetchFreshMutationWorkspaceDirectory().catch(() => ({ ok: false, items: [] }));
       return directory.ok && directory.items.some((item) =>
         item.workspaceId === workspace.workspaceId
@@ -8842,7 +7532,7 @@ export async function startServer({
   });
   registerSocialShareRoutes(app, { http: httpDeps });
   const projectCreatePreparationTimeoutMs = projectCreatePreparationTimeoutMsFromEnv();
-  registerProjectRoutes(app, {
+  const projectRoutes = registerProjectRoutes(app, {
     db,
     design,
     // Test seam for the POST /api/projects preparation deadline; production
@@ -8863,6 +7553,8 @@ export async function startServer({
     verifyWorkspaceRequestAuthority,
     verifyPersonalProjectDeleteLeaseAuthority,
     authorizeProjectRequest,
+    canReadLocalProject: (projectId) =>
+      decideProjectRequestSync({ headers: {}, get: () => undefined }, projectId, { mode: 'read' }).ok,
     isProjectRevoked: (projectId) =>
       revokedTeamProjectMirrors.has(projectId),
     isProjectUnmaterializedPlaceholder: (projectId) =>
@@ -9057,6 +7749,17 @@ export async function startServer({
           },
         }
       : {}),
+  });
+  registerUnboundProjectCatalogMcpTool(mcpHttpRegistry, {
+    toolTokenRegistry,
+    credentialStore: mcpCredentialStore,
+    readUnboundProjectCatalog: projectRoutes.readUnboundProjectCatalog,
+  });
+  registerUnboundProjectDetailMcpTool(mcpHttpRegistry, {
+    toolTokenRegistry,
+    credentialStore: mcpCredentialStore,
+    readUnboundProjectDetail: projectRoutes.readUnboundProjectDetail,
+    daemonBaseUrl: () => loopbackOriginFromListener(readListenerAddress()),
   });
   registerTerminalRoutes(app, {
     db,
@@ -9385,7 +8088,7 @@ export async function startServer({
     isApiTokenAuthorization,
     projectPreviewScopes,
   });
-  registerProjectFileRoutes(app, {
+  const projectFileMutations = registerProjectFileRoutes(app, {
     db,
     http: httpDeps,
     paths: pathDeps,
@@ -9402,6 +8105,15 @@ export async function startServer({
     artifacts: artifactDeps,
     projectPreviewScopes,
     verifyWorkspaceRequestAuthority,
+  });
+  registerProjectFileMutationMcpTools(mcpHttpRegistry, {
+    tokenRegistry: toolTokenRegistry, credentialStore: mcpCredentialStore,
+    readUnboundProjectDetail: projectRoutes.readUnboundProjectDetail,
+    getRun: (runId) => design.runs.get(runId),
+    getProject: (projectId) => getProject(db, projectId),
+    getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+    decideProjectRequest: decideProjectRequestSync,
+    operations: projectFileMutations,
   });
   // Immutable chat-artifact snapshot reads. Same read authority as /raw; see
   // routes/project/chat-artifacts.ts for the gate chain.
@@ -9430,14 +8142,6 @@ export async function startServer({
     research: researchDeps,
     authorizeProjectRequest,
     authorizeProjectToolRequest,
-  });
-
-  registerVelaRoutes(app, {
-    paths: { RUNTIME_DATA_DIR },
-    appConfig: { readAppConfig },
-    http: { getPublicBaseUrl },
-    env: process.env,
-    onCredentialStateObserved: refreshWorkspaceHubAccountIdentity,
   });
 
   const allowScopedPluginReplace = (
@@ -9779,34 +8483,52 @@ export async function startServer({
       },
     });
   };
-  const listWorkspacePlugins = async (
+  const listWorkspacePluginSnapshot = async (
     dbHandle,
     workspaceId?: string | null,
     workspaceMemberId?: string | null,
+    captureFences = true,
   ) => {
     const personal = listInstalledPlugins(dbHandle, workspaceId, workspaceMemberId);
     const exactWorkspaceId = workspaceId?.trim();
-    if (!exactWorkspaceId) return personal;
-    const workspaceRoot = teamResourceWorkspaceRoot(
-      PLUGIN_REGISTRY_ROOTS.userPluginsRoot,
-      exactWorkspaceId,
-    );
-    let entries: fs.Dirent[] = [];
-    try {
-      entries = await fs.promises.readdir(workspaceRoot, { withFileTypes: true });
-    } catch {
-      return personal;
-    }
-    const team = (
-      await Promise.all(
-        entries
-          .filter((entry) => entry.isDirectory())
-          .map((entry) => readWorkspaceTeamPlugin(exactWorkspaceId, entry.name)),
-      )
-    ).filter((plugin): plugin is NonNullable<typeof plugin> => plugin != null);
-    const teamIds = new Set(team.map((plugin) => plugin.id));
-    return [...team, ...personal.filter((plugin) => !teamIds.has(plugin.id))];
+    const observed = personal.map((record) => ({
+      record, source: 'installed',
+      binding: captureFences ? JSON.stringify(getWorkspaceResourceByResourceId(dbHandle, 'plugin', record.id) ?? null) : null,
+    }));
+    let incomplete = false;
+    const makeSnapshot = (items) => ({
+      entries: items.map((item) => item.record),
+      incomplete,
+      revalidate: (indices) => {
+        const current = listInstalledPlugins(dbHandle, workspaceId, workspaceMemberId);
+        return indices.every((index) => {
+          const item = items[index];
+          if (!item) return false;
+          if (item.source === 'installed') {
+            return item.binding === JSON.stringify(getWorkspaceResourceByResourceId(dbHandle, 'plugin', item.record.id) ?? null)
+              && current.some((record) => record.id === item.record.id && JSON.stringify(record) === JSON.stringify(item.record));
+          }
+          return item.fence !== null
+            && workspaceTeamPluginBindingAllowsRead(dbHandle, exactWorkspaceId, item.resourceId)
+            && workspaceTeamPluginBindingActivationFence(dbHandle, exactWorkspaceId, item.resourceId) === item.fence;
+        });
+      },
+    });
+    return makeSnapshot(observed);
   };
+  const listWorkspacePlugins = async (dbHandle, workspaceId, workspaceMemberId) => {
+    const snapshot = await listWorkspacePluginSnapshot(dbHandle, workspaceId, workspaceMemberId, false);
+    return snapshot.entries;
+  };
+  registerPluginCatalogMcpTool(mcpHttpRegistry, {
+    tokenRegistry: toolTokenRegistry,
+    credentialStore: mcpCredentialStore,
+    projectExists: (projectId) => Boolean(getProject(db, projectId)),
+    getRun: (runId) => design.runs.get(runId),
+    getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+    decideProjectRequest: decideProjectRequestSync,
+    listPluginSnapshot: (scope) => listWorkspacePluginSnapshot(db, scope.workspaceId, scope.workspaceMemberId),
+  });
   const getWorkspacePluginForRequest = async (
     dbHandle,
     id: string,
@@ -10049,7 +8771,7 @@ export async function startServer({
       ) {
         return false;
       }
-      if (binding.visibility === 'team') return true;
+      if (binding.visibility === 'team') return false;
       return binding.visibility === 'personal'
         && Boolean(designSystemMemberId)
         && binding.createdByWorkspaceMemberId?.trim() === designSystemMemberId;
@@ -11161,7 +9883,11 @@ export async function startServer({
       try { previousBrowserImageFinalizer?.(); }
       finally { cleanupBrowserImages(); }
     };
+    let sealClaudeOutput = () => true;
+    let claudeOutputGuard = null;
+    let claudeAttemptRetired = false;
     const finishRun = (status, code = null, signal = null) => {
+      if (!sealClaudeOutput()) { status = 'failed'; code = 1; signal = null; }
       cleanupBrowserImages();
       cleanupOdNextRunInputProjection();
       finalizeRunMessageEvents(db, run);
@@ -11219,8 +9945,7 @@ export async function startServer({
       );
     if (!def.bin)
       return failRun('AGENT_UNAVAILABLE', 'agent has no binary');
-    if (def.id === CLOUD_AGENT_ID && !cloudFeaturesEnabled(readAppConfigSync(RUNTIME_DATA_DIR)))
-      return failRun('CLOUD_FEATURES_DISABLED', CLOUD_FEATURES_DISABLED_MESSAGE);
+
     const byokOpenCodeProvider = def.id === 'byok-opencode'
       ? buildOpenCodeByokProviderConfig(
           byokProvider,
@@ -11428,12 +10153,7 @@ export async function startServer({
     }
     const transportSourceImages = odNextTaskInputSnapshot?.imagePaths ?? [...safeImages, ...browserImagePaths];
     const amrStagedImages =
-      def.id === 'amr' && !odNextTaskInputSnapshot
-        ? [
-            ...await stageAmrImagePaths(cwd ?? PROJECT_ROOT, safeImages, UPLOAD_DIR),
-            ...browserImagePaths,
-          ]
-        : transportSourceImages;
+      transportSourceImages;
 
     // Project-scoped attachments: project-relative paths inside cwd. Each
     // is run through the same path-traversal guard the file CRUD endpoints
@@ -11504,10 +10224,27 @@ export async function startServer({
           ...(pluginGrantContext ?? {}),
         })
       : null;
+    const claudeRunTokenGuardEnabled = def.id === 'claude'
+      && def.streamFormat === 'claude-stream-json'
+      && Boolean(toolTokenGrant?.token);
+    const acpRunTokenGuardEnabled = def.mcpDiscovery === 'mature-acp'
+      && def.streamFormat === 'acp-json-rpc'
+      && Boolean(toolTokenGrant?.token);
+    const codexRunTokenGuardEnabled = def.id === 'codex'
+      && def.streamFormat === CODEX_APP_SERVER_STREAM_FORMAT && Boolean(toolTokenGrant?.token);
+    const openCodeRunTokenGuardEnabled = def.streamFormat === 'json-event-stream'
+      && (def.externalMcpInjection === 'opencode-env-content' || def.externalMcpInjection === 'mimo-env-content')
+      && Boolean(toolTokenGrant?.token);
+    const runTokenGuardEnabled = claudeRunTokenGuardEnabled || acpRunTokenGuardEnabled
+      || codexRunTokenGuardEnabled || openCodeRunTokenGuardEnabled;
+    let claudeHttpMcpEnabled = false;
+    let claudeMcpDaemonUrl: string | null = null;
+    if (runTokenGuardEnabled) claudeAttemptOutputSeals.set(run, () => sealClaudeOutput());
     let toolTokenRevoked = false;
     const revokeToolToken = (reason) => {
       if (toolTokenRevoked || !toolTokenGrant) return;
       toolTokenRevoked = true;
+      mcpApprovalStore.invalidatePrincipal('run', toolTokenGrant.runId);
       toolTokenRegistry.revokeToken(toolTokenGrant.token, reason);
     };
     // The async startup phase below (compose prompt, prepare prompt file,
@@ -11522,6 +10259,8 @@ export async function startServer({
       run.onFinalize = () => {
         try { previousOnFinalize?.(); }
         finally {
+          if (acpRunTokenGuardEnabled || codexRunTokenGuardEnabled || openCodeRunTokenGuardEnabled) claudeAttemptRetired = true;
+          mcpApprovalStore.invalidatePrincipal('run', runId);
           revokeToolToken('run_finalized');
           const sinkRunId = toolTokenGrant.runId ?? runId;
           activeChatAgentEventSinks.delete(sinkRunId);
@@ -12122,13 +10861,7 @@ export async function startServer({
     } catch {
       configuredAgentEnv = {};
     }
-    const requestedLiveModelScope = def.id === 'amr'
-      ? resolveAmrProfile({
-          ...process.env,
-          ...(def.env || {}),
-          ...configuredAgentEnv,
-        })
-      : null;
+    const requestedLiveModelScope = null;
     const configuredModel =
       typeof appConfigForRun?.agentModels?.[def.id]?.model === 'string'
         ? appConfigForRun.agentModels[def.id].model
@@ -12142,11 +10875,6 @@ export async function startServer({
         : configuredModel,
       process.env,
       requestedLiveModelScope,
-    );
-    const hasDefaultModelEnvOverride = Boolean(
-      def.defaultModelEnvVar &&
-      typeof process.env[def.defaultModelEnvVar] === 'string' &&
-      process.env[def.defaultModelEnvVar]?.trim(),
     );
     const safeReasoning =
       typeof reasoning === 'string' &&
@@ -12171,43 +10899,7 @@ export async function startServer({
     };
     const agentLaunch = resolveAgentLaunch(def, configuredAgentEnv);
     const resolvedBin = agentLaunch.selectedPath;
-    if (def.id === 'amr' && resolvedBin && agentLaunch.launchPath) {
-      // Concretize omitted/default AMR model requests to the live catalog
-      // default before the resume guard. The AMR preflight below applies the
-      // same rewrite before spawn; keeping this earlier copy aligned prevents
-      // stored concrete session models from comparing against raw `default`.
-      try {
-        const resumeProbe = await resolveAmrModelProbe({ dataDir: RUNTIME_DATA_DIR, env: process.env, readAppConfig });
-        const resumeCatalog = await amrModelLoadingCache.get(resumeProbe.cacheKey, {
-          fetchPreset: () => fetchVelaPresetModels(resumeProbe.launchPath, resumeProbe.env),
-          fetchRemote: () => fetchVelaRemoteModelsWithRetry(resumeProbe.launchPath, resumeProbe.env),
-        });
-        const resumeLiveModels = preferFreshLiveModels(
-          resumeCatalog.models ?? [],
-          getRememberedLiveModels(def.id, requestedLiveModelScope),
-        );
-        const resumeModelIds = new Set(resumeLiveModels.map((c) => c?.id).filter(Boolean));
-        const askedForDefault =
-          typeof model !== 'string' || !model.trim() || model.trim().toLowerCase() === 'default';
-        const defaultRunModel = resolveDefaultModelFromOptions(resumeLiveModels);
-        if (
-          !safeModel ||
-          safeModel === 'default' ||
-          (
-            askedForDefault &&
-            !hasDefaultModelEnvOverride &&
-            defaultRunModel &&
-            (!resumeModelIds.has(safeModel) || safeModel !== defaultRunModel)
-          )
-        ) {
-          safeModel = defaultRunModel ?? safeModel ?? null;
-          agentOptions.model = safeModel;
-        }
-      } catch {
-        // Degrade silently: keep the requested value. The preflight below records
-        // the probe failure and applies the identical fallback.
-      }
-    }
+
     const resolvedAgentResumeCtx =
       agentSupportsSessionResume && run.conversationId
         ? resolveAgentResumeContext(db, {
@@ -12783,6 +11475,17 @@ export async function startServer({
       }
     };
     const send = (event, data) => {
+      if (runTokenGuardEnabled && claudeAttemptRetired) return;
+      if (claudeOutputGuard && (event === 'agent' || event === 'error')) {
+        const safe = claudeOutputGuard.sanitize(data);
+        if (!safe) {
+          if (event !== 'error' || data?.message !== CLAUDE_OUTPUT_FAILURE) return;
+        } else {
+          // Sanitization copies the payload; preserve private ACP origin for diagnostics.
+          data = withAcpEmissionProvenance(safe, data && typeof data === 'object'
+            && isHostSynthesizedAcpEmission(data) ? { hostSynthesized: true } : undefined);
+        }
+      }
       if (event === 'agent' && data?.type === 'usage') {
         physicalSessionUsage.observe(event, data);
       }
@@ -12989,6 +11692,9 @@ export async function startServer({
     // drive a second close-handler pass that finalizes the run as failed before
     // the retry ever spawns.
     const tearDownAttemptForRetry = () => {
+      if (!sealClaudeOutput()) return null;
+      claudeAttemptRetired = true;
+      cleanupClaudeRunMcpConfig();
       cleanupBrowserImages();
       cleanupOdNextRunInputProjection();
       // Snapshot the failing attempt's child + process group BEFORE we detach
@@ -13066,6 +11772,10 @@ export async function startServer({
     // state in case it fires first.
     const scheduleRetryRestart = (delayMs, retryChatBody = chatBody) => {
       const termination = tearDownAttemptForRetry();
+      if (!termination) {
+        finishWithRetryDecision('failed', 1, null, { allowRetry: false });
+        return;
+      }
       const wait = Number.isFinite(delayMs) && delayMs > 0 ? delayMs : 0;
       const spawnWhenQuiescent = () => {
         void Promise.resolve(termination).then((result) => {
@@ -13165,6 +11875,9 @@ export async function startServer({
       signal = null,
       { allowRetry = true } = {},
     ) => {
+      if (!sealClaudeOutput()) {
+        status = 'failed'; code = 1; signal = null; allowRetry = false;
+      }
       lifecycle.mark('finalize_start');
       // The Run records how the process ended; the strategy task records its
       // own verdict. A task blocked at any stage keeps a cleanly exited Run
@@ -13231,7 +11944,7 @@ export async function startServer({
         ...runSideEffectsForRun(run),
         cancelRequested: !!run.cancelRequested,
       };
-      const amrContinuationRecovery = def.id === 'amr' ? acpSession?.getContinuationRecovery?.() : null;
+      const amrContinuationRecovery = null;
       const liveSessionId = def.resumesSessionViaAcpLoad === true
         ? acpSession?.getDurableSessionId?.() ?? null
         : agentResumeCtx.isResuming
@@ -13429,11 +12142,33 @@ export async function startServer({
       finishStrategyAwarePhysicalRun(status, code, signal);
       return false;
     };
-    const mcpServers = buildLiveArtifactsMcpServersForAgent(def, {
+    if (claudeRunTokenGuardEnabled) {
+      // Establish capabilities for this configured CLI even when no caller
+      // warmed /api/agents. Public-only listeners keep the existing fallback.
+      const caps = await ensureDetectedRuntimeCapabilities(def.id, configuredAgentEnv);
+      claudeMcpDaemonUrl = loopbackOriginFromListener(readListenerAddress());
+      claudeHttpMcpEnabled = caps?.mcpConfig === true && claudeMcpDaemonUrl !== null;
+    }
+    const mcpServers: AcpMcpServerInput[] = buildLiveArtifactsMcpServersForAgent(def, {
       enabled: Boolean(toolTokenGrant?.token),
       command: process.execPath,
       argsPrefix: [OD_BIN],
     });
+    const acpMcpDaemonUrl = acpRunTokenGuardEnabled ? loopbackOriginFromListener(readListenerAddress()) : null;
+    const ownAcpMcpServers = acpRunTokenGuardEnabled ? {
+      stdio: mcpServers[0] ?? null,
+      http: buildAcpRunHttpMcpServer(acpMcpDaemonUrl, toolTokenGrant?.token),
+    } : undefined;
+    const nativeHttpMcpDaemonUrl = codexRunTokenGuardEnabled || openCodeRunTokenGuardEnabled
+      ? loopbackOriginFromListener(readListenerAddress()) : null;
+    const codexRunMcpRequired = def.id === 'codex' && def.streamFormat === CODEX_APP_SERVER_STREAM_FORMAT
+      && runScopedMcpServers.some((server) => server.enabled !== false);
+    if (codexRunMcpRequired && (!nativeHttpMcpDaemonUrl || !toolTokenGrant?.token)) {
+      throw new Error('Explicit Codex MCP tools require a project and a loopback daemon listener.');
+    }
+    const codexRunMcpConfig = codexRunTokenGuardEnabled && nativeHttpMcpDaemonUrl
+      ? buildCodexRunMcpConfig({ daemonUrl: nativeHttpMcpDaemonUrl,
+          externalConfig: buildClaudeMcpJson(enabledExternalMcp, oauthTokensForSpawn) }) : undefined;
 
     // External MCP servers configured by the user in Settings → External MCP.
     // OpenDesign relays them to the agent so the model can call those tools.
@@ -13443,9 +12178,8 @@ export async function startServer({
     //     `claude mcp add` + Claude Desktop's config). Fire-and-forget; we
     //     deliberately do NOT block spawn on a write failure since the agent
     //     can still run without external tools — log a warning and continue.
-    //   - ACP agents (Hermes/Kimi): merge stdio entries into the existing
-    //     `mcpServers` array; SSE/HTTP entries are skipped because ACP's
-    //     stdio-only descriptor can't represent them yet.
+    //   - ACP agents: merge enabled servers into the session descriptor.
+    //     HTTP and SSE entries are withheld unless the agent advertises them.
     // Other agents (Codex, Gemini, OpenCode, Cursor, Qwen, Qoder, Copilot,
     // Pi, DeepSeek) inherit the user's per-CLI MCP config from their own
     // home dir for now — a future change can grow this list.
@@ -13520,10 +12254,12 @@ export async function startServer({
     // loads). Only the `claude` def reads `mcpConfigPath`; buildArgs also
     // gates the flag on the `--help` capability probe. Fail-soft.
     let claudeMcpConfigPath: string | undefined;
+    let cleanupClaudeRunMcpConfig = () => {};
     if (
       def.id === 'claude' &&
       def.externalMcpInjection === 'claude-mcp-json' &&
       cwd &&
+      !claudeHttpMcpEnabled &&
       !isManagedProjectCwd(cwd, PROJECTS_DIR) &&
       typeof projectId === 'string' &&
       projectId
@@ -13542,11 +12278,38 @@ export async function startServer({
         );
       }
     }
+    if (claudeHttpMcpEnabled) {
+      try {
+        const prepared = await prepareClaudeRunMcpConfig({
+          dataDir: RUNTIME_DATA_DIR, daemonUrl: claudeMcpDaemonUrl, projectDir: cwd,
+          externalConfig: isManagedProjectCwd(cwd, PROJECTS_DIR)
+            ? null : buildClaudeMcpJson(enabledExternalMcp, oauthTokensForSpawn),
+        });
+        claudeMcpConfigPath = prepared.path;
+        cleanupClaudeRunMcpConfig = prepared.cleanup;
+        // Cancellation may already have executed every registered finalizer
+        // while preparation was awaiting filesystem work. Own this file now.
+        if (run.cancelRequested || design.runs.isTerminal(run.status)) {
+          prepared.cleanup();
+          revokeToolToken('child_exit');
+          cleanupOdNextRunInputProjection();
+          return;
+        }
+        const previousFinalize = run.onFinalize;
+        run.onFinalize = () => {
+          try { previousFinalize?.(); }
+          finally { claudeAttemptRetired = true; prepared.cleanup(); }
+        };
+      } catch {
+        revokeToolToken('child_exit');
+        throw new Error('OpenDesign MCP configuration could not be prepared.');
+      }
+    }
     if (
       enabledExternalMcp.length > 0 &&
       def.externalMcpInjection === 'acp-merge'
     ) {
-      const acpExternal = buildAcpMcpServers(enabledExternalMcp);
+      const acpExternal = buildAcpMcpServers(enabledExternalMcp, oauthTokensForSpawn);
       mcpServers.push(...acpExternal);
     }
     // OpenCode: serialise enabled MCP servers into its `mcp` config schema
@@ -13579,6 +12342,9 @@ export async function startServer({
           err && err.message ? err.message : err,
         );
       }
+    }
+    if (openCodeRunTokenGuardEnabled && isOpenCodeContent && nativeHttpMcpDaemonUrl) {
+      opencodeConfigContent = composeOpenCodeRunMcpConfig(opencodeConfigContent, nativeHttpMcpDaemonUrl, { conversationId: run.conversationId, runId });
     }
 
     // Pre-flight the composed prompt against any argv-byte budget the
@@ -13614,157 +12380,9 @@ export async function startServer({
       ).catch(() => null);
     }
 
-    // agentLaunch / resolvedBin are resolved above the resume guard (hoisted).
-    // Hoisted above the AMR catalog preflight: the empty-catalog branch
-    // below calls `sendAmrAccountFailure(...)` to surface AMR_AUTH_REQUIRED
-    // for signed-out users, and a `const` declared later in the same outer
-    // function scope would hit a TDZ ReferenceError before initialization.
-    const sendAmrAccountFailure = (failure) => {
-      send('error', createSseErrorPayload(
-        failure.code,
-        failure.message,
-        {
-          retryable: false,
-          details: amrAccountFailureDetails(failure),
-        },
-      ));
-    };
 
-    if (def.id === 'amr' && resolvedBin && agentLaunch.launchPath) {
-      const launchPath = agentLaunch.launchPath ?? resolvedBin;
-      const modelProbeEnv = launchPath
-        ? applyAgentLaunchEnv(
-            spawnEnvForAgent(
-              def.id,
-              {
-                ...createAgentRuntimeEnv(process.env, daemonUrl, toolTokenGrant, OD_NODE_BIN, inheritedEnvironment),
-                ...(def.env || {}),
-              },
-              configuredAgentEnv,
-              undefined,
-              { resolvedBin: agentLaunch.selectedPath },
-            ),
-            agentLaunch,
-          )
-        : null;
-      const amrModelScope = resolveAmrProfile(modelProbeEnv ?? process.env);
-      // Resolve the AMR model catalog through the SAME shared cache the UI's
-      // `/api/amr/models` endpoint serves (AmrModelLoadingCache): a cached
-      // authoritative `vela model list` when it is hot, otherwise the offline
-      // `vela model preset` seed while a remote refresh runs in the background.
-      //
-      // Why not a fresh `vela model list` per run: that authoritative call
-      // needs network reachability to the AMR gateway AND `$HOME` (the offline
-      // `preset`/`--version` calls need neither), takes up to ~10s, and only
-      // retries a narrow set of network errors. Running it blocking on every
-      // turn turned any transient gateway/timeout/HOME hiccup into a hard
-      // "AMR model … is not available from Vela" — even for a logged-in user
-      // who already picked a real model the picker surfaced from the preset
-      // seed. Under CorpLink/飞连 the call routinely exceeded the timeout, so
-      // AMR became unusable in packaged nightlies. Reusing the cache keeps that
-      // blocking probe off the per-run hot path and degrades to preset instead
-      // of fail-closing; vela's own `session/set_model` remains the final gate.
-      let liveModels = [];
-      try {
-        const probe = await resolveAmrModelProbe({ dataDir: RUNTIME_DATA_DIR, env: process.env, readAppConfig });
-        const catalog = await amrModelLoadingCache.get(probe.cacheKey, {
-          fetchPreset: () => fetchVelaPresetModels(probe.launchPath, probe.env),
-          fetchRemote: () => fetchVelaRemoteModelsWithRetry(probe.launchPath, probe.env),
-        });
-        liveModels = catalog.models ?? [];
-      } catch (error) {
-        // Do not swallow silently: a probe failure here is exactly what made
-        // the packaged AMR breakage undiagnosable (the old `catch {}` left no
-        // trace in any log or diagnostics bundle). Record it and degrade to the
-        // remembered catalog below.
-        console.warn('[amr] model catalog preflight probe failed', error);
-        liveModels = [];
-      }
-      const rememberedLiveModels = getRememberedLiveModels(def.id, amrModelScope);
-      if (liveModels.length > 0) {
-        rememberLiveModels(def.id, liveModels, amrModelScope);
-      }
-      liveModels = preferFreshLiveModels(liveModels, rememberedLiveModels);
-      const liveModelIds = new Set(
-        liveModels.map((candidate) => candidate?.id).filter(Boolean),
-      );
-      // A request that came in as 'default'/empty is normally pre-resolved to a
-      // concrete id via the agent-wide cached model order; if it still is not,
-      // adopt the catalog's enabled default so the spawn layer always has a
-      // usable real id.
-      const userAskedForDefault =
-        typeof model !== 'string' ||
-        !model.trim() ||
-        model.trim().toLowerCase() === 'default';
-      const defaultRunModel = resolveDefaultModelFromOptions(liveModels);
-      if (
-        !safeModel ||
-        safeModel === 'default' ||
-        (
-          userAskedForDefault &&
-          !hasDefaultModelEnvOverride &&
-          defaultRunModel &&
-          (!liveModelIds.has(safeModel) || safeModel !== defaultRunModel)
-        )
-      ) {
-        safeModel = defaultRunModel ?? (safeModel === 'default' ? null : safeModel ?? null);
-        agentOptions.model = safeModel;
-      }
-      if (liveModelIds.size === 0) {
-        // The catalog is genuinely empty: even the offline preset seed could
-        // not be read, which almost always means the user is signed out (`vela`
-        // catalog calls 401) or the CLI is unrunnable. Prefer the relogin
-        // affordance over a misleading "choose a model".
-        if (def.id === 'amr') {
-          const loginStatus = readVelaLoginStatus(
-            modelProbeEnv ?? process.env,
-            configuredAgentEnv,
-          );
-          if (!loginStatus.loggedIn) {
-            sendAmrAccountFailure({
-              code: 'AMR_AUTH_REQUIRED',
-              message:
-                'AMR sign-in is required. Sign in to AMR Cloud again, then retry this run.',
-              action: 'relogin',
-            });
-            return finishStrategyAwarePhysicalRun('failed', 1, null);
-          }
-        }
-        // Logged in but no catalog at all AND no resolvable model: only now is
-        // there nothing safe to forward, so surface the model error.
-        if (!safeModel) {
-          send('error', createAmrModelUnavailablePayload(safeModel, {
-            reason: 'model_catalog_unavailable',
-          }));
-          return finishStrategyAwarePhysicalRun('failed', 1, null);
-        }
-        // Otherwise fall through with the user's selected model and let vela's
-        // `session/set_model` be the authoritative gate.
-      } else if (!safeModel) {
-        // Catalog known but we could not resolve any model id to forward.
-        send('error', createAmrModelUnavailablePayload(
-          typeof model === 'string' && model.trim() ? model : safeModel,
-          { availableModels: [...liveModelIds] },
-        ));
-        return finishStrategyAwarePhysicalRun('failed', 1, null);
-      }
-      // NOTE: when the selected model is absent from the (possibly preset-only
-      // or stale) catalog we intentionally do NOT fail-close. The cached/preset
-      // catalog can lag the live one, and a logged-in user picked a concrete
-      // id; vela rejects a truly unsupported model at `session/set_model` with
-      // a precise error, which beats a pre-emptive block on a flaky metadata read.
-    }
 
-    if (
-      def.id === 'amr' &&
-      safeModel &&
-      !isVelaChatCapableModelId(safeModel)
-    ) {
-      send('error', createAmrModelUnavailablePayload(safeModel, {
-        reason: 'model_not_chat_capable',
-      }));
-      return finishStrategyAwarePhysicalRun('failed', 1, null);
-    }
+
 
     // Plain-streaming adapters that own a "continue most recent
     // conversation" CLI flag (today: only `agy -c`) read this signal
@@ -13843,6 +12461,7 @@ export async function startServer({
         if (run.cancelRequested || design.runs.isTerminal(run.status)) {
           lifecycle.mark('launch_preflight_end');
           cleanupPromptFile();
+          cleanupClaudeRunMcpConfig();
           cleanupOdNextRunInputProjection();
           return;
         }
@@ -13855,6 +12474,7 @@ export async function startServer({
         if (run.cancelRequested || design.runs.isTerminal(run.status)) {
           lifecycle.mark('launch_preflight_end');
           cleanupPromptFile();
+          cleanupClaudeRunMcpConfig();
           cleanupOdNextRunInputProjection();
           return;
         }
@@ -13890,6 +12510,7 @@ export async function startServer({
             },
           ));
           cleanupPromptFile();
+          cleanupClaudeRunMcpConfig();
           // No child was spawned, so there is no process exit code to report.
           // Passing null preserves the preflight attribution instead of
           // polluting exit_nonzero transport metrics with a synthetic exit 1.
@@ -13983,6 +12604,7 @@ export async function startServer({
       );
     } catch (err) {
       cleanupPromptFile();
+      cleanupClaudeRunMcpConfig();
       throw err;
     }
     // Second-pass budget check that knows about the Windows `.cmd` shim
@@ -14002,6 +12624,7 @@ export async function startServer({
     );
     if (cmdShimBudgetError) {
       cleanupPromptFile();
+      cleanupClaudeRunMcpConfig();
       design.runs.emit(
         run,
         'error',
@@ -14030,6 +12653,7 @@ export async function startServer({
     );
     if (directExeBudgetError) {
       cleanupPromptFile();
+      cleanupClaudeRunMcpConfig();
       design.runs.emit(
         run,
         'error',
@@ -14470,6 +13094,7 @@ export async function startServer({
     // from issue #10.
     if (!resolvedBin || !agentLaunch.launchPath) {
       cleanupPromptFile();
+      cleanupClaudeRunMcpConfig();
       revokeToolToken('child_exit');
       unregisterChatAgentEventSink();
       send('error', createSseErrorPayload(
@@ -14500,20 +13125,7 @@ export async function startServer({
       undefined,
       { resolvedBin: agentLaunch.selectedPath },
     );
-    if (def.id === 'amr') {
-      const loginStatus = readVelaLoginStatus(agentSpawnEnv, configuredAgentSpawnEnv);
-      if (!loginStatus.loggedIn) {
-        cleanupPromptFile();
-        revokeToolToken('child_exit');
-        unregisterChatAgentEventSink();
-        sendAmrAccountFailure({
-          code: 'AMR_AUTH_REQUIRED',
-          message: 'AMR sign-in is required. Sign in to AMR Cloud again, then retry this run.',
-          action: 'relogin',
-        });
-        return finishStrategyAwarePhysicalRun('failed', 1, null);
-      }
-    }
+
     const odMediaEnv = createOpenDesignToolEnv({
       daemonUrl,
       projectDir: cwd,
@@ -14522,6 +13134,7 @@ export async function startServer({
     });
     if (run.cancelRequested || design.runs.isTerminal(run.status)) {
       cleanupPromptFile();
+      cleanupClaudeRunMcpConfig();
       revokeToolToken('child_exit');
       unregisterChatAgentEventSink();
       cleanupOdNextRunInputProjection();
@@ -14574,18 +13187,64 @@ export async function startServer({
     let jsonEventStreamHandler: ReturnType<typeof createJsonEventStreamHandler> | null = null;
     let agentStdoutTail = '';
     let agentStderrTail = '';
+    let flushClaudeParser = () => {};
+    let flushClaudeHeldOutput = () => {};
+    const stdoutTokenGuard = runTokenGuardEnabled ? createExactTokenStreamRedactor([toolTokenGrant.token]) : null;
+    const stderrTokenGuard = runTokenGuardEnabled ? createExactTokenStreamRedactor([toolTokenGrant.token]) : null;
+    if (runTokenGuardEnabled) {
+      claudeOutputGuard = createClaudeOutputGuard(toolTokenGrant.token, () => {
+        run.error = CLAUDE_OUTPUT_FAILURE;
+        run.errorCode = 'AGENT_EXECUTION_FAILED';
+        try { revokeToolToken('child_exit'); }
+        finally {
+          try { send('error', createSseErrorPayload('AGENT_EXECUTION_FAILED', CLAUDE_OUTPUT_FAILURE, { retryable: false })); }
+          finally {
+            try {
+              if (child && run.child === child) {
+                void design.runs.terminateProcessTree(run, child, run.processGroupId, { reason: 'unsafe_agent_output' });
+              }
+            } finally {
+              try { finalizeRunMessageEvents(db, run); }
+              finally { design.runs.finish(run, 'failed', 1, null); }
+            }
+          }
+        }
+      });
+    }
     const agentStderrFilter = createAgentStderrVisibilityFilter(agentId);
-    const emitVisibleAgentStderr = (chunk: unknown) => {
-      const visibleChunk = agentStderrFilter.write(chunk);
+    const retainVisibleAgentStderr = (visibleChunk: string) => {
       if (!visibleChunk) return;
       agentStderrTail = `${agentStderrTail}${visibleChunk}`.slice(-2000);
       send('stderr', { chunk: visibleChunk });
     };
+    const emitVisibleAgentStderr = (chunk: unknown) => {
+      if (claudeOutputGuard?.sealed || (child && run.child !== child)) return;
+      const visibleChunk = agentStderrFilter.write(chunk);
+      if (!visibleChunk) return;
+      try { retainVisibleAgentStderr(stderrTokenGuard ? stderrTokenGuard.push(visibleChunk) : visibleChunk); }
+      catch { claudeOutputGuard?.fail(); }
+    };
     const flushVisibleAgentStderr = () => {
+      if (claudeOutputGuard?.sealed || (child && run.child !== child)) return;
       const visibleChunk = agentStderrFilter.flush();
       if (!visibleChunk) return;
-      agentStderrTail = `${agentStderrTail}${visibleChunk}`.slice(-2000);
-      send('stderr', { chunk: visibleChunk });
+      try { retainVisibleAgentStderr(stderrTokenGuard ? stderrTokenGuard.push(visibleChunk) : visibleChunk); }
+      catch { claudeOutputGuard?.fail(); }
+    };
+    sealClaudeOutput = () => {
+      if (!claudeOutputGuard) return true;
+      if (claudeOutputGuard.sealed) return !claudeOutputGuard.failed;
+      try {
+        flushClaudeParser();
+        flushVisibleAgentStderr();
+        // Seal mapped streams before releasing marker-held tails. Those tails
+        // were buffered only after acceptance, and send sanitizes them again.
+        if (!claudeOutputGuard.seal()) return false;
+        flushClaudeHeldOutput();
+        agentStdoutTail = `${agentStdoutTail}${stdoutTokenGuard.maskPending()}`.slice(-2000);
+        retainVisibleAgentStderr(stderrTokenGuard.maskPending());
+      } catch { claudeOutputGuard.fail(); }
+      return !claudeOutputGuard.failed;
     };
     try {
       // Prompt delivery via stdin is now the universal default. This bypasses
@@ -14602,61 +13261,6 @@ export async function startServer({
         ...(mmdRouteLaunchEnv || {}),
         ...odMediaEnv,
         ...(byokOpenCodeProvider ? byokOpenCodeProvider.env : {}),
-        ...await openDesignAmrTraceEnvForRun({
-          agentId: def.id,
-          runId: run.id,
-          conversationId: run.conversationId,
-          runAttempt: openDesignAmrRunAttempt({
-            cumulativeRetryAttemptCount: run.cumulativeRetryAttemptCount,
-            retryAttemptCount: run.retryAttemptCount,
-            manualResumeAttemptCount: run.manualResumeAttemptCount,
-          }),
-          // Vela's workspace-credit isolation reads this env together with the
-          // signed-in account identity. The run pins the project's exact
-          // Workspace before its first asynchronous setup step; Vela/AMR
-          // remains the authority for membership, balance, and billing
-          // eligibility. Team and Personal bindings are both sent explicitly.
-          // An unbound project is refused before process spawn. Later project
-          // rebinds and ambient/current selection never participate.
-          projectId,
-          workspaceScope: run.workspaceScope,
-          externalPluginAnalytics: run.externalPluginAnalytics ?? null,
-        }, {
-          // Report persisted-binding vs truly-unbound selection to the daemon
-          // log and telemetry. Ids and the branch name only —
-          // never member rows or credentials.
-          onWorkspaceScopeOutcome: (outcome) => {
-            console.log(
-              `[od] amr workspace scope ${outcome.kind}`
-                + ` project=${outcome.projectId}`
-                + ` workspace=${outcome.workspaceId ?? 'none'}`
-                + ` run=${run.id}`,
-            );
-            const context = run.analyticsContext ?? null;
-            if (!context || !design?.analytics?.capture) return;
-            design.analytics.capture({
-              eventName: 'amr_workspace_scope_resolved',
-              context,
-              // `design.getAppVersion` is the only app-version accessor this
-              // scope can see; the identically-named helper inside
-              // `createFinalizedMessageTelemetryReporter` is a different
-              // function's local and resolving it here threw a ReferenceError
-              // out of the spawn path, failing 100% of AMR runs. That helper's
-              // own last resort is this same accessor, so the value is
-              // unchanged.
-              appVersion: design.getAppVersion?.() ?? 'unknown',
-              properties: {
-                page_name: 'chat_panel',
-                area: 'chat_panel',
-                project_id: outcome.projectId,
-                conversation_id: run.conversationId ?? null,
-                run_id: run.id,
-                workspace_scope_outcome: outcome.kind,
-                workspace_id: outcome.workspaceId,
-              },
-            });
-          },
-        }),
         // OpenCode external-MCP injection (issue #2142). Layered AFTER
         // spawnEnvForAgent / odMediaEnv / configuredAgentEnv so the
         // daemon-built MCP config wins over a stale value the user
@@ -14677,6 +13281,14 @@ export async function startServer({
           ? { OD_TASK_INPUT_DIR: odNextTaskInputSnapshot.projectionDir }
           : {}),
       }, agentLaunch);
+      if (runTokenGuardEnabled) {
+        reassertClaudeRunEnvironment(env, {
+          ...odMediaEnv, OD_TOOL_TOKEN: toolTokenGrant.token,
+          OD_DAEMON_URL: claudeHttpMcpEnabled ? claudeMcpDaemonUrl : nativeHttpMcpDaemonUrl ?? acpMcpDaemonUrl ?? daemonUrl,
+          ...(openCodeRunTokenGuardEnabled && opencodeConfigContent
+            ? { [isMiMoContent ? 'MIMOCODE_CONFIG_CONTENT' : 'OPENCODE_CONFIG_CONTENT']: opencodeConfigContent } : {}),
+        });
+      }
       if (def.id === 'opencode' || def.id === 'byok-opencode') {
         try {
           const versions = await ensureDetectedRuntimeVersions('opencode', configuredAgentEnv);
@@ -14692,6 +13304,7 @@ export async function startServer({
       // request arrives. Never spawn a child after that cancellation.
       if (run.cancelRequested || design.runs.isTerminal(run.status)) {
         cleanupPromptFile();
+        cleanupClaudeRunMcpConfig();
         revokeToolToken('child_exit');
         unregisterChatAgentEventSink();
         cleanupOdNextRunInputProjection();
@@ -14715,6 +13328,7 @@ export async function startServer({
       if (isIntentResolution) {
         if (run.cancelRequested || design.runs.isTerminal(run.status)) {
           cleanupPromptFile();
+          cleanupClaudeRunMcpConfig();
           revokeToolToken('child_exit');
           unregisterChatAgentEventSink();
           cleanupOdNextRunInputProjection();
@@ -14828,15 +13442,12 @@ export async function startServer({
       }
     } catch (err) {
       cleanupPromptFile();
+      cleanupClaudeRunMcpConfig();
       revokeToolToken('child_exit');
       unregisterChatAgentEventSink();
       send('error', createSseErrorPayload(
-        err instanceof AmrWorkspaceScopeRequiredError
-          ? err.code
-          : 'AGENT_EXECUTION_FAILED',
-        err instanceof AmrWorkspaceScopeRequiredError
-          ? err.message
-          : `spawn failed: ${err.message}`,
+        'AGENT_EXECUTION_FAILED',
+        `spawn failed: ${err.message}`,
       ));
       finishStrategyAwarePhysicalRun('failed', 1, null);
       return;
@@ -14850,9 +13461,13 @@ export async function startServer({
     // pi-rpc session/prompt, ACP agent messages) and models that spend a
     // long time in non-streamed reasoning still keep the run alive.
     child.stdout.on('data', (chunk) => {
+      if (claudeOutputGuard?.sealed || run.child !== child) return;
       childStdoutSeen = true;
       noteAgentActivity();
-      agentStdoutTail = `${agentStdoutTail}${chunk}`.slice(-2000);
+      try {
+        const safe = stdoutTokenGuard ? stdoutTokenGuard.push(chunk) : chunk;
+        agentStdoutTail = `${agentStdoutTail}${safe}`.slice(-2000);
+      } catch { claudeOutputGuard?.fail(); }
     });
 
     // ---- Memory: assistant-reply capture for LLM extraction --------------
@@ -15333,6 +13948,7 @@ export async function startServer({
        */
       void artifactFocusStripper.settle();
     }
+    flushClaudeHeldOutput = flushAgentTitleMarkerBuffer;
 
     function guardTextDelta(delta) {
       return runGuard.feedText(delta);
@@ -15670,17 +14286,33 @@ export async function startServer({
       if (flushedTitleMarkerText) send('stdout', { chunk: flushedTitleMarkerText });
       plaintextStdoutBuffer.length = 0;
     };
+    const sendGuardedNativeAgentEvent = (event) => {
+      if (!codexRunTokenGuardEnabled && !openCodeRunTokenGuardEnabled) return sendAgentEvent(event);
+      if (run.child !== child || !claudeOutputGuard || claudeOutputGuard.sealed) return;
+      claudeOutputGuard.accept(event, sendAgentEvent);
+    };
+    const failUnsafeNativeOutput = () => {
+      if (run.child === child && claudeOutputGuard && !claudeOutputGuard.sealed) claudeOutputGuard.fail();
+    };
+    const sendSanitizedNativeAgentEvent = (event) => {
+      if (!codexRunTokenGuardEnabled && !openCodeRunTokenGuardEnabled) return sendAgentEvent(event);
+      if (run.child !== child || claudeAttemptRetired || !claudeOutputGuard) return;
+      const safe = claudeOutputGuard.sanitize(event);
+      if (safe) sendAgentEvent(safe);
+    };
     const publishRuntimeChildEvidenceCoverage = (coverage) => {
       if (!strategyTaskAtStart || !coverage) return;
-      sendAgentEvent({
+      const event = {
         type: 'diagnostic',
         name: 'child_evidence_coverage_v1',
         coverage,
-      });
+      };
+      if (claudeOutputGuard) claudeOutputGuard.accept(event, sendAgentEvent);
+      else sendAgentEvent(event);
     };
 
     if (def.streamFormat === 'claude-stream-json') {
-      const claude = createClaudeStreamHandler((ev) => {
+      const processClaudeEvent = (ev) => {
         // First parsed claude-stream-json event = CLI ready (#3408 §4); the
         // init/system line arrives well before the model's first token.
         noteCliReadyAt();
@@ -15813,21 +14445,27 @@ export async function startServer({
         try {
           applyClaudeStreamJsonRunBookkeeping(run, ev);
         } catch {}
-      }, {
+      };
+      const acceptClaudeOutput = (ev, consumer = processClaudeEvent) => {
+        if (run.child !== child || claudeOutputGuard?.sealed) return;
+        if (claudeOutputGuard) claudeOutputGuard.accept(ev, consumer);
+        else consumer(ev);
+      };
+      const claude = createClaudeStreamHandler(acceptClaudeOutput, {
         suppressHtmlArtifactsAfterFileWrite: def.id === 'claude',
         ...(observeClaudeNativeChildBehavior
           ? {
               suppressForwardedSubagentEvents: true,
-              onChildRuntimeFact: (fact) => sendAgentEvent({
+              onChildRuntimeFact: (fact) => acceptClaudeOutput({
                 type: 'diagnostic',
                 name: 'claude_child_runtime_fact',
                 ...fact,
-              }),
-              onChildToolRuntimeFact: (fact) => sendAgentEvent({
+              }, sendAgentEvent),
+              onChildToolRuntimeFact: (fact) => acceptClaudeOutput({
                 type: 'diagnostic',
                 name: 'claude_child_tool_runtime_fact',
                 ...fact,
-              }),
+              }, sendAgentEvent),
             }
           : {}),
         ...(nativeBuildPackageBindings.length > 0
@@ -15838,9 +14476,21 @@ export async function startServer({
             }
           : {}),
       });
-      child.stdout.on('data', (chunk) => claude.feed(chunk));
-      child.on('close', (code, signal) => {
+      let parserFlushed = false;
+      flushClaudeParser = () => {
+        if (parserFlushed || run.child !== child || claudeOutputGuard?.sealed) return;
+        parserFlushed = true;
         claude.flush();
+      };
+      child.stdout.on('data', (chunk) => {
+        if (run.child !== child || claudeOutputGuard?.sealed) return;
+        try { claude.feed(chunk); }
+        catch (error) { if (claudeOutputGuard) claudeOutputGuard.fail(); else throw error; }
+      });
+      child.on('close', (code, signal) => {
+        if (run.child !== child || claudeOutputGuard?.sealed) return;
+        try {
+        flushClaudeParser();
         claude.finishOpenChildEvidence(
           run.cancelRequested
             ? 'canceled'
@@ -15852,6 +14502,7 @@ export async function startServer({
                 : 'stream_incomplete',
         );
         publishRuntimeChildEvidenceCoverage(claude.childEvidenceCoverage());
+        } catch (error) { if (claudeOutputGuard) claudeOutputGuard.fail(); else throw error; }
       });
     } else if (def.streamFormat === 'qoder-stream-json') {
       trackingSubstantiveOutput = true;
@@ -15941,6 +14592,23 @@ export async function startServer({
       });
     } else if (def.streamFormat === 'acp-json-rpc') {
       const acpStageTimeoutMs = resolveAcpStageTimeoutMs(def.inactivityTimeoutMs);
+      const guardAcpOutput = (handler) => {
+        // Keep transport channel/provenance private while the shared mapped
+        // matcher holds a suffix; remove this host-owned envelope before folds.
+        const consume = (guarded) => {
+          const { __acpGuardTransport: transport, ...payload } = guarded;
+          if (!transport || typeof transport.channel !== 'string') throw new Error('Invalid ACP output envelope.');
+          handler(transport.channel, withAcpEmissionProvenance(payload, transport.meta), transport.meta);
+        };
+        return (event, data, meta) => {
+          if (!acpRunTokenGuardEnabled) { handler(event, data, meta); return; }
+          if (!claudeOutputGuard || claudeOutputGuard.sealed || run.child !== child) return;
+          if (!data || typeof data !== 'object' || Array.isArray(data)) { claudeOutputGuard.fail(); return; }
+          const guarded = { __acpGuardTransport: null, ...data };
+          guarded.__acpGuardTransport = { channel: event, meta };
+          claudeOutputGuard.accept(guarded, consume);
+        };
+      };
       const knownPromptBudgetModel = findKnownModel(
         def,
         safeModel,
@@ -15972,6 +14640,11 @@ export async function startServer({
         imagePaths: def.supportsImagePaths ? acpPromptImagePaths : [],
         resourcePaths: odNextTaskInputSnapshot?.attachmentPaths ?? [],
         mcpServers,
+        ...(ownAcpMcpServers ? {
+          ownMcpServers: ownAcpMcpServers,
+          runToolToken: toolTokenGrant.token,
+          onUnsafeOutput: () => claudeOutputGuard?.fail(),
+        } : {}),
         envFormat: def.acpMcpEnvFormat ?? 'array',
         // Lets the session withhold stdio MCP servers from agent builds that
         // reject them (Kimi 0.37.0+). Unset for every other runtime, which
@@ -15979,7 +14652,7 @@ export async function startServer({
         stdioMcpRemovedInVersion: def.acpStdioMcpRemovedInVersion ?? null,
         executionProfile,
         completePromptOnTurnEnd: def.acpTurnEndCompletesPrompt === true,
-        ...(def.id === 'amr' ? { modelUnavailableErrorCode: 'AMR_MODEL_UNAVAILABLE' } : {}),
+        ...({}),
         // Resume the prior upstream session (drives `session/load`) when the
         // resume-identity guard says it is safe; otherwise a fresh session/new.
         ...(def.resumesSessionViaAcpLoad === true && agentResumePromptPolicy.resumeSessionId
@@ -15993,7 +14666,7 @@ export async function startServer({
           `acp_${kind}`,
           { gracefulWaitMs: kind === 'completed' ? 500 : 0 },
         ),
-        send: (event, data, meta) => {
+        send: guardAcpOutput((event, data, meta) => {
           if (event === 'error') {
             clearFirstOutputWatchdog();
             if (run.cancelRequested) return;
@@ -16030,20 +14703,7 @@ export async function startServer({
           // silence rather than our own teardown.
           if (event === 'error') retireAttemptOnAcpVerdict();
           if (event === 'error') flushVisibleAgentStderr();
-          if (def.id === 'amr' && event === 'error') {
-            const failure = classifyAmrAccountFailureSignal({
-              details: data?.error?.details,
-              message: data?.message,
-              errorMessage: data?.error?.message,
-              errorCode: data?.error?.code,
-              stdoutTail: agentStdoutTail,
-              stderrTail: agentStderrTail,
-            }, configuredAgentEnv);
-            if (failure) {
-              sendAmrAccountFailure(failure);
-              return;
-            }
-          }
+
           // Hold back the `resume_failed` error so the same-turn reseed stays
           // transparent. When this run is resuming an upstream session via
           // `session/load` and the agent reports that session is gone, the ACP
@@ -16113,7 +14773,7 @@ export async function startServer({
             return;
           }
           send(event, data);
-        },
+        }),
         ...(acpStageTimeoutMs !== undefined ? { stageTimeoutMs: acpStageTimeoutMs } : {}),
       });
       // Publish AMR/vela child-evidence coverage at child close. Without it the
@@ -16193,6 +14853,11 @@ export async function startServer({
       trackingSubstantiveOutput = true;
       const codexSession = attachCodexAppServerSession({
         child,
+        ...(codexRunTokenGuardEnabled ? {
+          ...(codexRunMcpConfig ? { runMcpConfig: codexRunMcpConfig } : {}),
+          requireRunMcpConfig: codexRunMcpRequired,
+          runToolToken: toolTokenGrant.token, onUnsafeOutput: failUnsafeNativeOutput,
+        } : {}),
         prompt: composed,
         cwd: effectiveCwd,
         model: safeModel,
@@ -16211,7 +14876,7 @@ export async function startServer({
           agentResumeCtx.isResuming && agentResumeCtx.resumeSessionId
             ? agentResumeCtx.resumeSessionId
             : null,
-        onAgentEvent: (event) => sendAgentEvent(event),
+        onAgentEvent: sendGuardedNativeAgentEvent,
         onCliReady: () => noteCliReadyAt(),
         onSessionReady: () => noteSessionInitDoneAt(),
         // The prompt boundary for this transport is the `turn/start` write, not
@@ -16246,22 +14911,25 @@ export async function startServer({
       trackingSubstantiveOutput = true;
       const handler = createJsonEventStreamHandler(
         def.eventParser || def.id,
-        sendAgentEvent,
-        def.id === 'opencode'
+        sendGuardedNativeAgentEvent,
+        {
+          ...(openCodeRunTokenGuardEnabled ? { runToolToken: toolTokenGrant.token, onUnsafeOutput: failUnsafeNativeOutput } : {}),
+          ...(def.id === 'opencode'
           ? {
               openCodeChildEvidence: {
                 cliVersion:
                   run.preflightAgentCliVersion
                   ?? getDetectedRuntimeVersions(def.id)?.agentCliVersion
                   ?? '',
-                onCandidate: (candidate) => sendAgentEvent({
+                onCandidate: (candidate) => sendGuardedNativeAgentEvent({
                   type: 'diagnostic',
                   name: 'opencode_child_task_candidate',
                   ...candidate,
                 }),
               },
             }
-          : {},
+          : {}),
+        },
       );
       jsonEventStreamHandler = handler;
       child.stdout.on('data', (chunk) => handler.feed(chunk));
@@ -16316,6 +14984,7 @@ export async function startServer({
     // instead of raw SIGTERM (applies to pi-rpc and acp-json-rpc).
     run.acpSession = acpSession;
     child.stderr.on('data', (chunk) => {
+      if (claudeOutputGuard?.sealed || run.child !== child) return;
       noteAgentActivity();
       emitVisibleAgentStderr(chunk);
     });
@@ -16355,6 +15024,7 @@ export async function startServer({
       clearInactivityWatchdog();
       clearFirstOutputWatchdog();
       cleanupPromptFile();
+      cleanupClaudeRunMcpConfig();
       flushVisibleAgentStderr();
       revokeToolToken('child_exit');
       if (!attemptStillOwnsRun()) return;
@@ -16362,7 +15032,8 @@ export async function startServer({
       if (run.pendingTerminalFinish) return;
       if (finishCanceledIfRequested(1, null)) return;
       if (acpSession) beginAcpAttemptTermination('acp_child_error');
-      send('error', createSseErrorPayload('AGENT_EXECUTION_FAILED', err.message));
+      const safeError = claudeOutputGuard?.sanitize({ message: err.message });
+      send('error', createSseErrorPayload('AGENT_EXECUTION_FAILED', safeError?.message ?? (claudeOutputGuard ? CLAUDE_OUTPUT_FAILURE : err.message)));
       finishWithRetryDecision('failed', 1, null);
     });
     child.on('close', async (code, signal) => {
@@ -16383,6 +15054,7 @@ export async function startServer({
       revokeToolToken('child_exit');
       unregisterChatAgentEventSink();
       if (run.pendingTerminalFinish) return;
+      if (!sealClaudeOutput()) return finishWithRetryDecision('failed', 1, null, { allowRetry: false });
       if (acpSession) beginAcpAttemptTermination('acp_child_close');
       if (
         def.id === 'codex' &&
@@ -16413,7 +15085,7 @@ export async function startServer({
               runEndedAtMs: Date.now(),
             });
             for (const observation of childEvidence.observations) {
-              sendAgentEvent({
+              sendSanitizedNativeAgentEvent({
                 type: 'diagnostic',
                 name: 'normalized_agent_observation_v1',
                 observation,
@@ -16424,7 +15096,7 @@ export async function startServer({
             // observation ids here reported one re-invoked Child once per
             // invocation, which no other runtime does.
             const { knownChildCount } = childEvidence;
-            sendAgentEvent({
+            sendSanitizedNativeAgentEvent({
               type: 'diagnostic',
               name: 'child_evidence_coverage_v1',
               coverage: {
@@ -16437,8 +15109,8 @@ export async function startServer({
               },
             });
           } catch (error) {
-            console.warn('[observability] Codex child evidence unavailable', String(error));
-            sendAgentEvent({
+            console.warn('[observability] Codex child evidence unavailable', codexRunTokenGuardEnabled ? 'collector failed' : String(error));
+            sendSanitizedNativeAgentEvent({
               type: 'diagnostic',
               name: 'child_evidence_coverage_v1',
               coverage: {
@@ -16474,14 +15146,14 @@ export async function startServer({
               }),
             });
             for (const fact of facts) {
-              sendAgentEvent({
+              sendSanitizedNativeAgentEvent({
                 type: 'diagnostic',
                 name: 'opencode_child_runtime_fact',
                 ...fact,
               });
             }
           } catch (error) {
-            console.warn('[observability] OpenCode child export unavailable', String(error));
+            console.warn('[observability] OpenCode child export unavailable', openCodeRunTokenGuardEnabled ? 'collector failed' : String(error));
           }
         }
       }
@@ -16573,16 +15245,7 @@ export async function startServer({
         code !== 0 &&
         !run.cancelRequested
       ) {
-        if (def.id === 'amr') {
-          const amrFailure = classifyAmrAccountFailureSignal({
-            stdoutTail: agentStdoutTail,
-            stderrTail: agentStderrTail,
-          }, configuredAgentEnv);
-          if (amrFailure) {
-            sendAmrAccountFailure(amrFailure);
-            return finishWithRetryDecision('failed', code ?? 1, signal ?? null);
-          }
-        }
+
         const authFailure = classifyAgentAuthFailure(
           agentId,
           `${agentStderrTail}\n${agentStdoutTail}`,
@@ -17014,9 +15677,13 @@ export async function startServer({
           const tail = finishedProtocol.visibleTail;
           if (tail) {
             const tailEvent = def.streamFormat === 'plain' ? 'stdout' : 'agent';
-            const tailData = tailEvent === 'stdout'
+            let tailData = tailEvent === 'stdout'
               ? { chunk: tail }
               : { type: 'text_delta', delta: tail };
+            if (claudeOutputGuard) {
+              tailData = claudeOutputGuard.sanitize(tailData);
+              if (!tailData) return finishWithRetryDecision('failed', 1, null, { allowRetry: false });
+            }
             // The protocol withholds any text that might still turn out to be
             // a reserved `<open-design-…>` block; `finish()` is what finally
             // rules that out, so this tail is the first moment those bytes are
@@ -17488,6 +16155,7 @@ export async function startServer({
           fs.promises.unlink(agentLogFilePath).catch(() => {});
         }
         cleanupPromptFile();
+        cleanupClaudeRunMcpConfig();
       }
     });
     if (promptDeliveredAtSpawn) {
@@ -17717,7 +16385,7 @@ export async function startServer({
     };
   });
 
-  registerRunRoutes(app, {
+  const runRoutes = registerRunRoutes(app, {
     db,
     design,
     resources: { listAllSkillLikeEntries },
@@ -17779,18 +16447,40 @@ export async function startServer({
       getWorkspaceProjectByProjectId,
       ensureWorkspaceProject,
     },
-    amrWorkspaceScope: {
-      isSignedIn: async () => {
-        const appConfig = await readAppConfig(RUNTIME_DATA_DIR).catch(
-          () => ({}),
-        );
-        return readVelaLoginStatus(
-          process.env,
-          agentCliEnvForAgent(appConfig.agentCliEnv, 'amr'),
-        ).loggedIn;
-      },
-    },
     authorizeProjectRequest,
+  });
+
+  registerExternalRunStatusMcpTool(mcpHttpRegistry, {
+    toolTokenRegistry,
+    credentialStore: mcpCredentialStore,
+    readUnboundProjectDetail: projectRoutes.readUnboundProjectDetail,
+    peekInMemoryRun: runRoutes.peekInMemoryRun,
+    peekRunProjectId: design.runs.peekProjectId,
+    queryRun: createProjectRunCommandService({ createProject: projectRoutes.handleProjectCreate,
+      deleteProject: projectRoutes.handleProjectDelete, startRun: runRoutes.handleRunCreate, getRun: runRoutes.handleRunQuery }).getRun,
+    readRunEvents: design.runs.readEvents,
+    isUnboundProjectCurrentlyVisible: projectRoutes.isUnboundProjectCurrentlyVisible,
+    decideProjectRequest: decideProjectRequestSync,
+    getOrigins: async () => mcpRoutes.getOrigins(),
+  });
+  registerExternalRunCancelMcpTool(mcpHttpRegistry, {
+    toolTokenRegistry,
+    credentialStore: mcpCredentialStore,
+    readUnboundProjectDetail: projectRoutes.readUnboundProjectDetail,
+    peekInMemoryRun: runRoutes.peekInMemoryRun,
+    readRunStatus: runRoutes.readRunStatus,
+    decideProjectRequest: decideProjectRequestSync,
+    beginCancelRun: runRoutes.beginCancelRun,
+  });
+  registerProjectRunCommandMcpTools(mcpHttpRegistry, {
+    toolTokenRegistry, credentialStore: mcpCredentialStore,
+    commands: createProjectRunCommandService({ createProject: projectRoutes.handleProjectCreate,
+      deleteProject: projectRoutes.handleProjectDelete, startRun: runRoutes.handleRunCreate }),
+    getProject: (projectId) => getProject(db, projectId),
+    getProjectWorkspaceId: (projectId) => getWorkspaceProjectByProjectId(db, projectId)?.workspaceId ?? null,
+    readUnboundProjectDetail: projectRoutes.readUnboundProjectDetail,
+    isUnboundProjectCurrentlyVisible: projectRoutes.isUnboundProjectCurrentlyVisible,
+    decideProjectRequest: decideProjectRequestSync,
   });
 
   // Each routine fire resolves an agent, prepares project/conversation state,
@@ -18207,6 +16897,7 @@ export async function startServer({
     uploads: uploadDeps,
     node: nodeDeps,
     projectStore: projectStoreDeps,
+    activeContextStore,
     browserControl,
     authorizeProjectRequest,
     authorizeProjectToolRequest,
@@ -18309,6 +17000,8 @@ export async function startServer({
     // work below.
     let messageEventPayloadHeal: MessageEventPayloadHealHandle | null = null;
     const cleanupDaemonBackgroundWork = () => {
+      unsubscribeMcpApprovalRevocation();
+      mcpApprovalStore.close();
       stopDiagnosticConfigObserver();
       stopDiagnosticApiObserver();
       void automaticDiagnostics?.stop();
@@ -18317,20 +17010,14 @@ export async function startServer({
       void messageEventPayloadHeal?.stop();
       stopEvidenceDelivery();
       clearTerminalTelemetryFallbackTimers();
-      amrTerminalReportDelivery.stop();
       telemetry.disposeFatalHandlers();
       composioConnectorProvider.stopCatalogRefreshLoop();
       orbitService.stop();
       routineService?.stop();
-      clearInterval(teamResourcesPollTimer);
       // Disarms synchronously; the returned promise drains an in-flight pass.
       // Nothing here awaits it — the point is that no NEW pass can start once
       // the daemon is coming down.
       void chatArtifactMaintenance.stop();
-      workspaceHubSubscriptions?.dispose();
-      hubEventRefreshes.dispose();
-      workspaceDirectoryRefreshes.dispose();
-      workspaceBillingRuntime.dispose();
       proactiveContentPull.dispose();
       collabPublishWatcher.dispose();
       collabCloud?.dispose();
@@ -18339,7 +17026,6 @@ export async function startServer({
       if (daemonShutdownStarted) return;
       daemonShutdownStarted = true;
       daemonShuttingDown = true;
-      amrTerminalReportDelivery.stop();
       clearTerminalTelemetryFallbackTimers();
       const shutdownGraceMs = resolveChatRunShutdownGraceMs();
       await design.runs.shutdownActive({ graceMs: shutdownGraceMs });
@@ -18358,6 +17044,7 @@ export async function startServer({
     let server;
     try {
       server = app.listen(port, host);
+      readListenerAddress = () => server.address();
       server.once('listening', () => {
         // Widen the between-request idle window so kept-alive sockets
         // belonging to chat/SSE clients survive the gaps between bursts.
@@ -18399,7 +17086,6 @@ export async function startServer({
           return;
         }
         resolvedPort = boundPort;
-        startAmrTerminalReportDeliveryAfterBind(amrTerminalReportDelivery, boundPort);
         messageEventPayloadHeal ??= startMessageEventPayloadHeal({ db });
         // Only once listening: a startup-time fatal report would add lines to
         // the log tail that packaged startup telemetry samples.

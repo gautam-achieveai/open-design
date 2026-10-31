@@ -1,26 +1,18 @@
 import type { Express } from 'express';
 import { createApiError } from '@open-design/contracts';
-import { ACTIVE_CONTEXT_TTL_MS } from '../constants.js';
+import { readActiveContext, type ActiveContext, type ActiveContextStore } from '../services/active-context.js';
 import type { RouteDeps } from '../server-context.js';
 import { defineJsonRoute, err, mountJsonRoute, ok, type Result } from '../http/index.js';
 
-export interface RegisterActiveContextRoutesDeps extends RouteDeps<'db' | 'http' | 'projectStore'> {}
+export interface RegisterActiveContextRoutesDeps extends RouteDeps<'db' | 'http' | 'projectStore'> {
+  activeContextStore: ActiveContextStore;
+}
 
 // Soft "what is the user looking at right now in OpenDesign?" channel. The
 // web UI POSTs the current project + file on every route change; the MCP
 // surface reads it so a coding agent in another repo can resolve "the design
 // I have open" without the user typing the project id. In-memory only —
 // daemon restart clears it.
-interface ActiveContext {
-  projectId: string;
-  fileName: string | null;
-  ts: number;
-}
-
-interface ActiveContextStore {
-  current: ActiveContext | null;
-}
-
 type PostActiveInput =
   | { kind: 'clear' }
   | { kind: 'set'; projectId: string; fileName: string | null };
@@ -82,20 +74,7 @@ function handleGetActive(
   _input: void,
   deps: ActiveContextDomainDeps,
 ): Result<GetActiveOutput> {
-  const current = deps.store.current;
-  if (!current || deps.now() - current.ts > ACTIVE_CONTEXT_TTL_MS) {
-    deps.store.current = null;
-    return ok({ active: false });
-  }
-  const project = deps.getProject(deps.db, current.projectId);
-  return ok({
-    active: true,
-    projectId: current.projectId,
-    projectName: project?.name ?? null,
-    fileName: current.fileName,
-    ts: current.ts,
-    ageMs: deps.now() - current.ts,
-  });
+  return ok(readActiveContext(deps.store, (projectId) => deps.getProject(deps.db, projectId), deps.now));
 }
 
 export const postActiveRoute = defineJsonRoute<PostActiveInput, PostActiveOutput, ActiveContextDomainDeps>({
@@ -115,9 +94,8 @@ export const getActiveRoute = defineJsonRoute<void, GetActiveOutput, ActiveConte
 });
 
 export function registerActiveContextRoutes(app: Express, ctx: RegisterActiveContextRoutesDeps): void {
-  const store: ActiveContextStore = { current: null };
   const domainDeps: ActiveContextDomainDeps = {
-    store,
+    store: ctx.activeContextStore,
     db: ctx.db,
     getProject: ctx.projectStore.getProject,
     now: () => Date.now(),

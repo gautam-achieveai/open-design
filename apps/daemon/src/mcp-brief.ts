@@ -14,6 +14,15 @@ import {
 
 const DEFAULT_BRIEF_TTL_MS = 15 * 60 * 1000;
 
+export function localeFromMcpToolMetadata(meta: unknown): string | undefined {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return undefined;
+  const record = meta as Record<string, unknown>;
+  for (const candidate of [record['openai/locale'], record.locale]) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return undefined;
+}
+
 type UnknownRecord = Record<string, unknown>;
 export type LocalMcpBriefLocale = 'en' | 'zh-CN' | 'zh-TW' | 'ja';
 

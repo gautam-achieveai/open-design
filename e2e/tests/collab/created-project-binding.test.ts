@@ -29,7 +29,7 @@ type ProjectWorkspaceScopeBody = {
 type CreatedProject = { conversationId: string; project: { id: string; name: string } };
 type InstalledPlugins = { plugins: Array<{ id: string; title?: string }> };
 
-/** The daemon's ambient signed-in workspace for most of this spec. */
+/** Stale ambient account data must not become project attribution. */
 const AMBIENT = {
   workspaceId: 'ws-bind-personal',
   workspaceName: 'Bind personal',
@@ -41,11 +41,11 @@ const AMBIENT = {
 };
 
 /** A second membership, used to prove explicit headers still outrank ambient. */
-const EXPLICIT_TEAM = {
-  workspaceId: 'ws-bind-team',
-  workspaceName: 'Bind team',
-  workspaceType: 'team' as const,
-  workspaceMemberId: 'mem-bind-team',
+const EXPLICIT_PERSONAL = {
+  workspaceId: 'ws-bind-second-personal',
+  workspaceName: 'Bind second personal',
+  workspaceType: 'personal' as const,
+  workspaceMemberId: 'mem-bind-second-personal',
   role: 'member' as const,
   memberStatus: 'active' as const,
   lifecycleState: 'active' as const,
@@ -53,12 +53,14 @@ const EXPLICIT_TEAM = {
 
 let directoryServer: Server;
 let directoryUrl: string;
+let directoryRequests = 0;
 
 beforeAll(async () => {
   directoryServer = createServer((req, res) => {
+    directoryRequests += 1;
     if (req.url?.startsWith('/api/v1/workspaces') && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ items: [AMBIENT, EXPLICIT_TEAM] }));
+      res.end(JSON.stringify({ items: [AMBIENT, EXPLICIT_PERSONAL] }));
       return;
     }
     res.writeHead(404, { 'content-type': 'application/json' });
@@ -72,6 +74,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((resolve) => directoryServer.close(() => resolve()));
+  expect(directoryRequests, 'local creation must never consult saved Cloud endpoints').toBe(0);
 });
 
 function workspaceHeaders(input: {
@@ -93,18 +96,18 @@ function workspaceHeaders(input: {
 }
 
 /**
- * Put the daemon into "a signed-in workspace is known" — the state every real
- * client reaches within seconds of launch through its own
- * `GET /api/workspace/context` poll. `null` signs it out again.
+ * A legacy client tries to mutate ambient account state. The retired endpoint
+ * must refuse without changing later local project attribution.
  */
 async function setAmbientWorkspace(
   webUrl: string,
   context: Record<string, unknown> | null,
 ): Promise<void> {
-  await requestJson(webUrl, '/api/workspace/context', {
-    body: context ?? {},
-    method: 'PUT',
+  const response = await fetch(new URL('/api/workspace/context', webUrl), {
+    method: 'PUT', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(context ?? {}),
   });
+  expect(response.status, 'retired ambient mutation cannot claim local projects').toBe(404);
 }
 
 async function readScope(
@@ -196,16 +199,16 @@ describe('a created project is bound only to an explicit Workspace', () => {
           // An explicit identity is the only Workspace binding source.
           const explicit = await createProject(
             webUrl,
-            'Bind explicit team',
-            workspaceHeaders(EXPLICIT_TEAM),
+            'Bind explicit personal',
+            workspaceHeaders(EXPLICIT_PERSONAL),
           );
           const explicitScope = await readScope(
             webUrl,
             explicit,
-            workspaceHeaders(EXPLICIT_TEAM),
+            workspaceHeaders(EXPLICIT_PERSONAL),
           );
-          expect(explicitScope.workspaceId).toBe(EXPLICIT_TEAM.workspaceId);
-          expect(explicitScope.kind).toBe('team');
+          expect(explicitScope.workspaceId).toBe(EXPLICIT_PERSONAL.workspaceId);
+          expect(explicitScope.kind).toBe('personal');
 
           // Signed-out remains the same legal unbound/local path.
           await setAmbientWorkspace(webUrl, null);
@@ -260,7 +263,7 @@ describe('an asserted workspace identity is persisted as local attribution', () 
                 ...workspaceHeaders({
                   workspaceId: 'ws-bind-foreign',
                   workspaceMemberId: 'mem-bind-foreign',
-                  workspaceType: 'team',
+                  workspaceType: 'personal',
                 }),
               },
               method: 'POST',
@@ -271,11 +274,11 @@ describe('an asserted workspace identity is persisted as local attribution', () 
 
           const sourceScope = await readScope(webUrl, source);
           expect(sourceScope.workspaceId).toBe('ws-bind-foreign');
-          expect(sourceScope.kind).toBe('team');
+          expect(sourceScope.kind).toBe('personal');
 
           const copyScope = await readScope(webUrl, copyId);
           expect(copyScope.workspaceId).toBe('ws-bind-foreign');
-          expect(copyScope.kind).toBe('team');
+          expect(copyScope.kind).toBe('personal');
         },
         {
           env: {
@@ -321,9 +324,8 @@ async function duplicateFirstDuplicablePlugin(
 }
 
 /**
- * A vela config home guaranteed to hold no session, so the daemon's
- * `readVelaControlApiContext` config-file fallback cannot pick up the developer
- * machine's real production login.
+ * Suite-owned legacy home for the obsolete environment fixture. The zero
+ * directory-request assertion proves these old settings no longer authorize work.
  */
 async function emptyAmrHome(scratchDir: string): Promise<string> {
   const dir = join(scratchDir, 'empty-amr-home');

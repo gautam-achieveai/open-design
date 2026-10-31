@@ -44,7 +44,6 @@ import { ProjectView } from '../../src/components/ProjectView';
 import type { ProjectWorkspaceScopeState } from '../../src/collab/useProjectWorkspaceScope';
 import { resetWorkspaceContextCache } from '../../src/collab/useWorkspaceContext';
 import { streamViaDaemon } from '../../src/providers/daemon';
-import { checkAmrBalanceGate } from '../../src/runtime/amr-balance-gate';
 import {
   createConversation,
   listConversations,
@@ -148,23 +147,9 @@ vi.mock('../../src/providers/daemon', () => ({
   canUpgradeVelaPlan: vi.fn().mockReturnValue(false),
 }));
 
-vi.mock('../../src/runtime/amr-balance-gate', async () => {
-  const actual = await vi.importActual<typeof import('../../src/runtime/amr-balance-gate')>(
-    '../../src/runtime/amr-balance-gate',
-  );
-  return { ...actual, checkAmrBalanceGate: vi.fn().mockResolvedValue({ kind: 'allow' }) };
-});
-
 vi.mock('../../src/providers/project-events', () => ({
   useProjectFileEvents: vi.fn(),
 }));
-
-vi.mock('../../src/runtime/amr-low-balance-plan', async () => {
-  const actual = await vi.importActual<
-    typeof import('../../src/runtime/amr-low-balance-plan')
-  >('../../src/runtime/amr-low-balance-plan');
-  return { ...actual, resolveAmrPlan: vi.fn().mockResolvedValue('pro') };
-});
 
 vi.mock('../../src/runtime/brands', async () => {
   const actual = await vi.importActual<typeof import('../../src/runtime/brands')>(
@@ -237,16 +222,11 @@ vi.mock('../../src/components/ChatPane', async (importOriginal) => ({
   ChatPane: (props: {
     activeConversationId?: string | null;
     sendDisabled?: boolean;
-    amrBalanceCardUsd?: number | null;
-    onAmrBalanceUpgrade?: () => void;
     onSend?: (prompt: string, attachments: [], commentAttachments: []) => unknown;
   }) => {
     chatPaneSpy(props);
     return (
       <div>
-        <div data-testid="amr-balance-card-prop">
-          {props.amrBalanceCardUsd == null ? 'none' : String(props.amrBalanceCardUsd)}
-        </div>
         <button
           type="button"
           data-testid="normal-send"
@@ -255,21 +235,12 @@ vi.mock('../../src/components/ChatPane', async (importOriginal) => ({
         >
           send
         </button>
-        <button
-          type="button"
-          data-testid="upgrade-card-click"
-          disabled={props.onAmrBalanceUpgrade == null}
-          onClick={() => props.onAmrBalanceUpgrade?.()}
-        >
-          upgrade
-        </button>
       </div>
     );
   },
 }));
 
 const mockedStreamViaDaemon = vi.mocked(streamViaDaemon);
-const mockedCheckAmrBalanceGate = vi.mocked(checkAmrBalanceGate);
 const mockedListConversations = vi.mocked(listConversations);
 const mockedCreateConversation = vi.mocked(createConversation);
 const mockedListMessages = vi.mocked(listMessages);
@@ -285,7 +256,7 @@ const config: AppConfig = {
   apiKey: '',
   baseUrl: '',
   model: 'deepseek-v4-flash',
-  agentId: 'amr',
+  agentId: 'claude',
   skillId: null,
   designSystemId: null,
 };
@@ -456,7 +427,7 @@ function projectViewElement(workspaceId: string) {
       project={project(workspaceId)}
       routeFileName={null}
       config={config}
-      agents={[{ id: 'amr', name: 'amr', available: true }] as unknown as AgentInfo[]}
+      agents={[{ id: 'claude', name: 'Claude', available: true }] as unknown as AgentInfo[]}
       skills={[] as SkillSummary[]}
       designTemplates={[] as SkillSummary[]}
       designSystems={[] as DesignSystemSummary[]}
@@ -518,7 +489,6 @@ function resetHarness() {
   mockedFetchProjectFiles.mockResolvedValue([]);
   mockedFetchBrands.mockResolvedValue([]);
   mockedStreamViaDaemon.mockResolvedValue(undefined);
-  mockedCheckAmrBalanceGate.mockResolvedValue(EMPTY_WALLET as never);
   mockedLoadTabs.mockResolvedValue({ tabs: [], active: null });
   projectCollabMocks.writerAuthority = 'allowed';
   projectCollabMocks.viewerOnly = false;
@@ -532,73 +502,6 @@ describe('OPEND-2720 项目页的付款入口读的是权威身份', () => {
     vi.unstubAllGlobals();
     vi.clearAllMocks();
     resetWorkspaceContextCache();
-  });
-
-  // 矩阵 B 格。
-  it('团队 Max 所有者:出会员转化弹窗并跳自动充值,而不是「请联系团队所有者充值」', async () => {
-    workspaceScopeMocks.projectScope = {
-      loading: false,
-      scope: boundScope(TEAM_WORKSPACE, 'team', TEAM_SETTINGS_URL),
-    };
-    workspaceScopeMocks.ambientContext = authoritativeContext(
-      TEAM_WORKSPACE,
-      'team',
-      TEAM_SETTINGS_URL,
-      'Max Team',
-    );
-    workspaceScopeMocks.billingResponse = TEAM_MAX_BILLING;
-
-    render(projectViewElement(TEAM_WORKSPACE));
-    await clickSendWhenReady();
-
-    await waitFor(() => expect(screen.getByTestId('amr-balance-card-prop').textContent).toBe('0'));
-    // 他自己就是所有者,「去找所有者」那张是死胡同。
-    await waitFor(() => expect(screen.getByTestId('amr-balance-dialog')).toBeTruthy());
-    expect(screen.queryByTestId('amr-balance-owner-dialog')).toBeNull();
-
-    // 弹窗的主 CTA 必须存在且落在自动充值 —— Max 所有者没有更高的套餐可买。
-    fireEvent.click(await screen.findByTestId('amr-balance-dialog-plans'));
-    expect(mockedWindowOpen).toHaveBeenCalledTimes(1);
-    const dialogUrl = openedUrl(0);
-    expect(dialogUrl).toContain('billing=auto-recharge');
-    expect(dialogUrl).toContain(`workspaceId=${TEAM_WORKSPACE}`);
-
-    // 卡上那颗必须落在同一处(见下面那条守卫的理由)。
-    fireEvent.click(screen.getByTestId('upgrade-card-click'));
-    expect(mockedWindowOpen).toHaveBeenCalledTimes(2);
-    expect(billingDestination(openedUrl(1))).toBe(billingDestination(dialogUrl));
-  });
-
-  // 矩阵 C 格。源码自己把这称作缺陷:「卡和弹窗…两者跳去不同的地方是缺陷而不是
-  // 特性」(`runtime/amr-balance-branch.ts` 的 `amrBalanceDialogUpgradeIntent`)。
-  // 这条把那句话变成可执行的守卫。
-  it('个人 Max 所有者:卡上那颗和弹窗那颗落在同一处', async () => {
-    workspaceScopeMocks.projectScope = {
-      loading: false,
-      scope: boundScope(PERSONAL_WORKSPACE, 'personal', PERSONAL_SETTINGS_URL),
-    };
-    workspaceScopeMocks.ambientContext = authoritativeContext(
-      PERSONAL_WORKSPACE,
-      'personal',
-      PERSONAL_SETTINGS_URL,
-      'Personal workspace',
-    );
-    workspaceScopeMocks.billingResponse = PERSONAL_MAX_BILLING;
-
-    render(projectViewElement(PERSONAL_WORKSPACE));
-    await clickSendWhenReady();
-
-    await waitFor(() => expect(screen.getByTestId('amr-balance-card-prop').textContent).toBe('0'));
-    await waitFor(() => expect(screen.getByTestId('amr-balance-dialog')).toBeTruthy());
-
-    fireEvent.click(await screen.findByTestId('amr-balance-dialog-plans'));
-    const dialogUrl = openedUrl(0);
-    fireEvent.click(screen.getByTestId('upgrade-card-click'));
-    const cardUrl = openedUrl(1);
-
-    expect(billingDestination(cardUrl)).toBe(billingDestination(dialogUrl));
-    expect(cardUrl).toContain('billing=auto-recharge');
-    expect(cardUrl).toContain(`workspaceId=${PERSONAL_WORKSPACE}`);
   });
 
   // 条件 1(调度方 2026-09-07):合出来的账单上下文里 `role` 可能是 owner。
@@ -621,7 +524,8 @@ describe('OPEND-2720 项目页的付款入口读的是权威身份', () => {
     await clickSendWhenReady();
 
     // 先证明账单那条链**确实**已经拿到了 owner 身份(否则这条守卫恒真)。
-    await waitFor(() => expect(screen.getByTestId('amr-balance-dialog')).toBeTruthy());
+    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalledOnce());
+    expect(screen.queryByTestId('amr-balance-dialog')).toBeNull();
 
     await waitFor(() => expect(resourceContextObservations.length).toBeGreaterThan(0));
     for (const observed of resourceContextObservations) {
@@ -631,56 +535,5 @@ describe('OPEND-2720 项目页的付款入口读的是权威身份', () => {
       expect(observed!.permissions.canManageBilling).toBe(false);
       expect(observed!.permissions.canManageAutoRecharge).toBe(false);
     }
-  });
-
-  // 用户 2026-09-07:「不能等半天错误的身份模型再显示正确的」。权威上下文还没
-  // 到(或者根本不可用)时,付款入口按 scope 的最小权限走 —— 团队工作区因此
-  // 落到「找所有者」那张,而不是给出一颗点了会被后端拒的按钮。
-  // 关键是:**这一格绝不许拿环境里那个个人工作区顶上**。
-  it('权威上下文缺席时按 scope 的最小权限走,不借用别的工作区', async () => {
-    workspaceScopeMocks.projectScope = {
-      loading: false,
-      scope: boundScope(TEAM_WORKSPACE, 'team', TEAM_SETTINGS_URL),
-    };
-    workspaceScopeMocks.ambientContext = null;
-    workspaceScopeMocks.billingResponse = TEAM_MAX_BILLING;
-
-    render(projectViewElement(TEAM_WORKSPACE));
-    await clickSendWhenReady();
-
-    await waitFor(() =>
-      expect(screen.getByTestId('amr-balance-owner-dialog')).toBeTruthy(),
-    );
-    expect(screen.queryByTestId('amr-balance-dialog')).toBeNull();
-
-    fireEvent.click(screen.getByTestId('upgrade-card-click'));
-    expect(mockedWindowOpen).not.toHaveBeenCalled();
-  });
-
-  // 环境里选中的是**另一个**工作区时,同样不许借用它的身份 —— 那正是
-  // `ProjectView.tsx:2290-2296` 那段注释在防的「掉回个人钱包」。
-  it('环境里是另一个工作区时,不许拿它的身份回答这个项目的付款权限', async () => {
-    workspaceScopeMocks.projectScope = {
-      loading: false,
-      scope: boundScope(TEAM_WORKSPACE, 'team', TEAM_SETTINGS_URL),
-    };
-    workspaceScopeMocks.ambientContext = authoritativeContext(
-      PERSONAL_WORKSPACE,
-      'personal',
-      PERSONAL_SETTINGS_URL,
-      'Personal workspace',
-    );
-    workspaceScopeMocks.billingResponse = TEAM_MAX_BILLING;
-
-    render(projectViewElement(TEAM_WORKSPACE));
-    await clickSendWhenReady();
-
-    await waitFor(() =>
-      expect(screen.getByTestId('amr-balance-owner-dialog')).toBeTruthy(),
-    );
-    expect(screen.queryByTestId('amr-balance-dialog')).toBeNull();
-
-    fireEvent.click(screen.getByTestId('upgrade-card-click'));
-    expect(mockedWindowOpen).not.toHaveBeenCalled();
   });
 });

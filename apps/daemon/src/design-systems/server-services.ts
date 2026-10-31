@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
 import {
   readTeamResourceMaterialization,
@@ -10,7 +11,8 @@ import {
   getWorkspaceProjectByProjectId,
   getWorkspaceResourceByResourceId,
 } from '../db.js';
-import { workspaceTeamSkillBindingAllowsRead } from '../skills/workspace-team-binding.js';
+import { workspaceTeamSkillBindingActivationFence, workspaceTeamSkillBindingAllowsRead } from '../skills/workspace-team-binding.js';
+import { skillCatalogBindingFence, skillCatalogBindingStillVisible } from '../skills.js';
 import { workspaceTeamDesignSystemBindingAllowsRead } from './workspace-team-binding.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -174,6 +176,7 @@ export function createDesignSystemServerServices({
         db?: Database.Database;
         workspaceId?: string | null;
         workspaceMemberId?: string | null;
+        onBindingSnapshot?: (id: string, fence: string) => void;
       },
     ) => Promise<SkillEntry[]>;
     findSkillById: (skills: SkillEntry[], id: string) => SkillEntry | undefined;
@@ -245,75 +248,64 @@ export function createDesignSystemServerServices({
    * branch the way a plain `options.workspaceId ? … : …` truthiness check
    * would.
    */
-  async function listAllSkills(options: {
+  async function listAllSkillsSnapshot(options: {
     workspaceId?: string | null;
     workspaceMemberId?: string | null;
   } = {}) {
     const db = getDb?.();
     if (!db || options.workspaceId === undefined) {
-      return skills.listSkills(roots.SKILL_ROOTS);
+      return { entries: await skills.listSkills(roots.SKILL_ROOTS), revalidate: () => false };
     }
+    // Capture before discovery reads any files. Any skill binding change can
+    // alter the meaning of bytes already read, including an empty result.
+    const skillBindings = db.prepare("SELECT * FROM workspace_resources WHERE resource_type = 'skill' ORDER BY resource_id COLLATE BINARY").raw().safeIntegers();
+    const bindingRows = skillBindings.all();
+    const ordinaryFences = new Map<string, string>();
     const personalAndBuiltIn = await skills.listSkills(roots.SKILL_ROOTS, {
       db,
       workspaceId: options.workspaceId,
       workspaceMemberId: options.workspaceMemberId ?? null,
+      onBindingSnapshot: (id, fence) => ordinaryFences.set(id, fence),
     });
     const workspaceId = options.workspaceId?.trim();
     const userSkillsRoot = roots.SKILL_ROOTS[0];
-    if (!workspaceId || !userSkillsRoot) return personalAndBuiltIn;
-    const workspaceRoot = teamResourceWorkspaceRoot(userSkillsRoot, workspaceId);
-    let directories: fs.Dirent[] = [];
-    try {
-      directories = await fs.promises.readdir(workspaceRoot, { withFileTypes: true });
-    } catch {
-      return personalAndBuiltIn;
-    }
-    const markerByDirectory = new Map<string, string>();
-    await Promise.all(
-      directories
-        .filter((entry) => entry.isDirectory())
-        .map(async (entry) => {
-          // Skill hub ids may use either the plain local id or the historical
-          // `user:` prefix. Both materialize into the same safe storage name;
-          // the marker is authoritative about which logical id was pulled.
-          const candidates = [entry.name, `user:${entry.name}`];
-          let marker = null;
-          for (const candidate of candidates) {
-            marker = await readTeamResourceMaterialization(
-              userSkillsRoot,
-              workspaceId,
-              candidate,
-              entry.name,
-            );
-            if (marker) break;
-          }
-          if (
-            marker?.kind !== 'skill'
-            || !workspaceTeamSkillBindingAllowsRead(db, workspaceId, marker.resourceId)
-          ) return;
-          markerByDirectory.set(path.join(workspaceRoot, entry.name), marker.resourceId);
-        }),
-    );
-    if (markerByDirectory.size === 0) return personalAndBuiltIn;
-    const discoveredTeam = await skills.listSkills([workspaceRoot]);
-    // Re-check the exact binding after filesystem parsing. Reconciliation can
-    // tombstone a Team Skill while SKILL.md and its attachments are being
-    // read; that newer negative verdict must win over the stale directory.
-    const team = discoveredTeam.filter((entry) => {
-      const logicalId = typeof entry.dir === 'string'
-        ? markerByDirectory.get(entry.dir)
-        : undefined;
-      return Boolean(
-        logicalId
-        && (entry.id === logicalId || entry.id.startsWith(`${logicalId}:`))
-        && workspaceTeamSkillBindingAllowsRead(db, workspaceId, logicalId),
-      );
-    });
-    const teamIds = new Set(team.map((entry) => entry.id));
-    return [
-      ...team.map((entry) => ({ ...entry, teamSynced: true })),
-      ...personalAndBuiltIn.filter((entry) => !teamIds.has(entry.id)),
-    ];
+    // Origin is private: Team marker IDs can contain colons, and teamSynced
+    // alone does not distinguish a mirror from an ordinary legacy binding.
+    // This closes binding changes, not concurrent marker/content replacement
+    // or changes to discovery/shadow precedence after this snapshot.
+    const snapshot = (entries: SkillEntry[], teamOrigins: Map<string, { logicalId: string; bindingFence: string | null }>) => {
+      const origins = new Map(entries.map((entry) => [entry.id, {
+        id: entry.id, source: entry.source, teamSynced: entry.teamSynced === true,
+        teamOrigin: teamOrigins.get(entry.id),
+      }]));
+      return { entries, revalidate: (selectedIds: readonly string[]) => {
+        try {
+          if (!isDeepStrictEqual(bindingRows, skillBindings.all())) return false;
+          return selectedIds.every((id) => {
+            const origin = origins.get(id);
+            if (!origin) return false;
+            if (origin.teamOrigin !== undefined) {
+              return Boolean(workspaceId && origin.teamSynced
+                && origin.teamOrigin.bindingFence !== null
+                && workspaceTeamSkillBindingAllowsRead(db, workspaceId, origin.teamOrigin.logicalId)
+                && workspaceTeamSkillBindingActivationFence(db, workspaceId, origin.teamOrigin.logicalId) === origin.teamOrigin.bindingFence);
+            }
+            if (origin.source !== 'user' && origin.source !== 'built-in') return false;
+            const fence = ordinaryFences.get(id);
+            return fence !== undefined && skillCatalogBindingFence(db, id) === fence && skillCatalogBindingStillVisible(db, {
+              id: origin.id, source: origin.source, teamSynced: origin.teamSynced,
+            }, options.workspaceId ?? null, options.workspaceMemberId ?? null);
+          });
+        } catch {
+          return false;
+        }
+      } };
+    };
+    return snapshot(personalAndBuiltIn, new Map());
+  }
+
+  async function listAllSkills(options: { workspaceId?: string | null; workspaceMemberId?: string | null } = {}) {
+    return (await listAllSkillsSnapshot(options)).entries;
   }
 
   async function listAllDesignTemplates() {
@@ -380,43 +372,7 @@ export function createDesignSystemServerServices({
       // User directory may not exist yet or be unreadable.
     }
     const workspaceId = options.workspaceId?.trim();
-    if (workspaceId) {
-      try {
-        const team = await designSystems.listDesignSystems(
-          teamResourceWorkspaceRoot(paths.USER_DESIGN_SYSTEMS_DIR, workspaceId),
-          {
-            idPrefix: 'user:',
-            source: 'user',
-            isEditable: false,
-            defaultStatus: 'published',
-            workspaceId,
-          },
-        );
-        // Team directories are intentionally retained after reconciliation so
-        // offline/local data is recoverable. Availability comes from the local
-        // binding row: filter both after async filesystem parsing and before
-        // exposing the catalogue, matching the Skill catalogue's boundary.
-        // This is local SSE/poll state, not a network membership check.
-        const teamDb = getDb?.();
-        const reconciledTeam = teamDb
-          ? team.filter((system) => workspaceTeamDesignSystemBindingAllowsRead(
-              teamDb,
-              workspaceId,
-              system.id,
-            ))
-          : team;
-        const teamIds = new Set(reconciledTeam.map((system) => system.id));
-        const teamSystems = reconciledTeam.map((system) => ({ ...system, teamSynced: true }));
-        installed = options.exactTeam
-          ? teamSystems
-          : [
-              ...teamSystems,
-              ...installed.filter((system) => !teamIds.has(system.id)),
-            ];
-      } catch {
-        // A workspace with no pulled Team systems has no scoped directory.
-      }
-    }
+    if (options.exactTeam) return [];
     const seen = new Set(builtIn.map((s) => s.id));
     const catalog = [
       ...installed
@@ -445,9 +401,7 @@ export function createDesignSystemServerServices({
             system.id,
           );
       }
-      if (system.teamSynced === true) {
-        return Boolean(exactWorkspaceId) && system.workspaceId === exactWorkspaceId;
-      }
+      if (system.teamSynced === true) return false;
       if (!db || !exactWorkspaceId || !exactMemberId) return false;
       return designSystemBindingAllowsRead(
         getWorkspaceResourceByResourceId(db, 'design_system', system.id),
@@ -457,10 +411,25 @@ export function createDesignSystemServerServices({
     });
   }
 
+  async function listAllDesignSystemsSnapshot(options: { workspaceId?: string | null; workspaceMemberId?: string | null } = {}) {
+    const db = getDb?.();
+    if (!db || options.workspaceId === undefined) {
+      return { entries: await listAllDesignSystems(options), revalidate: (_ids: readonly string[]) => false };
+    }
+    const bindings = db.prepare("SELECT * FROM workspace_resources WHERE resource_type = 'design_system' ORDER BY resource_id COLLATE BINARY").raw().safeIntegers();
+    const before = bindings.all();
+    const entries = await listAllDesignSystems(options);
+    return { entries, revalidate: (ids: readonly string[]) => {
+      try { return isDeepStrictEqual(before, bindings.all()) && ids.every(id => entries.some(entry => entry.id === id)); }
+      catch { return false; }
+    } };
+  }
+
   async function readAvailableDesignSystem(
     id: string,
     options: { workspaceId?: string | null; workspaceMemberId?: string | null; exactTeam?: boolean } = {},
   ) {
+    if (options.exactTeam) return null;
     const db = getDb?.();
     const workspaceId = options.workspaceId?.trim();
     if (workspaceId && typeof id === 'string' && id.startsWith('user:')) {
@@ -487,6 +456,7 @@ export function createDesignSystemServerServices({
     id: string,
     options: { workspaceId?: string | null; workspaceMemberId?: string | null; exactTeam?: boolean } = {},
   ) {
+    if (options.exactTeam) return null;
     const db = getDb?.();
     const workspaceId = options.workspaceId?.trim();
     if (workspaceId && typeof id === 'string' && id.startsWith('user:')) {
@@ -514,6 +484,7 @@ export function createDesignSystemServerServices({
     filePath: string,
     options: { workspaceId?: string | null; workspaceMemberId?: string | null; exactTeam?: boolean } = {},
   ) {
+    if (options.exactTeam) return null;
     const db = getDb?.();
     const workspaceId = options.workspaceId?.trim();
     if (workspaceId && typeof id === 'string' && id.startsWith('user:')) {
@@ -942,9 +913,11 @@ export function createDesignSystemServerServices({
     ensureUserDesignSystemWorkspaceProject,
     isProjectUsableDesignSystem,
     listAllDesignSystems,
+    listAllDesignSystemsSnapshot,
     listAllDesignTemplates,
     listAllSkillLikeEntries,
     listAllSkills,
+    listAllSkillsSnapshot,
     readAvailableDesignSystem,
     readAvailableDesignSystemPackageInfo,
     readAvailableDesignSystemStaticFile,

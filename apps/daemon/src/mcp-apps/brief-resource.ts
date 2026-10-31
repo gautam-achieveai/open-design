@@ -1,4 +1,15 @@
-export const OPEN_DESIGN_BRIEF_APP_VERSION = 'v8' as const;
+export const OPEN_DESIGN_BRIEF_APP_VERSION = 'v9' as const;
+export const OPEN_DESIGN_BRIEF_APP_RESOURCE = 'ui://open-design/artifact-card-v9.html';
+
+export function briefAppResourceDefinition() {
+  return {
+    uri: OPEN_DESIGN_BRIEF_APP_RESOURCE, name: 'OpenDesign brief', title: 'Choose the artifact direction',
+    description: 'Interactive local OpenDesign brief card shared by OpenDesign Cloud and Local Codex modes.',
+    mimeType: 'text/html;profile=mcp-app',
+    _meta: { ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } },
+      'ui/prefersBorder': true, 'ui/csp': { connectDomains: [], resourceDomains: [] }, 'openai/widgetPrefersBorder': true },
+  };
+}
 
 /**
  * Self-contained MCP Apps resource. It intentionally has no remote assets,
@@ -247,7 +258,8 @@ export const OPEN_DESIGN_BRIEF_APP_HTML = String.raw`<!doctype html>
           const result = params
             ? (params.result || params)
             : message && (message.result || message);
-          return result && (result.structuredContent || result);
+          const payload = result && (result.structuredContent || result);
+          return payload && payload.ok === true ? payload.data : payload;
         }
 
         function setInputsDisabled(disabled) {
@@ -294,6 +306,7 @@ export const OPEN_DESIGN_BRIEF_APP_HTML = String.raw`<!doctype html>
         }
 
         function render(payload) {
+          if (payload && payload.ok === true) payload = payload.data;
           if (!payload || payload.view !== "brief-form" || !payload.briefDraftId) return;
           const sameDraft =
             draft && draft.briefDraftId === payload.briefDraftId;
@@ -464,6 +477,7 @@ export const OPEN_DESIGN_BRIEF_APP_HTML = String.raw`<!doctype html>
               locale: effectiveLocale(),
             });
             payload = result && (result.structuredContent || (result.result && result.result.structuredContent) || result);
+            if (payload && payload.ok === true) payload = payload.data;
             if (!payload || !payload.briefConfirmationId) throw new Error(copy().invalidConfirmation);
           } catch (error) {
             applyPhase(
@@ -526,7 +540,7 @@ export const OPEN_DESIGN_BRIEF_APP_HTML = String.raw`<!doctype html>
         showLoading();
         standardBridgeInitialization = request("ui/initialize", {
           protocolVersion: "2026-01-26",
-          appInfo: { name: "open-design-brief", version: "v8" },
+          appInfo: { name: "open-design-brief", version: "${OPEN_DESIGN_BRIEF_APP_VERSION}" },
           appCapabilities: {},
         }).then((result) => {
           standardBridgeReady = true;

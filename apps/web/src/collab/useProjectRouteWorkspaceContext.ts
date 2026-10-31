@@ -7,7 +7,8 @@ import {
   workspaceContextRefreshHasVerifiedSelection,
   type WorkspaceContextState,
 } from './useWorkspaceContext';
-import { workspaceIdentityCacheKey } from './workspace-identity';
+import { currentWorkspaceAccountGeneration, workspaceIdentityCacheKey } from './workspace-identity';
+import { bootstrapProjectRoute } from '../state/projects';
 
 export interface ProjectRouteWorkspaceContextState {
   context: WorkspaceCollabContext | null;
@@ -33,9 +34,9 @@ export function projectResourceReadsCanStart(
  * A fresh deep link often learns the project row before the shell's ambient
  * `/workspace/context` read completes. Waiting for that ambient read is both
  * slow and incorrect when the shell currently points at another Workspace.
- * The account directory already names the exact membership for the persisted
- * Workspace, so use it as the request witness and keep every project resource
- * dormant until that witness exists.
+ * Without an ambient account, the daemon project bootstrap proves the local
+ * Personal binding. Account-backed routes retain the directory witness. Keep
+ * project resources dormant until the applicable exact witness exists.
  *
  * An explicitly unbound project remains the compatibility lane: it settles
  * immediately with a null context so signed-out local CLI/BYOK projects keep
@@ -45,8 +46,12 @@ export function useProjectRouteWorkspaceContext(
   persistedWorkspaceId: string | null | undefined,
   ambientState: WorkspaceContextState,
   bootstrapWorkspaceContext?: WorkspaceCollabContext | null,
+  projectId?: string,
 ): ProjectRouteWorkspaceContextState {
   const workspaceId = persistedWorkspaceId?.trim() ?? '';
+  const accountGeneration = currentWorkspaceAccountGeneration();
+  const authorityKey = JSON.stringify([projectId ?? null, workspaceId, accountGeneration]);
+  const localProjectId = projectId && !ambientState.context ? projectId : null;
   const [identityRefreshPending, setIdentityRefreshPending] = useState(false);
   const exactAmbientContext =
     !ambientState.identityChangePending
@@ -60,6 +65,7 @@ export function useProjectRouteWorkspaceContext(
     && bootstrapWorkspaceContext.workspaceMemberId.trim().length > 0
     && bootstrapWorkspaceContext.memberStatus === 'active'
     && bootstrapWorkspaceContext.lifecycleState !== 'deleted'
+    && (!localProjectId || bootstrapWorkspaceContext.workspaceType === 'personal')
       ? bootstrapWorkspaceContext
       : null;
   const exactBootstrapIdentity = workspaceIdentityCacheKey(exactBootstrapContext);
@@ -99,10 +105,10 @@ export function useProjectRouteWorkspaceContext(
     }, delay);
   }, []);
   const [resolved, setResolved] = useState<{
-    workspaceId: string;
+    authorityKey: string;
     state: Omit<ProjectRouteWorkspaceContextState, 'retry'>;
   }>(() => ({
-    workspaceId,
+    authorityKey,
     state: workspaceId
       ? { context: initialExactContext, loading: initialExactContext === null }
       : { context: null, loading: false },
@@ -111,12 +117,12 @@ export function useProjectRouteWorkspaceContext(
   useEffect(() => {
     resetRetryBackoff();
     return () => {
-      // Retire a directory read that settles after this project route unmounts
-      // or changes Workspace, so it cannot arm a detached retry timer.
+      // Retire reads after the project, workspace, or account changes so an
+      // old authority cannot populate the next route or arm its retry timer.
       requestEpochRef.current += 1;
       clearScheduledRetry();
     };
-  }, [workspaceId, clearScheduledRetry, resetRetryBackoff]);
+  }, [authorityKey, clearScheduledRetry, resetRetryBackoff]);
 
   useEffect(() => {
     const refresh = () => setRefreshRevision((current) => current + 1);
@@ -138,7 +144,7 @@ export function useProjectRouteWorkspaceContext(
       resetRetryBackoff();
       setIdentityRefreshPending(Boolean(workspaceId));
       setResolved({
-        workspaceId,
+        authorityKey,
         state: workspaceId
           ? { context: null, loading: true }
           : { context: null, loading: false },
@@ -153,7 +159,7 @@ export function useProjectRouteWorkspaceContext(
       window.removeEventListener('focus', refresh);
       window.removeEventListener('pageshow', refresh);
     };
-  }, [workspaceId, resetRetryBackoff]);
+  }, [authorityKey, resetRetryBackoff]);
 
   useEffect(() => {
     const requestEpoch = ++requestEpochRef.current;
@@ -161,7 +167,7 @@ export function useProjectRouteWorkspaceContext(
       resetRetryBackoff();
       setIdentityRefreshPending(false);
       setResolved({
-        workspaceId,
+        authorityKey,
         state: { context: null, loading: false },
       });
       return;
@@ -170,7 +176,7 @@ export function useProjectRouteWorkspaceContext(
       resetRetryBackoff();
       setIdentityRefreshPending(false);
       setResolved({
-        workspaceId,
+        authorityKey,
         state: { context: exactAmbientContext, loading: false },
       });
       return;
@@ -189,42 +195,65 @@ export function useProjectRouteWorkspaceContext(
       resetRetryBackoff();
       setIdentityRefreshPending(false);
       setResolved({
-        workspaceId,
+        authorityKey,
         state: { context: exactBootstrapContext, loading: false },
       });
       return;
     }
 
-    setResolved((current) => current.workspaceId === workspaceId
+    setResolved((current) => current.authorityKey === authorityKey
       ? {
-          workspaceId,
+          authorityKey,
           state: current.state.context
             ? current.state
             : { context: null, loading: true },
         }
       : {
-          workspaceId,
+          authorityKey,
           state: { context: null, loading: true },
         });
-    void resolveBoundProjectWorkspaceContext(workspaceId, {
-      fresh: refreshRevision > 0,
-    }).then(
+    const resolveContext = localProjectId
+      ? bootstrapProjectRoute(localProjectId, {
+          accountGeneration,
+          fresh: refreshRevision > 0,
+        }).then((result) => {
+          if (result.kind === 'unavailable') throw new Error('Project authority unavailable');
+          if (result.kind !== 'found') return null;
+          const context = result.scope.context;
+          return result.project.id === localProjectId
+            && result.scope.projectId === localProjectId
+            && result.project.workspaceId === workspaceId
+            && result.scope.workspaceId === workspaceId
+            && context?.workspaceId === workspaceId
+            && context.workspaceType === 'personal'
+            && context.workspaceMemberId.trim().length > 0
+            && context.memberStatus === 'active'
+            && context.lifecycleState !== 'deleted'
+              ? context
+              : null;
+        })
+      : resolveBoundProjectWorkspaceContext(workspaceId, {
+          fresh: refreshRevision > 0,
+        });
+    void resolveContext.then(
       (context) => {
-        if (requestEpochRef.current !== requestEpoch) return;
+        if (requestEpochRef.current !== requestEpoch
+          || currentWorkspaceAccountGeneration() !== accountGeneration) return;
         resetRetryBackoff();
         setIdentityRefreshPending(false);
         setResolved({
-          workspaceId,
+          authorityKey,
           state: context
             ? { context, loading: false }
             : { context: null, loading: false, failure: 'forbidden' },
         });
       },
       () => {
-        if (requestEpochRef.current !== requestEpoch) return;
+        if (requestEpochRef.current !== requestEpoch
+          || currentWorkspaceAccountGeneration() !== accountGeneration) return;
         setIdentityRefreshPending(false);
         setResolved((current) => ({
-          workspaceId,
+          authorityKey,
           // A rejected directory request proves nothing about this project's
           // membership. That includes account-level 401/403 responses: the
           // ambient shell owns reauthentication, while only a successful
@@ -234,7 +263,7 @@ export function useProjectRouteWorkspaceContext(
           // this request could start. A cold route with no witness still fails
           // closed with `context: null`.
           state: {
-            context: current.workspaceId === workspaceId
+            context: current.authorityKey === authorityKey
               ? current.state.context
               : null,
             loading: false,
@@ -245,7 +274,8 @@ export function useProjectRouteWorkspaceContext(
       },
     );
   }, [
-    workspaceId,
+    authorityKey,
+    localProjectId,
     exactAmbientIdentity,
     exactBootstrapIdentity,
     refreshRevision,
@@ -257,7 +287,7 @@ export function useProjectRouteWorkspaceContext(
   if (exactAmbientContext) {
     return { context: exactAmbientContext, loading: false, retry };
   }
-  if (resolved.workspaceId !== workspaceId) {
+  if (resolved.authorityKey !== authorityKey) {
     return { context: null, loading: true, retry };
   }
   return { ...resolved.state, retry };

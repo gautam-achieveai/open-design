@@ -19,6 +19,7 @@ import {
 import {
   enforceVerifiedWorkspaceResourceMutation,
   resolveOptionalLocalWorkspaceRequestAuthority,
+  resolveOptionalWorkspaceRequestAuthority,
   type VerifyWorkspaceRequestAuthority,
 } from '../../collab/workspace-resource-mutation.js';
 import {
@@ -302,7 +303,9 @@ function duplicatedProjectKind(plugin: InstalledPluginLike): ProjectMetadata['ki
 
 export function registerPluginEventRoutes(app: Express, deps: RegisterPluginEventRoutesDeps): void {
   const resolveEventScope = async (req: Request, res: Response) => {
-    const authority = resolveOptionalLocalWorkspaceRequestAuthority(req);
+    const authority = deps.verifyWorkspaceRequestAuthority
+      ? await resolveOptionalWorkspaceRequestAuthority(req, deps.verifyWorkspaceRequestAuthority)
+      : resolveOptionalLocalWorkspaceRequestAuthority(req);
     if (!authority.ok) {
       deps.http.sendApiError(
         res,
@@ -402,7 +405,9 @@ export function registerPluginRoutes(app: Express, deps: RegisterPluginRoutesDep
     verifyAuthority: VerifyWorkspaceRequestAuthority | undefined =
       deps.verifyWorkspaceRequestAuthority,
   ): Promise<WorkspaceCollabContext | null | undefined> => {
-    const authority = resolveOptionalLocalWorkspaceRequestAuthority(req);
+    const authority = verifyAuthority
+      ? await resolveOptionalWorkspaceRequestAuthority(req, verifyAuthority)
+      : resolveOptionalLocalWorkspaceRequestAuthority(req);
     if (!authority.ok) {
       helpers.sendApiError(
         res,

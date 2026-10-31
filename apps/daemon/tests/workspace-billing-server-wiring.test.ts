@@ -61,6 +61,9 @@ afterEach(async () => {
       await new Promise<void>((resolve) => current.close(() => resolve()));
     }
   }
+  // Close the module instance opened after resetModules before removing its SQLite files.
+  const { closeDatabase } = await import('../src/db.js');
+  closeDatabase();
   if (scratch) await rm(scratch, { recursive: true, force: true });
   scratch = null;
   for (const [key, value] of savedEnv) {
@@ -72,7 +75,7 @@ afterEach(async () => {
 }, 30_000);
 
 describe('server workspace billing runtime wiring', () => {
-  it('loads an exact active Personal workspace projection without Team-only filtering', async () => {
+  it('rejects retired Cloud billing without invoking a configured legacy runtime', async () => {
     scratch = await mkdtemp(join(tmpdir(), 'od-personal-billing-wiring-'));
     const authorityUrl = await startAuthority();
     const velaBin = await writeVelaStub(scratch);
@@ -113,35 +116,14 @@ describe('server workspace billing runtime wiring', () => {
       fetch(billingUrl, { headers: workspaceHeaders() }),
       fetch(billingUrl, { headers: workspaceHeaders() }),
     ]);
-    expect(response.status).toBe(200);
-    expect(concurrentResponse.status).toBe(200);
-    const body = await response.json() as {
-      workspaceBalance: {
-        workspaceId: string;
-        workspaceMemberId: string;
-        balanceUsd: string;
-      } | null;
-      workspaceRuntime: { status: string; errorCode: string | null };
-    };
-    expect(body.workspaceBalance).toMatchObject({
-      workspaceId: PERSONAL.workspaceId,
-      workspaceMemberId: PERSONAL.workspaceMemberId,
-      balanceUsd: '9.75',
+    expect(response.status).toBe(410);
+    expect(concurrentResponse.status).toBe(410);
+    expect(await response.json()).toEqual(await concurrentResponse.json());
+    const commandLog = await readFile(process.env.OD_TEST_VELA_LOG!, 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return '';
+      throw error;
     });
-    expect(body.workspaceRuntime).toMatchObject({
-      status: 'fresh',
-      errorCode: null,
-    });
-    expect((await concurrentResponse.json() as typeof body).workspaceBalance)
-      .toEqual(body.workspaceBalance);
-    const warmResponse = await fetch(billingUrl, { headers: workspaceHeaders() });
-    expect(warmResponse.status).toBe(200);
-    const commandLog = await readFile(process.env.OD_TEST_VELA_LOG!, 'utf8');
-    expect(commandLog).toContain(
-      `billing workspace-snapshot --workspace-id ${PERSONAL.workspaceId}`,
-    );
-    expect(commandLog.match(/billing summary --format json/g)).toHaveLength(1);
-    expect(commandLog).toContain('profile=test billing workspace-snapshot');
+    expect(commandLog).toBe('');
   }, 60_000);
 });
 

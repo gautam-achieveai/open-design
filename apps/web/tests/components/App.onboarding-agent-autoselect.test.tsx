@@ -14,7 +14,6 @@ import {
   fetchPromptTemplates,
   fetchSkills,
 } from '../../src/providers/registry';
-import { fetchAmrModels } from '../../src/providers/daemon';
 import { listProjects, listTemplates } from '../../src/state/projects';
 
 vi.mock('../../src/router', () => ({
@@ -66,15 +65,6 @@ vi.mock('../../src/providers/registry', async () => {
   };
 });
 
-vi.mock('../../src/providers/daemon', async () => {
-  const actual = await vi.importActual<typeof import('../../src/providers/daemon')>(
-    '../../src/providers/daemon',
-  );
-  return {
-    ...actual,
-    fetchAmrModels: vi.fn(),
-  };
-});
 
 vi.mock('../../src/state/projects', async () => {
   const actual = await vi.importActual<typeof import('../../src/state/projects')>(
@@ -116,7 +106,6 @@ const mockedFetchAppVersionInfo = vi.mocked(fetchAppVersionInfo);
 const mockedFetchDesignSystems = vi.mocked(fetchDesignSystems);
 const mockedFetchPromptTemplates = vi.mocked(fetchPromptTemplates);
 const mockedFetchSkills = vi.mocked(fetchSkills);
-const mockedFetchAmrModels = vi.mocked(fetchAmrModels);
 const mockedListProjects = vi.mocked(listProjects);
 const mockedListTemplates = vi.mocked(listTemplates);
 const mockedLoadConfig = vi.mocked(loadConfig);
@@ -169,11 +158,6 @@ describe('App first-run agent auto-select', () => {
     mockedFetchAppVersionInfo.mockResolvedValue(null);
     mockedListProjects.mockResolvedValue([]);
     mockedListTemplates.mockResolvedValue([]);
-    mockedFetchAmrModels.mockResolvedValue({
-      source: 'preset',
-      refreshing: false,
-      models: [{ id: 'amr-model', label: 'AMR Model' }],
-    });
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }),
@@ -251,9 +235,10 @@ describe('App first-run agent auto-select', () => {
     });
   });
   it.each([
-    [undefined, 'claude'],
+    [undefined, 'amr'],
     [true, 'amr'],
-  ])('with cloudFeatures=%s a saved OpenDesign Cloud pick becomes %s', async (cloudFeatures, expected) => {
+  ])('with legacy cloudFeatures=%s a saved unavailable agent remains %s until replaced', async (cloudFeatures, expected) => {
+    const { syncConfigToDaemon } = await import('../../src/state/config');
     mockedLoadConfig.mockReturnValue({
       ...firstRunConfig(),
       onboardingCompleted: true,
@@ -275,5 +260,9 @@ describe('App first-run agent auto-select', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(screen.getByTestId('agent-id').textContent).toBe(expected);
+    expect(vi.mocked(syncConfigToDaemon).mock.calls.some(
+      ([cfg]) => cfg.agentId === 'claude',
+    )).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => /\/api\/(?:amr|integrations\/vela)/u.test(String(url)))).toBe(false);
   });
 });

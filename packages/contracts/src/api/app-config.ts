@@ -86,10 +86,8 @@ export interface AppConfigPrefs {
    */
   odNextStrategyMode?: OdNextRolloutMode | null;
   /**
-   * Whether OpenDesign Cloud is offered: account sign-in, the cloud runtime,
-   * team invites, share links and billing. Absent means off; only `true`
-   * turns it on (Settings → Labs, or `od config set cloudFeatures true`).
-   * Local agents, projects and connectors do not depend on it.
+   * Legacy persisted preference. Cloud support has been retired; this field
+   * is read for compatibility and cannot enable a provider.
    */
   cloudFeatures?: boolean;
   /**
@@ -114,10 +112,10 @@ export interface RecentLinkedDirsResponse {
   dirs: string[];
 }
 
-/** The runtime id of the OpenDesign Cloud agent. */
+/** Historical Cloud runtime id, retained to recognize saved choices. */
 export const CLOUD_AGENT_ID = 'amr';
 
-/** True only when the user turned OpenDesign Cloud on; see `AppConfigPrefs.cloudFeatures`. */
-export function cloudFeaturesEnabled(config: Pick<AppConfigPrefs, 'cloudFeatures'> | null | undefined): boolean {
-  return config?.cloudFeatures === true;
+/** Legacy callers cannot reactivate retired Cloud support from saved config. */
+export function cloudFeaturesEnabled(_config: Pick<AppConfigPrefs, 'cloudFeatures'> | null | undefined): boolean {
+  return false;
 }

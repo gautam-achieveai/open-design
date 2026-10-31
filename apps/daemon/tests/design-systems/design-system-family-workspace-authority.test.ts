@@ -355,7 +355,7 @@ describe('Design System route family exact Workspace authority', () => {
     expect(calls.static).not.toHaveBeenCalled();
   });
 
-  it('accepts exact query scope without consulting the remote Workspace directory', async () => {
+  it('accepts exact query scope after local authority verification', async () => {
     const { baseUrl, calls, verifyWorkspaceRequestAuthority } =
       await startAuthorityServer();
     const scope =
@@ -382,7 +382,7 @@ describe('Design System route family exact Workspace authority', () => {
       'tokens.css',
       { workspaceId: WORKSPACE_ID, workspaceMemberId: MEMBER_ID, exactTeam: false },
     );
-    expect(verifyWorkspaceRequestAuthority).not.toHaveBeenCalled();
+    expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(2);
   });
 
   it('rejects bound mutations before their first side effect', async () => {

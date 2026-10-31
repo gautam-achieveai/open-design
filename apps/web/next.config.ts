@@ -157,11 +157,11 @@ function configuredAllowedDevHosts(): string[] {
 }
 
 /**
- * Direct inputs to the client host contract reported with CMS Test acceptances.
+ * Retained inputs to the client touchpoint host compatibility fingerprint.
  *
  * Keep this closure at the host boundary: the touchpoint adapters and their
- * presentation assets, the production decision loader, and the app/shell
- * modules that mount or position those hosts. Broad shared application styles
+ * presentation assets, the decision loader, and the app/shell boundary.
+ * Retired campaign placements are excluded. Broad shared application styles
  * are intentionally excluded; including the whole app graph would turn an
  * unrelated shell change into a CMS host release.
  */
@@ -174,12 +174,6 @@ export const CMS_HOST_RELEASE_INPUTS = [
   'apps/web/src/components/touchpoint-lifecycle.ts',
   'apps/web/src/components/touchpoint-static-actions.ts',
   'apps/web/src/components/touchpoint-navigation.ts',
-  'apps/web/src/components/TestCampaignModal.tsx',
-  'apps/web/src/components/TestCampaignModal.module.css',
-  'apps/web/src/components/ProductionCampaignModal.tsx',
-  'apps/web/src/components/ProductionCampaignBadge.tsx',
-  'apps/web/src/components/ProductionCampaignBadge.module.css',
-  'apps/web/src/components/ProductionCampaignHover.tsx',
   'apps/web/src/components/HoverTouchpointOverlay.tsx',
   'apps/web/src/components/HoverTouchpointOverlay.module.css',
   'apps/web/src/components/production-touchpoint-loader.ts',
@@ -211,6 +205,14 @@ const nextConfig: NextConfig = {
   // to inject chunk IDs, upload to PostHog, and ALWAYS delete the .map files
   // before packaging so source never ships inside an installer.
   productionBrowserSourceMaps: true,
+  webpack(config, { dev }) {
+    // Next's filesystem cache continuously serializes this large application
+    // after compilation, consuming CPU and gigabytes of external memory while
+    // the sidecar is idle. Keep the development cache in memory instead; the
+    // production build retains Next's persistent cache and source maps.
+    if (dev) config.cache = { type: 'memory' };
+    return config;
+  },
   transpilePackages: ['@open-design/components'],
   turbopack: {
     root: WORKSPACE_ROOT,
@@ -232,6 +234,22 @@ const nextConfig: NextConfig = {
     : webOutputMode === 'standalone'
       ? {
         output: 'standalone' as const,
+        // pnpm's isolated node_modules layout defeats Next's nft trace for
+        // dependencies of the `next` package itself: the standalone server
+        // output boots without `@swc/helpers` / `@next/env` and the
+        // packaged web sidecar dies on its first require. Force-include
+        // the runtime deps the standalone server.js is known to need.
+        outputFileTracingIncludes: {
+          '/**': [
+            // The standalone server.js requires these at boot. pnpm keeps
+            // them only in the workspace .pnpm store, so they are declared
+            // as explicit devDeps of apps/web to give nft a logical
+            // (resolvable) copy path; force-include them so the trace
+            // cannot silently drop them again.
+            './node_modules/@swc/helpers/**/*',
+            './node_modules/@next/env/**/*',
+          ],
+        },
       }
       : !isProd
       ? {

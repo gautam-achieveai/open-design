@@ -38,6 +38,8 @@ export interface ThoughtsGroup {
    * 只把算得出的那几段加起来,得到的是一个**偏小的假数**,比不显示更糟。
    */
   elapsedMs: number | null;
+  /** The tail is still open, so the grouped total can advance from its sample. */
+  liveElapsed?: number;
   /**
    * 还在往下写的**那一段**。只有它挂 96px 限高滚动窗(D46'),
    * 别的几格都是跑完收起来的普通条目。
@@ -85,10 +87,16 @@ export function groupThinking(
   let run: ShellText[] | null = null;
   const flush = (): void => {
     if (run && run.length) {
+      const liveElapsed =
+        run.some((part) => part.liveElapsed != null)
+        && run.every((part) => part.elapsedMs != null || part.liveElapsed != null)
+          ? run.reduce((total, part) => total + (part.liveElapsed ?? part.elapsedMs ?? 0), 0)
+          : undefined;
       out.push({
         kind: 'thoughts',
         texts: run.map((t) => t.text),
         elapsedMs: sumElapsed(run),
+        ...(liveElapsed != null ? { liveElapsed } : {}),
       });
     }
     run = null;
@@ -117,7 +125,12 @@ export function groupThinking(
 function sumElapsed(parts: ShellText[]): number | null {
   let total = 0;
   for (const part of parts) {
-    if (part.elapsedMs == null) return null;
+    // A live span below the 100 ms display threshold is a known zero baseline,
+    // not missing evidence; earlier settled parts still belong in the total.
+    if (part.elapsedMs == null) {
+      if (part.liveElapsed != null) continue;
+      return null;
+    }
     total += part.elapsedMs;
   }
   return total > 0 ? total : null;

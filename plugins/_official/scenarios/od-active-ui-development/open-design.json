@@ -4,6 +4,7 @@
   "name": "od-active-ui-development",
   "title": "Active UI development",
   "version": "0.1.0",
+  "publishedAt": "2026-10-03T10:18:36Z",
   "description": "Improve an existing website through browser annotations, user feedback, and focused UX research. Patch the original source and verify the result in the running app.",
   "license": "MIT",
   "tags": ["scenario", "first-party", "active-ui-development", "existing-site", "annotations", "ux"],

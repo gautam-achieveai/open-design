@@ -57,7 +57,7 @@ export const linuxResources = {
   desktopTemplate: join(resourcesRoot, "linux", "open-design.desktop.template"),
 } as const;
 
-const BUNDLED_RESOURCE_TREES = [
+export const BUNDLED_RESOURCE_TREES = [
   { from: "skills", to: "skills" },
   // After the skills/design-templates split (specs/current/skills-and-design-templates.md)
   // the rendering catalogue lives under its own root and the daemon

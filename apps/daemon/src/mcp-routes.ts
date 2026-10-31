@@ -394,6 +394,10 @@ export function registerMcpRoutes(app: Express, ctx: RegisterMcpRoutesDeps) {
   });
 
 
+  return { getOrigins: () => {
+    const payload = computeInstallPayload();
+    return { daemonBaseUrl: payload.daemonUrl, webBaseUrl: payload.webBaseUrl };
+  } };
 }
 
 function getPublicBaseUrl(req: any) {

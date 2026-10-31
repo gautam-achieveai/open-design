@@ -1,12 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
+import { createUnboundProjectCatalog } from '../../services/unbound-project-catalog.js';
+import { createUnboundProjectDetail, projectDetailPayload } from '../../services/unbound-project-detail.js';
+import { readAppConfigSync } from '../../app-config.js';
 import { load } from 'cheerio';
 import {
   deleteWorkspaceArtifact,
   renameWorkspaceArtifactPath,
 } from '../../chat-artifacts/store.js';
 import type { Express, Request, Response } from 'express';
+import type { LocalCommandExecution } from '../../services/project-run-commands.js';
 import type { LintArtifactRequest, LintArtifactResponse } from '@open-design/contracts';
 import {
   PREVIEW_OBSERVABILITY_BRIDGE_MARKER,
@@ -58,14 +62,17 @@ import {
   type WorkspaceCollabContext,
 } from '@open-design/contracts';
 import { readMeta as readBrandMeta } from '../../brands/store.js';
-import { createProjectArtifactFile } from '../../artifacts/create.js';
+import { createProjectFileMutationOperations, matchProjectHtmlParentVersionId, projectHtmlVersionOptions,
+  projectFileVersionCaptureWarning as htmlVersionCaptureWarning, type HtmlVersionOverride,
+  type ProjectFileOperationHooks } from '../../services/project-file-mutations.js';
+import { listAuthorizedProjectFiles } from '../../services/project-file-list.js';
+import { isRevokedProjectFileAccess, maybeResolveVitePreviewHtml, searchAuthorizedProjectFiles } from '../../services/project-file-read.js';
 import { ArtifactPublicationBlockedError } from '../../artifacts/publication-guard.js';
 import { ArtifactRegressionError } from '../../artifacts/stub-guard.js';
 import {
   ensureCurrentProjectFileVersion,
   isProjectFileVersionPath,
   listProjectFileVersions,
-  markProjectFileVersionStoreDeleted,
   readProjectFileVersion,
   renameProjectFileVersionStore,
   withProjectFileVersionLock,
@@ -149,6 +156,7 @@ import {
 } from '../../collab/project-workspace-scope.js';
 import {
   createAuthorizeProjectRequest,
+  createSynchronousProjectRequestDecision,
   enforceLocalProjectDataPlaneRequest,
   type AuthorizeProjectRequest,
 } from '../../collab/project-request-authority.js';
@@ -364,6 +372,8 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
   verifyPersonalProjectDeleteLeaseAuthority?: VerifyWorkspaceRequestAuthority;
   /** Shared local binding gate for all project data-plane routes. */
   authorizeProjectRequest?: AuthorizeProjectRequest;
+  /** Local REST discovery uses the same headerless read decision as project detail. */
+  canReadLocalProject?: (projectId: string) => boolean;
   /** Startup-hydrated O(1) quarantine lookup for stale Team mirrors. */
   isProjectRevoked?: (projectId: string) => boolean;
   /** Durable first-open placeholder stamp lookup. */
@@ -3117,6 +3127,14 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
 
   async function configuredProjectLocations() {
     const config = await readAppConfig(ctx.paths.RUNTIME_DATA_DIR);
+    return projectLocationsFromConfig(config);
+  }
+
+  function configuredProjectLocationsSync() {
+    return projectLocationsFromConfig(readAppConfigSync(ctx.paths.RUNTIME_DATA_DIR));
+  }
+
+  function projectLocationsFromConfig(config: Awaited<ReturnType<typeof readAppConfig>>) {
     const all = allProjectLocations(PROJECTS_DIR, config.projectLocations);
     const valid = all[0] ? [all[0]] : [];
     for (const location of all.slice(1)) {
@@ -3330,58 +3348,63 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     }
   });
 
-  app.get('/api/projects', async (_req, res) => {
-    try {
-      const locations = await configuredProjectLocations();
-      const latestRunStatuses = listLatestProjectRunStatuses(db);
-      const awaitingInputProjects = listProjectsAwaitingInput(db);
-      const activeRunStatuses = new Map();
-      for (const run of design.runs.list()) {
-        if (!run.projectId) continue;
-        const runStatus = projectStatusFromRun(run);
-        if (design.runs.isTerminal(run.status)) {
-          const existing = latestRunStatuses.get(run.projectId);
-          if (!existing || run.updatedAt > (existing.updatedAt ?? 0)) {
-            latestRunStatuses.set(run.projectId, runStatus);
-          }
-        } else {
-          const existing = activeRunStatuses.get(run.projectId);
-          if (!existing || run.updatedAt > (existing.updatedAt ?? 0)) {
-            activeRunStatuses.set(run.projectId, runStatus);
-          }
+  const decorateProjectCatalog = (projects: any[]) => {
+    const latestRunStatuses = listLatestProjectRunStatuses(db);
+    const awaitingInputProjects = listProjectsAwaitingInput(db);
+    const activeRunStatuses = new Map();
+    for (const run of design.runs.list()) {
+      if (!run.projectId) continue;
+      const runStatus = projectStatusFromRun(run);
+      if (design.runs.isTerminal(run.status)) {
+        const existing = latestRunStatuses.get(run.projectId);
+        if (!existing || run.updatedAt > (existing.updatedAt ?? 0)) {
+          latestRunStatuses.set(run.projectId, runStatus);
+        }
+      } else {
+        const existing = activeRunStatuses.get(run.projectId);
+        if (!existing || run.updatedAt > (existing.updatedAt ?? 0)) {
+          activeRunStatuses.set(run.projectId, runStatus);
         }
       }
-      // This is the NO-SCOPE catalog: no `x-od-workspace-*` headers are read
-      // here at all, so every unbound (never-claimed) project must be visible
-      // (pre-workspace-isolation compatibility) while every project some
-      // workspace HAS claimed must not leak to a caller with no identity to
-      // check it against — a signed-out client, a removed member, or a plain
-      // `curl` (spec 04 §10: "no scope" must not mean "trust everything").
-      // `listUnboundProjects` is the join that enforces this; a workspace-
-      // scoped caller uses `GET /api/workspaces/:id/projects` instead, which
-      // has its own ctx-gated membership check. Every row here is, by
-      // construction, unbound — so `workspaceId` is always `null`; no binding
-      // lookup needed (a `listWorkspaceProjectBindings` scan here would only
-      // ever resolve to misses).
-      /** @type {import('@open-design/contracts').ProjectsResponse} */
-      const body = {
-        projects: listUnboundProjects(db)
-          .filter((project: any) => projectVisibleForLocations(project, locations))
-          .map((project: any) => ({
-            ...project,
-            workspaceId: null,
-            status: brandAwareProjectStatus(
-              project,
-              composeProjectDisplayStatus(
-                activeRunStatuses.get(project.id) ??
-                  latestRunStatuses.get(project.id) ?? { value: 'not_started' },
-                awaitingInputProjects,
-                project.id,
-              ),
-            ),
-          })),
-      };
-      res.json(body);
+    }
+    /** @type {import('@open-design/contracts').ProjectsResponse} */
+    return projects.map((project: any) => ({
+      ...project,
+      workspaceId: getWorkspaceProjectByProjectId(db, project.id)?.workspaceId ?? null,
+      status: brandAwareProjectStatus(
+        project,
+        composeProjectDisplayStatus(
+          activeRunStatuses.get(project.id) ??
+            latestRunStatuses.get(project.id) ?? { value: 'not_started' },
+          awaitingInputProjects,
+          project.id,
+        ),
+      ),
+    }));
+  };
+  // External MCP credentials keep their existing unbound-only inventory and
+  // revalidation contract, independently of the local application's catalog.
+  const readUnboundProjectCatalog = createUnboundProjectCatalog({
+    loadLocations: configuredProjectLocations,
+    currentLocations: configuredProjectLocationsSync,
+    listUnbound: () => listUnboundProjects(db),
+    visibleAtLocations: projectVisibleForLocations,
+    decorate: decorateProjectCatalog,
+  });
+  app.get('/api/projects', async (_req, res) => {
+    try {
+      const canReadLocalProject = ctx.canReadLocalProject;
+      if (!canReadLocalProject) {
+        await readUnboundProjectCatalog((projects) => res.json({ projects }));
+        return;
+      }
+      const locations = await configuredProjectLocations();
+      // After Cloud retirement, local Personal projects remain discoverable.
+      // Use the shared read decision, not caller headers or the first binding:
+      // any Team projection, revocation or deleted binding must still deny.
+      const projects = listProjects(db).filter((project: any) =>
+        canReadLocalProject(project.id) && projectVisibleForLocations(project, locations));
+      res.json({ projects: decorateProjectCatalog(projects) });
     } catch (err: any) {
       sendApiError(res, 500, 'INTERNAL_ERROR', String(err));
     }
@@ -3849,8 +3872,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     return { ...status, value: mapped, updatedAt: status.updatedAt ?? brandMeta.updatedAt };
   }
 
-  app.post('/api/projects', async (req, res) => {
+  const handleProjectCreate = async (req: Request, res: Response, command?: LocalCommandExecution) => {
     try {
+      command?.assertCurrent();
       // One request-wide deadline covers every asynchronous read before the
       // transaction. Resetting a full timeout for each stage would still let a
       // sequence of merely slow reads outlive the Web's optimistic route.
@@ -4036,6 +4060,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         if (getProject(db, id)) {
           return sendApiError(res, 400, 'BAD_REQUEST', 'project id already exists');
         }
+        command?.beforeMutation();
         externalProjectDir = await createLocationProjectDir(location, id);
       }
       // Website Clone projects that already carry the target URL explicitly
@@ -4258,13 +4283,23 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
             >[0]
           : null,
       );
-      const automaticDefaultRouting = initialSessionMode === 'design'
+      // Active UI development starts in Build mode, but it is still a
+      // product-owned automatic scenario rather than an explicit plugin pin.
+      // Keep that one source-editing route eligible outside Design mode; all
+      // other automatic scenario and OD Next routes retain their Design gate.
+      const automaticScenarioRouting = initialSessionMode === 'design'
+        || (
+          initialSessionMode === 'build'
+          && (projectMetadata as ProjectMetadata | null)?.intent === 'active-ui-development'
+          && defaultScenarioPluginId === 'od-active-ui-development'
+        );
+      const automaticDefaultRouting = automaticScenarioRouting
         && Boolean(defaultScenarioPluginId)
         && !explicitPlugin
         && !automaticStrategyBinding;
       let resolveBody =
         explicitPlugin ? (req.body as Record<string, unknown>) : null;
-      if (!resolveBody && initialSessionMode === 'design' && !automaticStrategyBinding) {
+      if (!resolveBody && automaticScenarioRouting && !automaticStrategyBinding) {
         if (defaultScenarioPluginId && getInstalledPlugin(db, defaultScenarioPluginId)) {
           resolveBody = { ...(req.body || {}), pluginId: defaultScenarioPluginId };
         }
@@ -4277,6 +4312,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       } = { snapshot: null, failure: null };
       try {
         if (externalProjectDir) {
+          command?.beforeMutation();
           await writeProjectManifest(externalProjectDir, {
             schemaVersion: 1,
             id,
@@ -4382,6 +4418,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           return;
         }
         project = db.transaction(() => {
+          command?.beforeMutation();
           let createdProject = insertProject(db, {
             id,
             name: name.trim(),
@@ -4500,7 +4537,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       }
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }
-  });
+  };
+  app.post('/api/projects', (req, res) => handleProjectCreate(req, res));
 
   app.post('/api/projects/:id/scenario/restore-automatic', async (req, res) => {
     const project = getProject(db, req.params.id);
@@ -5005,6 +5043,20 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     }
   });
 
+  const readUnboundProjectDetail = createUnboundProjectDetail({
+    isSafeId,
+    getProject: (id: string) => getProject(db, id),
+    getBinding: (id: string) => getWorkspaceProjectByProjectId(db, id),
+    loadLocations: configuredProjectLocations,
+    currentLocations: configuredProjectLocationsSync,
+    visibleAtLocations: projectVisibleForLocations,
+    resolveDir: (project: any) => projectDetailResolvedDir(PROJECTS_DIR, project, resolveProjectDir),
+  });
+  const isUnboundProjectCurrentlyVisible = (id: string) => {
+    const project = getProject(db, id);
+    return Boolean(project && !getWorkspaceProjectByProjectId(db, id) && !isRevokedProjectFileAccess(project)
+      && projectVisibleForLocations(project, configuredProjectLocationsSync()));
+  };
   app.get('/api/projects/:id', async (req, res) => {
     const project = getProject(db, req.params.id);
     const locations = await configuredProjectLocations();
@@ -5029,16 +5081,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     const resolvedDir = projectDetailResolvedDir(PROJECTS_DIR, project, resolveProjectDir);
     const binding = getWorkspaceProjectByProjectId(db, project.id);
     /** @type {import('@open-design/contracts').ProjectResponse} */
-    const body = {
-      project: {
-        ...project,
-        workspaceId:
-          typeof binding?.workspaceId === 'string' && binding.workspaceId.trim()
-            ? binding.workspaceId.trim()
-            : null,
-      },
-      resolvedDir,
-    };
+    const body = projectDetailPayload(project, binding, resolvedDir);
     res.json(body);
   });
 
@@ -5461,8 +5504,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     }
   });
 
-  app.delete('/api/projects/:id', async (req, res) => {
+  const handleProjectDelete = async (req: Request, res: Response, command?: LocalCommandExecution) => {
     try {
+      command?.assertCurrent();
       const project = getProject(db, req.params.id);
       if (!project) {
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
@@ -5506,12 +5550,15 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
             'workspace context is required to unshare this project before deleting it',
           );
         }
+        command?.beforeMutation();
         await requestTeamVisibility([project.id], teamCtx, 'personal');
       }
       // Stop any live agent run in this project before its row and directory
       // are removed, otherwise the CLI subprocess is orphaned — it keeps
       // billing and writes into a directory that no longer exists (#5468).
-      await cancelRunsOwnedBy(design.runs, { projectId: req.params.id });
+      command?.beforeMutation();
+      await cancelRunsOwnedBy(design.runs, { projectId: project.id });
+      command?.beforeMutation();
       dbDeleteProject(db, req.params.id);
       await removeProjectDir(PROJECTS_DIR, req.params.id).catch(() => {});
       /** @type {import('@open-design/contracts').OkResponse} */
@@ -5520,7 +5567,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }
-  });
+  };
+  app.delete('/api/projects/:id', (req, res) => handleProjectDelete(req, res));
 
   // SSE stream of file-changed events for a project. Drives preview live-reload.
   // Receipt of a `file-changed` event triggers a file-list refresh, which
@@ -5714,6 +5762,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     res.json({ ok: true });
   });
 
+  return { readUnboundProjectCatalog, readUnboundProjectDetail, isUnboundProjectCurrentlyVisible, handleProjectCreate, handleProjectDelete };
 }
 
 export interface RegisterProjectArtifactRoutesDeps extends RouteDeps<'http' | 'uploads' | 'paths' | 'node' | 'artifacts'> {}
@@ -5828,7 +5877,38 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
   );
   const { listFiles, listProjectFolders, createProjectFolder, deleteProjectFolder, searchProjectFiles, readProjectFile, resolveProjectDir, resolveProjectFilePath, parseByteRange, renameProjectFile, deleteProjectFile, writeProjectFile, sanitizeName, sanitizePath, ensureProject } = ctx.projectFiles;
   const { buildDocumentPreview } = ctx.documents;
-  const { validateArtifactManifestInput } = ctx.artifacts;
+  const fileMutations = createProjectFileMutationOperations({ projectsRoot: PROJECTS_DIR, sanitizePath,
+    readProjectFile, writeProjectFile, deleteProjectFile, latestProjectPrompt,
+    tombstoneWorkspaceArtifact: (projectId, name) => { deleteWorkspaceArtifact(db, projectId, name); },
+    reportDeleteBookkeepingWarning: error => console.warn('[chat-artifacts] delete bookkeeping failed', error) });
+  const decideCurrentMutation = createSynchronousProjectRequestDecision({ db, getWorkspaceProject, getWorkspaceProjectByProjectId,
+    isProjectRevoked: (_db, id) => ctx.isProjectRevoked?.(id) ?? false,
+    isProjectUnmaterializedPlaceholder: (_db, id) => ctx.isProjectUnmaterializedPlaceholder?.(id) ?? false });
+  type RestMutationHooks = ProjectFileOperationHooks & { mayHaveChanged: boolean };
+  function restMutationHooks(req: Request, projectId: string, project: any): RestMutationHooks {
+    const metadata = JSON.stringify(project?.metadata ?? null);
+    const assertCurrent = () => {
+      const current = getProject(db, projectId);
+      if (Boolean(current) !== Boolean(project) || JSON.stringify(current?.metadata ?? null) !== metadata
+        || !decideCurrentMutation(req, projectId, { mode: 'write', capability: 'writeFiles' }).ok) {
+        throw Object.assign(new Error('project mutation authority changed'), { code: 'PROJECT_MUTATION_DENIED' });
+      }
+    };
+    const state: RestMutationHooks = { mayHaveChanged: false, assertCurrent,
+      beforeMutation: () => { assertCurrent(); state.mayHaveChanged = true; } };
+    return state;
+  }
+  function sendMutationFailure(res: Response, error: any, state: RestMutationHooks | undefined): boolean {
+    if (state?.mayHaveChanged) {
+      sendApiError(res, 500, 'PROJECT_FILE_MUTATION_PARTIAL', 'The operation may have changed project files. Check the current state before retrying.');
+      return true;
+    }
+    if (error?.code === 'PROJECT_MUTATION_DENIED') {
+      sendApiError(res, 403, 'WORKSPACE_PROJECT_PERMISSION_DENIED', 'project mutation is no longer authorized');
+      return true;
+    }
+    return false;
+  }
   const { projectPreviewScopes } = ctx;
   const projectPreviewIframeSandbox = 'allow-scripts allow-forms';
   const HTML_POWERED_PREVIEW_HINT_SCAN_MAX_BYTES = 128 * 1024 * 1024;
@@ -5945,52 +6025,8 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
     return { prompt: null };
   }
 
-  type HtmlVersionOverride = {
-    prompt?: string | null;
-    promptSource?: ProjectFileVersionPromptSource;
-    source?: ProjectFileVersionSource;
-    label?: string | null;
-    parentVersionId?: string;
-  };
-
-  function htmlVersionOptions(
-    project: any,
-    override?: HtmlVersionOverride,
-  ): {
-    prompt: string | null;
-    promptSource?: ProjectFileVersionPromptSource;
-    source?: ProjectFileVersionSource;
-    label?: string;
-    parentVersionId?: string;
-  } {
-    const fallbackPromptInfo = latestProjectPrompt(project);
-    const prompt = override?.prompt !== undefined
-      ? (typeof override.prompt === 'string' && override.prompt.trim() ? override.prompt.trim() : null)
-      : (override?.source === 'manual' || override?.source === 'restore' ? null : fallbackPromptInfo.prompt);
-    const promptSource = override?.promptSource
-      ?? (override?.source === 'manual'
-        ? 'manual'
-        : override?.source === 'restore'
-          ? 'restore'
-          : fallbackPromptInfo.promptSource);
-    const versionOptions: {
-      prompt: string | null;
-      promptSource?: ProjectFileVersionPromptSource;
-      source?: ProjectFileVersionSource;
-      label?: string;
-      parentVersionId?: string;
-    } = {
-      prompt,
-    };
-    if (promptSource) versionOptions.promptSource = promptSource;
-    if (override?.source) versionOptions.source = override.source;
-    if (typeof override?.label === 'string' && override.label.trim()) {
-      versionOptions.label = override.label.trim();
-    }
-    if (typeof override?.parentVersionId === 'string' && override.parentVersionId.trim()) {
-      versionOptions.parentVersionId = override.parentVersionId.trim();
-    }
-    return versionOptions;
+  function htmlVersionOptions(project: any, override?: HtmlVersionOverride) {
+    return projectHtmlVersionOptions(project, override, latestProjectPrompt);
   }
 
   type HtmlVersionLock = {
@@ -6011,44 +6047,12 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
     }>;
   };
 
-  async function matchedHtmlParentVersionId(
-    project: any,
-    fileName: string,
-    requestedParentVersionId: unknown,
-    versionLock: HtmlVersionLock,
-  ): Promise<string | undefined> {
-    if (typeof requestedParentVersionId !== 'string' || !requestedParentVersionId.trim()) {
-      return undefined;
-    }
-    const parentVersionId = requestedParentVersionId.trim();
-    try {
-      const existing = await readProjectFile(
-        PROJECTS_DIR,
-        project.id,
-        fileName,
-        project.metadata,
-      );
-      const match = await versionLock.matchVersionContent(
-        existing.buffer.toString('utf8'),
-        parentVersionId,
-      );
-      return match.status === 'matched' && match.version?.id === parentVersionId
-        ? parentVersionId
-        : undefined;
-    } catch {
-      // Missing/unreadable pre-edit bytes cannot prove lineage. The write may
-      // still proceed, but the new checkpoint must not inherit an origin.
-      return undefined;
-    }
+  async function matchedHtmlParentVersionId(project: any, fileName: string, requestedParentVersionId: unknown,
+    versionLock: HtmlVersionLock): Promise<string | undefined> {
+    return matchProjectHtmlParentVersionId(project, fileName, requestedParentVersionId, versionLock, PROJECTS_DIR, readProjectFile);
   }
 
-  function htmlVersionCaptureWarning(err: unknown): ProjectFileVersionWarning {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      code: 'PROJECT_FILE_VERSION_CAPTURE_FAILED',
-      message: `HTML version could not be saved: ${message}`,
-    };
-  }
+
 
   async function tryEnsureLockedHtmlCurrentVersion(
     project: any,
@@ -6460,46 +6464,6 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
     return rewriteOutsideExecutableHtmlRanges(html, rewriteChunk);
   }
 
-  async function maybeResolveVitePreviewHtml({
-    file,
-    projectId,
-    relPath,
-    metadata,
-    projectsRoot,
-    readProjectFile,
-  }: {
-    file: { mime: string; buffer: Buffer };
-    projectId: string;
-    relPath: string;
-    metadata?: unknown;
-    projectsRoot: string;
-    readProjectFile: (projectsRoot: string, projectId: string, relPath: string, metadata?: unknown) => Promise<{ buffer: Buffer }>;
-  }): Promise<Buffer | string> {
-    if (!/^text\/html(?:;|$)/i.test(file.mime)) return file.buffer;
-    const html = file.buffer.toString('utf8');
-    if (!isViteDevHtmlEntry(html)) return file.buffer;
-
-    const ownerDir = path.posix.dirname(relPath);
-    const distRelPath = ownerDir === '.' ? 'dist/index.html' : `${ownerDir}/dist/index.html`;
-    try {
-      const distFile = await readProjectFile(projectsRoot, projectId, distRelPath, metadata);
-      return rewriteViteDistAssetUrlsForPreview(distFile.buffer.toString('utf8'));
-    } catch {
-      return file.buffer;
-    }
-  }
-
-  function isViteDevHtmlEntry(html: string): boolean {
-    return /<script\b[^>]*\btype\s*=\s*["']module["'][^>]*\bsrc\s*=\s*["']\/src\/[^"']+["'][^>]*>\s*<\/script>/i.test(html);
-  }
-
-  function rewriteViteDistAssetUrlsForPreview(html: string): string {
-    return html.replace(
-      /\b(href|src)\s*=\s*(["'])\/assets\//gi,
-      (_match, attr: string, quote: string) => `${attr}=${quote}dist/assets/`,
-    );
-  }
-
   // Project files. Each project owns a flat folder under .od/projects/<id>/
   // containing every file the user has uploaded, pasted, sketched, or that
   // the agent has generated. Names are sanitized; paths are confined to the
@@ -6512,13 +6476,11 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
       }
       if (!await authorizeProjectRequest(req, res, project.id, { mode: 'read' })) return;
-      if (project?.metadata?.teamMirrorRevokedAt) {
+      const result = await listAuthorizedProjectFiles(project, PROJECTS_DIR,
+        Number.isFinite(since) ? since : undefined, listFiles);
+      if (!result.ok) {
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       }
-      const files = await listFiles(PROJECTS_DIR, req.params.id, {
-        since: Number.isFinite(since) ? since : undefined,
-        metadata: project?.metadata,
-      });
       // The directory is mutated outside HTTP by agent CLIs and filesystem
       // tools. A cached 200 can therefore outlive a completed Write even when
       // the daemon's fresh scan already sees the new file, leaving the
@@ -6527,7 +6489,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       // this dynamic inventory.
       res.setHeader('Cache-Control', 'no-store');
       /** @type {import('@open-design/contracts').ProjectFilesResponse} */
-      const body = { files };
+      const body = { files: result.files };
       res.json(body);
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
@@ -6548,12 +6510,9 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       }
       const pattern = req.query.pattern ? String(req.query.pattern) : null;
       const max = Math.min(Number(req.query.max) || 200, 1000);
-      const matches = await searchProjectFiles(PROJECTS_DIR, req.params.id, query, {
-        pattern,
-        max,
-        metadata: searchProject?.metadata,
-      });
-      res.json({ query, matches });
+      const result = await searchAuthorizedProjectFiles(searchProject, PROJECTS_DIR, query, { pattern, max }, searchProjectFiles);
+      if (!result.ok) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
+      res.json({ query, matches: result.matches });
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }
@@ -6987,7 +6946,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         projectId,
         { mode: 'read', allowNavigationQuery: true },
       )) return;
-      if (project?.metadata?.teamMirrorRevokedAt) {
+      if (isRevokedProjectFileAccess(project)) {
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       }
       // PreviewModal loads artifact HTML via srcdoc, giving the iframe Origin: "null".
@@ -7154,6 +7113,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
   });
 
   app.delete(/^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, async (req, res) => {
+    let mutation: RestMutationHooks | undefined;
     try {
       const params = req.params as unknown as { 0?: string; 1?: string };
       const projectId = String(params[0] ?? '');
@@ -7173,20 +7133,11 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         project.id,
         'writeFiles',
       )) return;
-      await deleteProjectFile(PROJECTS_DIR, projectId, rawSplat, project?.metadata);
-      await markProjectFileVersionStoreDeleted(PROJECTS_DIR, projectId, rawSplat, project?.metadata);
-      // Tombstone, not delete: an HTML card must be able to say "the current
-      // file is gone" rather than silently opening whatever later takes the
-      // name. Image cards keep resolving their own snapshot either way.
-      try {
-        deleteWorkspaceArtifact(db, projectId, rawSplat);
-      } catch (error) {
-        console.warn('[chat-artifacts] delete bookkeeping failed', error);
-      }
-      /** @type {import('@open-design/contracts').DeleteProjectFileResponse} */
-      const body = { ok: true };
-      res.json(body);
+      mutation = restMutationHooks(req, projectId, project);
+      const result = await fileMutations.deleteFile(project, rawSplat, mutation);
+      res.json(result.response);
     } catch (err: any) {
+      if (sendMutationFailure(res, err, mutation)) return;
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
         res,
@@ -7564,6 +7515,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       });
     },
     async (req, res) => {
+      let mutation: RestMutationHooks | undefined;
       try {
         const uploadProject = getProject(db, req.params.id);
         const cleanupRejectedUpload = () => {
@@ -7586,7 +7538,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
           cleanupRejectedUpload();
           return;
         }
-        await ensureProject(PROJECTS_DIR, req.params.id, uploadProject?.metadata);
+        if (req.file) await ensureProject(PROJECTS_DIR, req.params.id, uploadProject?.metadata);
         if (req.file) {
           try {
             const buf = await fs.promises.readFile(req.file.path);
@@ -7660,121 +7612,16 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
             fs.promises.unlink(req.file.path).catch(() => {});
           }
         }
-        const {
-          name,
-          content,
-          encoding,
-          artifactManifest,
-          artifact,
-          overwrite,
-          versionLabel,
-          versionPrompt,
-          parentVersionId: requestedParentVersionId,
-        } = req.body || {};
+        const { name, content } = req.body || {};
         if (typeof name !== 'string' || typeof content !== 'string') {
-          return sendApiError(
-            res,
-            400,
-            'BAD_REQUEST',
-            'name and content required',
-          );
+          return sendApiError(res, 400, 'BAD_REQUEST', 'name and content required');
         }
         if (rejectInternalVersionPath(res, name)) return;
-        const desiredName = sanitizePath(name);
-        if (rejectInternalVersionPath(res, desiredName)) return;
-        const requestedSource = uploadProject && /\.html?$/i.test(desiredName)
-          ? requestProjectFileVersionUploadSource(req.body)
-          : null;
-        if (artifactManifest !== undefined && artifactManifest !== null) {
-          const validated = validateArtifactManifestInput(
-            artifactManifest,
-            name,
-          );
-          if (!validated.ok) {
-            return sendApiError(
-              res,
-              400,
-              'BAD_REQUEST',
-              `invalid artifactManifest: ${validated.error}`,
-            );
-          }
-        }
-        const buf =
-          encoding === 'base64'
-            ? Buffer.from(content, 'base64')
-            : Buffer.from(content, 'utf8');
-        const writeAndCapture = async (versionLock?: HtmlVersionLock) => {
-          const parentVersionId = uploadProject && requestedSource === 'manual' && versionLock
-            ? await matchedHtmlParentVersionId(
-              uploadProject,
-              desiredName,
-              requestedParentVersionId,
-              versionLock,
-            )
-            : undefined;
-          const meta = artifact === true
-            ? await createProjectArtifactFile({
-              projectsRoot: PROJECTS_DIR,
-              projectId: req.params.id,
-              input: { name, content, encoding, artifactManifest },
-              metadata: uploadProject?.metadata,
-              writeProjectFile,
-            })
-            : await writeProjectFile(
-              PROJECTS_DIR,
-              req.params.id,
-              name,
-              buf,
-              {
-                artifactManifest,
-                ...(overwrite === false ? { overwrite: false } : {}),
-              },
-              uploadProject?.metadata,
-            );
-          const versionCapture = uploadProject && requestedSource && /\.html?$/i.test(meta.name) && versionLock
-            ? await (async () => {
-              const savedFile = await readProjectFile(PROJECTS_DIR, uploadProject.id, meta.name, uploadProject.metadata);
-              const versionOverride: HtmlVersionOverride = {
-                source: requestedSource,
-                label: typeof versionLabel === 'string' ? versionLabel : null,
-                ...(parentVersionId ? { parentVersionId } : {}),
-              };
-              if (typeof versionPrompt === 'string') {
-                versionOverride.prompt = versionPrompt;
-              }
-              if (requestedSource === 'manual') {
-                versionOverride.promptSource = 'manual';
-              } else if (requestedSource === 'restore') {
-                versionOverride.promptSource = 'restore';
-              }
-              return tryEnsureLockedHtmlCurrentVersion(
-                uploadProject,
-                meta.name,
-                savedFile.buffer.toString('utf8'),
-                versionLock.ensureCurrentVersion,
-                versionOverride,
-              );
-            })()
-            : null;
-          return { meta, versionCapture };
-        };
-        const { meta, versionCapture } = uploadProject && requestedSource
-          ? await withProjectFileVersionLock(
-            PROJECTS_DIR,
-            req.params.id,
-            desiredName,
-            uploadProject.metadata,
-            (versionLock) => writeAndCapture(versionLock),
-          )
-          : await writeAndCapture();
-        /** @type {import('@open-design/contracts').ProjectFileResponse} */
-        const body = {
-          file: meta,
-          ...(versionCapture ? { version: versionCapture.version } : {}),
-          ...(versionCapture?.versionWarning ? { versionWarning: versionCapture.versionWarning } : {}),
-        };
-        res.json(body);
+        mutation = restMutationHooks(req, req.params.id, uploadProject);
+        const result = await fileMutations.writeJson(req.params.id, uploadProject, req.body, mutation);
+        res.json(result.response);
       } catch (err: any) {
+        if (sendMutationFailure(res, err, mutation)) return;
         const message = String(err?.message || err);
         if (/^invalid (source|versionSource);/u.test(message)) {
           return sendApiError(res, 400, 'BAD_REQUEST', message);
@@ -7868,6 +7715,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
   });
 
   app.delete('/api/projects/:id/files/:name', async (req, res) => {
+    let mutation: RestMutationHooks | undefined;
     try {
       if (rejectInternalVersionPath(res, req.params.name)) return;
       const delProject = getProject(db, req.params.id);
@@ -7884,17 +7732,11 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         delProject.id,
         'writeFiles',
       )) return;
-      await deleteProjectFile(PROJECTS_DIR, req.params.id, req.params.name, delProject?.metadata);
-      await markProjectFileVersionStoreDeleted(PROJECTS_DIR, req.params.id, req.params.name, delProject?.metadata);
-      try {
-        deleteWorkspaceArtifact(db, req.params.id, req.params.name);
-      } catch (error) {
-        console.warn('[chat-artifacts] delete bookkeeping failed', error);
-      }
-      /** @type {import('@open-design/contracts').DeleteProjectFileResponse} */
-      const body = { ok: true };
-      res.json(body);
+      mutation = restMutationHooks(req, req.params.id, delProject);
+      const result = await fileMutations.deleteFile(delProject, req.params.name, mutation);
+      res.json(result.response);
     } catch (err: any) {
+      if (sendMutationFailure(res, err, mutation)) return;
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
         res,
@@ -7905,6 +7747,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
     }
   });
 
+  return fileMutations;
 }
 
 export interface RegisterProjectUploadRoutesDeps extends RouteDeps<'db' | 'http' | 'uploads' | 'node' | 'paths' | 'projectStore' | 'projectFiles'> {

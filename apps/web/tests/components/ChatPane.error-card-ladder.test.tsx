@@ -97,8 +97,6 @@ function renderChat(
       onSend={vi.fn()}
       onStop={vi.fn()}
       onRetry={vi.fn()}
-      // 对应已接真实 Cloud 恢复回调的宿主；侧聊全链由独立宿主测试覆盖。
-      onSwitchToAmrAndRetry={vi.fn()}
       conversations={[
         { projectId: 'project-1', id: 'conv-1', title: 'Current', createdAt: 1, updatedAt: 1 },
       ]}
@@ -144,17 +142,15 @@ describe('报错卡兜底文案(E2)', () => {
   });
 });
 
-describe('G16:主动作按失败运行来源固定，联系支持保持次级', () => {
-  it('BYOK 封号:主位归 Cloud CTA,〔联系支持〕退回常驻次级', () => {
+describe('Recovery diagnostics retain support and only supported local retries', () => {
+  it('suspended BYOK account keeps support without a Cloud action', () => {
     renderChat(failedMessage({}, { failureDetail: 'account_suspended' }));
     const support = screen.getByTestId('chat-error-contact-support');
     expect(support.dataset.primary).toBeUndefined();
-    expect(
-      screen.getByTestId('chat-error-switch-to-cloud').dataset.runErrorAction,
-    ).toBe('primary');
+    expect(screen.queryByTestId('chat-error-switch-to-cloud')).toBeNull();
   });
 
-  it('已经在 Cloud 上的封号:主动作重试，联系支持保持次级', () => {
+  it('historical suspended Cloud account keeps support without retrying', () => {
     renderChat(
       failedMessage({ agentId: 'amr' }, { failureDetail: 'account_suspended' }),
     );
@@ -162,7 +158,7 @@ describe('G16:主动作按失败运行来源固定，联系支持保持次级', 
     const support = screen.getByTestId('chat-error-contact-support');
     expect(support.dataset.primary).toBeUndefined();
     expect(support.dataset.runErrorAction).toBe('secondary');
-    expect(screen.getByTestId('chat-error-retry').dataset.runErrorAction).toBe('primary');
+    expect(screen.queryByTestId('chat-error-retry')).toBeNull();
   });
 
   it('普通可重试的卡上,〔联系支持〕仍是常驻次级', () => {
@@ -247,8 +243,8 @@ describe('R9 断线:报错卡让位给流水最后一行的重连行', () => {
     expect(description).toContain('chat.connectionDropped');
     expect(description).not.toContain('chat.runError.fallbackMessage');
     // 而且带得出恢复动作 —— 屏幕上什么都不剩才是这条 bug 的形状。
-    expect(screen.getByTestId('chat-error-switch-to-cloud').dataset.runErrorAction).toBe('primary');
-    expect(screen.queryByTestId('chat-error-retry')).toBeNull();
+    expect(screen.queryByTestId('chat-error-switch-to-cloud')).toBeNull();
+    expect(screen.getByTestId('chat-error-retry')).toBeTruthy();
   });
 
   it('重连行不在场时,老行(只有 detail、没有 code)同样由报错卡接住', () => {
@@ -258,8 +254,8 @@ describe('R9 断线:报错卡让位给流水最后一行的重连行', () => {
     );
     expect(screen.queryByTestId('chat-reconnect')).toBeNull();
     expect(container.querySelector('[data-user-action-card="run-recovery"]')).toBeTruthy();
-    expect(screen.getByTestId('chat-error-switch-to-cloud').dataset.runErrorAction).toBe('primary');
-    expect(screen.queryByTestId('chat-error-retry')).toBeNull();
+    expect(screen.queryByTestId('chat-error-switch-to-cloud')).toBeNull();
+    expect(screen.getByTestId('chat-error-retry')).toBeTruthy();
   });
 
   it('重连行在场时,屏幕上只有它一块 UI', () => {

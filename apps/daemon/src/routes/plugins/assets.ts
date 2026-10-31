@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { WorkspaceCollabContext } from '@open-design/contracts';
 import {
   resolveOptionalLocalWorkspaceRequestAuthority,
+  resolveOptionalWorkspaceRequestAuthority,
   type VerifyWorkspaceRequestAuthority,
 } from '../../collab/workspace-resource-mutation.js';
 
@@ -93,7 +94,9 @@ export function registerPluginAssetRoutes(app: Express, deps: RegisterPluginAsse
       });
       return undefined;
     }
-    const authority = resolveOptionalLocalWorkspaceRequestAuthority(scopedRequest);
+    const authority = deps.verifyWorkspaceRequestAuthority
+      ? await resolveOptionalWorkspaceRequestAuthority(scopedRequest, deps.verifyWorkspaceRequestAuthority)
+      : resolveOptionalLocalWorkspaceRequestAuthority(scopedRequest);
     if (!authority.ok) {
       res.status(authority.status).json({
         error: authority.code,

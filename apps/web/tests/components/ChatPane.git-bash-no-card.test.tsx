@@ -71,10 +71,8 @@ function failedTurn(
 
 function renderPane(message: ChatMessage, error: string | null = null) {
   const onRetry = vi.fn();
-  const onSwitchToAmrAndRetry = vi.fn();
   return {
     onRetry,
-    onSwitchToAmrAndRetry,
     ...render(
       <ChatPane
         messages={[
@@ -90,7 +88,6 @@ function renderPane(message: ChatMessage, error: string | null = null) {
         onSend={vi.fn()}
         onStop={vi.fn()}
         onRetry={onRetry}
-        onSwitchToAmrAndRetry={onSwitchToAmrAndRetry}
         onOpenSettings={vi.fn()}
         conversations={[
           { projectId: 'git-bash-test-project', id: 'conversation-1', title: 'Current', createdAt: 0, updatedAt: 0 },
@@ -155,10 +152,10 @@ describe('Git Bash dependency failure keeps its run diagnosis without a recovery
     })]);
   });
 
-  it('keeps the ordinary missing-CLI card and hands its failed turn to Cloud', () => {
+  it('keeps the ordinary missing-CLI diagnostic and retries the original local turn', () => {
     const message = failedTurn('cli_not_installed', 'command not found: claude');
     const original = structuredClone(message);
-    const { onRetry, onSwitchToAmrAndRetry } = renderPane(message);
+    const { onRetry } = renderPane(message);
 
     expectFailedTurnStillVisible();
     expect(screen.getByTestId('chat-run-error-card')).toBeTruthy();
@@ -166,13 +163,10 @@ describe('Git Bash dependency failure keeps its run diagnosis without a recovery
     expect(screen.getByTestId('chat-run-error-description').textContent).toContain('安装完成后再试。');
     const card = screen.getByTestId('chat-run-error-card');
     expect(within(card).getAllByRole('button').map((button) => button.textContent?.trim()))
-      .toEqual(['联系我们', '导出日志', '切换到 OpenDesign Cloud']);
-    fireEvent.click(within(card).getByRole('button', { name: '切换到 OpenDesign Cloud' }));
-    expect(onSwitchToAmrAndRetry).toHaveBeenCalledOnce();
-    expect(onSwitchToAmrAndRetry).toHaveBeenCalledWith(expect.objectContaining({
-      id: message.id, agentId: 'claude', runId: 'failed-run',
-    }));
-    expect(onRetry).not.toHaveBeenCalled();
+      .toEqual(['联系我们', '导出日志', '重试']);
+    expect(within(card).queryByRole('button', { name: '切换到 OpenDesign Cloud' })).toBeNull();
+    fireEvent.click(within(card).getByRole('button', { name: '重试' }));
+    expect(onRetry).toHaveBeenCalledWith(message, 'manual_retry');
     expect(message).toEqual(original);
   });
 });

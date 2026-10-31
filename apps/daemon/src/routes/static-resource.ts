@@ -12,7 +12,9 @@ import {
   enforceTeamResourceCopyAllowed,
   type TeamResourceStateProvider,
 } from '../collab/team-resource-state.js';
-import { detectAgents, detectAgentsStream } from '../agents.js';
+import { detectAgentsStream } from '../agents.js';
+import { discoverOfferedAgents } from '../services/agent-catalog.js';
+import { readSkillCatalog } from '../services/skill-catalog.js';
 import {
   SkillImportError,
   deleteUserSkill,
@@ -34,6 +36,7 @@ import {
 import {
   enforceVerifiedWorkspaceResourceMutation,
   resolveOptionalLocalWorkspaceRequestAuthority,
+  resolveOptionalWorkspaceRequestAuthority,
   type VerifyWorkspaceRequestAuthority,
 } from '../collab/workspace-resource-mutation.js';
 import { listCodexPets, readCodexPetSpritesheet } from '../codex-pets.js';
@@ -285,7 +288,10 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       );
       return undefined;
     }
-    const authority = resolveOptionalLocalWorkspaceRequestAuthority(scopedRequest);
+    const verifier = options.verifyAuthority ?? ctx.verifyWorkspaceReadAuthority ?? ctx.verifyWorkspaceRequestAuthority;
+    const authority = verifier
+      ? await resolveOptionalWorkspaceRequestAuthority(scopedRequest, verifier)
+      : resolveOptionalLocalWorkspaceRequestAuthority(scopedRequest);
     if (!authority.ok) {
       sendApiError(res, authority.status, authority.code, authority.message, {
         ...(authority.retryable ? { retryable: true } : {}),
@@ -307,7 +313,9 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
   ): Promise<boolean> => {
     const binding = getWorkspaceResourceByResourceId(db, 'skill', skillId);
     if (!binding) return true;
-    const localAuthority = resolveOptionalLocalWorkspaceRequestAuthority(req);
+    const localAuthority = ctx.verifyWorkspaceRequestAuthority
+      ? await resolveOptionalWorkspaceRequestAuthority(req, ctx.verifyWorkspaceRequestAuthority)
+      : resolveOptionalLocalWorkspaceRequestAuthority(req);
     if (!localAuthority.ok) {
       sendApiError(
         res,
@@ -456,8 +464,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
 
     if (!wantsStream) {
       try {
-        const list = await detectAgents(agentCliEnv);
-        res.json({ agents: offeredAgents(list, config) });
+        res.json({ agents: await discoverOfferedAgents(config) });
       } catch (err: any) {
         res.status(500).json({ error: String(err) });
       }
@@ -508,18 +515,13 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       });
       if (authority === undefined) return;
       const workspaceId = authority?.workspaceId ?? null;
-      const skills = await listAllSkills({
+      const skills = await readSkillCatalog(listAllSkills, {
         workspaceId,
         workspaceMemberId: authority?.workspaceMemberId ?? null,
       });
       // Strip full body + on-disk dir from the listing — frontend fetches the
       // body via /api/skills/:id when needed (keeps the listing payload small).
-      res.json({
-        skills: skills.map(({ body, dir: _dir, ...rest }) => ({
-          ...rest,
-          hasBody: typeof body === 'string' && body.length > 0,
-        })),
-      });
+      res.json({ skills });
     } catch (err: any) {
       res.status(500).json({ error: String(err) });
     }

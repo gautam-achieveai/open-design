@@ -1,104 +1,21 @@
 // @vitest-environment node
-
-import { join } from 'node:path';
-
-import { describe, expect, test } from 'vitest';
-
-import { writeFakeVelaBin } from '@/amr';
-import { AMR_TEST_WORKSPACE_HEADERS, createAmrProject, putAmrAppConfig } from '@/vitest/amr';
-import { requestJson } from '@/vitest/http';
-import { readRunEvents, startRun, waitForRunStatus, waitForRunTerminal } from '@/vitest/runs';
+import { expect, test } from 'vitest';
 import { createSmokeSuite } from '@/vitest/suite';
+import { requestJson } from '@/vitest/http';
 
-describe('AMR logout state persistence', () => {
-  test('a previously working AMR session stops working after local logout and requires re-login', { timeout: 180_000 }, async () => {
-    const suite = await createSmokeSuite('amr-logout-state-persistence');
-    const homeDir = join(suite.scratchDir, 'home-logout-state');
-
-    await suite.with.env({ HOME: homeDir, OPEN_DESIGN_AMR_PROFILE: 'local' }, async () => {
-      await suite.with.toolsDev(async ({ webUrl }) => {
-        const successVelaBin = await writeFakeVelaBin(join(suite.scratchDir, 'fake-vela-logout-success'), {
-          assistantText: 'AMR logout persistence success',
-          endpoints: suite.amr,
-          requireLoginConfig: false,
-          requireSetModel: false,
-        });
-        const strictVelaBin = await writeFakeVelaBin(join(suite.scratchDir, 'fake-vela-logout-strict'), {
-          assistantText: 'AMR logout persistence strict',
-          endpoints: suite.amr,
-          requireSetModel: false,
-        });
-
-        await putAmrAppConfig(webUrl, {
-          agentId: 'amr',
-          agentCliEnv: {
-            amr: {
-              VELA_BIN: successVelaBin,
-              OPEN_DESIGN_AMR_PROFILE: 'local',
-              ...suite.amr.runtimeEnv(),
-            },
-          },
-        });
-
-        const project = await createAmrProject(webUrl, 'AMR logout state persistence');
-
-        const firstRun = await startRun(webUrl, {
-          agentId: 'amr',
-          assistantMessageId: `assistant-success-${Date.now()}`,
-          clientRequestId: `req-success-${Date.now()}`,
-          conversationId: project.conversationId,
-          designSystemId: null,
-          message: 'First AMR run should succeed before logout.',
-          model: 'default',
-          projectId: project.project.id,
-          reasoning: 'default',
-          skillId: null,
-        }, { ...AMR_TEST_WORKSPACE_HEADERS });
-        await waitForRunStatus(webUrl, firstRun.runId, 'succeeded', {
-          headers: { ...AMR_TEST_WORKSPACE_HEADERS },
-          timeoutMs: 20_000,
-        });
-
-        await putAmrAppConfig(webUrl, {
-          agentId: 'amr',
-          agentCliEnv: {
-            amr: {
-              VELA_BIN: strictVelaBin,
-              OPEN_DESIGN_AMR_PROFILE: 'local',
-            },
-          },
-        });
-        await requestJson(webUrl, '/api/integrations/vela/logout', { body: {}, method: 'POST' });
-        const status = await requestJson<{ loggedIn: boolean }>(webUrl, '/api/integrations/vela/status');
-        expect(status.loggedIn).toBe(false);
-
-        const secondRun = await startRun(webUrl, {
-          agentId: 'amr',
-          assistantMessageId: `assistant-fail-${Date.now()}`,
-          clientRequestId: `req-fail-${Date.now()}`,
-          conversationId: project.conversationId,
-          designSystemId: null,
-          message: 'Second AMR run should require login again.',
-          model: 'default',
-          projectId: project.project.id,
-          reasoning: 'default',
-          skillId: null,
-        }, { ...AMR_TEST_WORKSPACE_HEADERS });
-        const terminal = await waitForRunTerminal(webUrl, secondRun.runId, {
-          headers: { ...AMR_TEST_WORKSPACE_HEADERS },
-          timeoutMs: 20_000,
-        });
-        expect(terminal.status).toBe('failed');
-
-        await expect(
-          readRunEvents(webUrl, secondRun.runId, {
-            headers: { ...AMR_TEST_WORKSPACE_HEADERS },
-          }),
-        ).resolves.toMatch(/AMR_AUTH_REQUIRED/);
-      }, {
-        // This fixture tests authentication with plain ACP output.
-        env: { OD_NEXT_STRATEGY_ROLLOUT: 'off' },
-      });
-    });
+test('[P1] obsolete login and logout requests cannot alter local provider configuration', { timeout: 180_000 }, async () => {
+  const suite = await createSmokeSuite('retired-login-local-config');
+  await suite.with.toolsDev(async ({ webUrl }) => {
+    await requestJson(webUrl, '/api/app-config', { method: 'PUT', body: {
+      agentId: 'codex', onboardingCompleted: true,
+      agentModels: { codex: { model: 'default', reasoning: 'default' } },
+    } });
+    const before = await requestJson(webUrl, '/api/app-config');
+    for (const path of ['/api/integrations/vela/login', '/api/integrations/vela/logout']) {
+      const response = await fetch(new URL(path, webUrl), { method: 'POST' });
+      expect(response.status).toBe(410);
+      expect(await response.json()).toMatchObject({ error: { code: 'CLOUD_FEATURES_DISABLED' } });
+    }
+    expect(await requestJson(webUrl, '/api/app-config')).toEqual(before);
   });
 });

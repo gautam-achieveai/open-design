@@ -178,7 +178,7 @@ async function tick(ms = 0) {
 }
 function sendButton() { return screen.getByTestId('access-copy-send') as HTMLButtonElement; }
 // This retained failure belongs to Claude: G16 uses the Cloud handoff action.
-function recoveryButton() { return screen.getByTestId('chat-error-switch-to-cloud') as HTMLButtonElement; }
+function recoveryButton() { return screen.getByTestId('chat-error-retry') as HTMLButtonElement; }
 function expectCard(title: string, body: string) {
   const card = screen.getByTestId('chat-run-error-card');
   expect(within(card).getByText(title, { exact: true })).toBeTruthy();

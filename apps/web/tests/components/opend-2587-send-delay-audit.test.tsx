@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Real ProjectView, ChatPane, ChatComposer and AMR gate; defer the billing HTTP response.
+// Real ProjectView, ChatPane and ChatComposer with a controlled local runtime.
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
   buildWorkspacePermissions,
@@ -126,13 +126,6 @@ vi.mock('../../src/providers/project-events', () => ({
   useProjectFileEvents: vi.fn(),
 }));
 
-vi.mock('../../src/runtime/amr-low-balance-plan', async () => {
-  const actual = await vi.importActual<
-    typeof import('../../src/runtime/amr-low-balance-plan')
-  >('../../src/runtime/amr-low-balance-plan');
-  return { ...actual, resolveAmrPlan: vi.fn().mockResolvedValue('pro') };
-});
-
 vi.mock('../../src/runtime/brands', async () => {
   const actual = await vi.importActual<typeof import('../../src/runtime/brands')>(
     '../../src/runtime/brands',
@@ -205,7 +198,7 @@ const config: AppConfig = {
   apiKey: '',
   baseUrl: '',
   model: 'deepseek-v4-flash',
-  agentId: 'amr',
+  agentId: 'claude',
   skillId: null,
   designSystemId: null,
 };
@@ -229,14 +222,12 @@ const project = (): Project => ({
   workspaceId: TEAM_WORKSPACE,
 });
 
-let pendingBilling: Promise<Response> | null = null;
 
 function stubFetch() {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.startsWith('/api/workspace/billing?') && pendingBilling) return pendingBilling;
       if (url.includes('/api/workspace/context')) {
         return new Response(JSON.stringify({ context: CALLER_CONTEXT }), { status: 200 });
       }
@@ -279,7 +270,6 @@ describe('OPEND-2587 real composer and transcript during delayed local reception
     window.sessionStorage.clear();
     window.localStorage.clear();
     resetWorkspaceContextCache();
-    pendingBilling = null;
     stubFetch();
     mockedListConversations.mockImplementation(async (projectId: string) => [
       conversation(projectId),
@@ -307,88 +297,43 @@ describe('OPEND-2587 real composer and transcript during delayed local reception
     resetWorkspaceContextCache();
   });
 
-  async function sendWithDelayedBilling() {
-    let resolveBilling!: (value: Response) => void;
-    pendingBilling = new Promise((resolve) => { resolveBilling = resolve; });
-    // Real balance gate + ProjectView + ChatPane + ChatComposer, deferred HTTP boundary.
-    // Keep the subsequent run provider off live services.
-    mockedStreamViaDaemon.mockReturnValue(new Promise(() => {}));
+
+  async function sendToPendingLocalRuntime() {
+    let options: Parameters<typeof streamViaDaemon>[0] | undefined;
+    mockedStreamViaDaemon.mockImplementation(value => { options=value; return new Promise(() => {}); });
     renderProjectView();
     await screen.findByTestId('chat-composer-input');
     await flushMounts();
     await typeAndSettle(PROMPT);
     await waitFor(() => expect(screen.getByTestId('chat-send')).not.toBeDisabled());
     fireEvent.click(screen.getByTestId('chat-send'));
-    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(
-      ([url]) => String(url).startsWith('/api/workspace/billing?'),
-    )).toBe(true));
-    expect(screen.getByTestId('user-message')).toHaveTextContent(PROMPT);
-    expect(mockedStreamViaDaemon).not.toHaveBeenCalled();
-    return (status = 200) => {
-      const observedAt = new Date().toISOString();
-      resolveBilling(new Response(JSON.stringify({
-        workspaceRuntime: {
-          workspaceId: TEAM_WORKSPACE, workspaceMemberId: TEAM_MEMBER,
-          status: 'fresh', observedAt,
-          hardExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-        },
-        authoritativeWorkspaceRead: {
-          workspaceId: TEAM_WORKSPACE, workspaceMemberId: TEAM_MEMBER, observedAt,
-        },
-        workspaceBalance: {
-          billingScopeVersion: 2, workspaceId: TEAM_WORKSPACE,
-          workspaceMemberId: TEAM_MEMBER, balanceUsd: '10.00', updatedAt: observedAt,
-        },
-      }), { status }));
-    };
+    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalledOnce());
+    return options!;
   }
 
-  it('retains the sent message during an unresolved local billing request and admits it once', async () => {
-    const releaseBilling = await sendWithDelayedBilling();
-    expect(composerText().trim()).toBe(PROMPT);
-    // Diagnostic repeat-click witness: no second turn is submitted.
-    const send = screen.queryByTestId('chat-send');
-    if (send && !(send as HTMLButtonElement).disabled) fireEvent.click(send);
-    expect(screen.getAllByTestId('user-message')).toHaveLength(1);
-    await act(async () => releaseBilling());
-    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalledTimes(1));
+  it('paints one sent message and clears the composer without contacting Cloud', async () => {
+    await sendToPendingLocalRuntime();
     expect(screen.getAllByTestId('user-message')).toHaveLength(1);
     expect(screen.getByTestId('user-message')).toHaveTextContent(PROMPT);
     await waitFor(() => expect(composerText().trim()).toBe(''));
-    expect(screen.getByRole('button', { name: 'chat.stop' })).toBeEnabled();
-    expect(screen.queryByTestId('chat-send-pending')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('chat-send')).not.toBeInTheDocument();
-    await typeAndSettle('下一条消息');
+    expect(screen.getByRole('button', {name:'chat.stop'})).toBeEnabled();
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => /vela|wallet|billing/.test(String(url)))).toBe(false);
+  });
+
+  it('stops the pending local runtime while preserving the sent transcript', async () => {
+    const options=await sendToPendingLocalRuntime();
+    await waitFor(() => expect(screen.getByRole('button', {name:'chat.stop'})).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', {name:'chat.stop'}));
+    await waitFor(() => expect(options.signal.aborted).toBe(true));
+    expect(screen.getByTestId('user-message')).toHaveTextContent(PROMPT);
+  });
+
+  it('accepts another draft while the current local run remains active', async () => {
+    await sendToPendingLocalRuntime();
+    await waitFor(() => expect(composerText().trim()).toBe(''));
+    await typeAndSettle('Next local task');
     expect(screen.getByTestId('chat-send')).toBeEnabled();
-    expect(screen.queryByRole('button', { name: 'chat.stop' })).not.toBeInTheDocument();
+    expect(mockedStreamViaDaemon).toHaveBeenCalledOnce();
+    expect(screen.getAllByTestId('user-message')).toHaveLength(1);
   });
-
-  it('shows the existing disabled preparing action while local admission is pending', async () => {
-    await sendWithDelayedBilling();
-    expect(screen.queryByTestId('chat-send')).not.toBeInTheDocument();
-    const pending = screen.getByTestId('chat-send-pending');
-    expect(pending).toBeDisabled();
-    expect(pending).toHaveAttribute('aria-busy', 'true');
-    expect(pending).toHaveAccessibleName('assistant.statusPreparing');
-  });
-
-  it('keeps preparing as the only action when the retained draft is cleared during admission', async () => {
-    await sendWithDelayedBilling();
-    await typeAndSettle('');
-    expect(screen.getByTestId('chat-send-pending')).toBeDisabled();
-    expect(screen.queryByRole('button', { name: 'chat.stop' })).not.toBeInTheDocument();
-    expect(screen.queryByTestId('chat-send')).not.toBeInTheDocument();
-    expect(screen.getByTestId('user-message')).toHaveTextContent(PROMPT);
-  });
-
-  it('releases preparing when the billing endpoint rejects admission', async () => {
-    const releaseBilling = await sendWithDelayedBilling();
-    await act(async () => releaseBilling(503));
-    await waitFor(() => expect(composerText().trim()).toBe(''));
-    expect(screen.queryByTestId('chat-send-pending')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'chat.stop' })).not.toBeInTheDocument();
-    expect(screen.getByTestId('chat-send')).toBeDisabled();
-    expect(mockedStreamViaDaemon).not.toHaveBeenCalled();
-  });
-
 });

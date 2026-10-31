@@ -218,7 +218,7 @@ describe('readTelemetrySinkConfig', () => {
 });
 
 describe('readRunTelemetrySinkConfig', () => {
-  it('uses Vela only for completed-run telemetry when a Control Key exists', () => {
+  it('ignores retired Cloud credentials when selecting completed-run telemetry', () => {
     const cfg = readRunTelemetrySinkConfig(
       {
         OPEN_DESIGN_TELEMETRY_RELAY_URL:
@@ -231,11 +231,7 @@ describe('readRunTelemetrySinkConfig', () => {
     );
 
     expect(cfg).toEqual({
-      kind: 'vela',
-      apiUrl: 'https://vela.example.test',
-      controlKey: 'ck_test',
-      timeoutMs: 20_000,
-      retries: 1,
+      kind: 'relay', relayUrl: 'https://telemetry.open-design.ai/api/langfuse', timeoutMs: 20_000, retries: 1,
     });
   });
 
@@ -272,8 +268,8 @@ describe('readRunTelemetrySinkConfig', () => {
     const diagnostic = describeRunTelemetrySink(vela);
 
     expect(diagnostic).toEqual({
-      kind: 'vela',
-      host: 'vela.example.test',
+      kind: 'relay',
+      host: 'relay.example.test',
       protocol: 'https',
     });
     const serialized = JSON.stringify(diagnostic);
@@ -3025,10 +3021,8 @@ describe('reportRunFeedback', () => {
     vi.unstubAllEnvs();
   });
 
-  it('posts feedback scores to Vela when completed-run telemetry uses Vela', async () => {
-    // tests/setup.ts defaults OPEN_DESIGN_VELA_TELEMETRY to 'off' so unit
-    // tests never route through a developer's real Vela profile; this test
-    // exercises exactly that sink, so opt back in explicitly.
+  it('posts feedback through the relay without retired Cloud credentials', async () => {
+    // Old credentials cannot replace the retained relay transport.
     vi.stubEnv('OPEN_DESIGN_VELA_TELEMETRY', 'on');
     vi.stubEnv('VELA_CONTROL_KEY', 'ck_secret');
     vi.stubEnv('VELA_API_URL', 'https://vela.example.test');
@@ -3055,21 +3049,21 @@ describe('reportRunFeedback', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0]!;
-    expect(url).toBe('https://vela.example.test/api/v1/open-design/telemetry');
-    expect(init.headers.Authorization).toBe('Bearer ck_secret');
+    expect(url).toBe('https://telemetry.open-design.ai/api/langfuse');
+    expect(new Headers(init.headers).has('authorization')).toBe(false);
     const envelope = JSON.parse(init.body);
-    expect(envelope.installationId).toBe('install-uuid-1');
-    expect(envelope.events.map((event: { kind: string }) => event.kind)).toEqual([
-      'score',
-      'score',
+    expect(JSON.stringify(envelope)).not.toContain('ck_secret');
+    expect(envelope.batch.map((event: { type: string }) => event.type)).toEqual([
+      'score-create',
+      'score-create',
     ]);
-    expect(envelope.events[0].data).toMatchObject({
+    expect(envelope.batch[0].body).toMatchObject({
       id: 'run-feedback-1-rating',
       traceId: 'run-feedback-1',
       name: 'user_rating',
       value: 1,
     });
-    expect(envelope.events[1].data).toMatchObject({
+    expect(envelope.batch[1].body).toMatchObject({
       id: 'run-feedback-1-reason-matched_request',
       traceId: 'run-feedback-1',
       name: 'user_rating_reason',
@@ -3077,8 +3071,8 @@ describe('reportRunFeedback', () => {
     });
   });
 
-  it('does not fall back anonymously when Vela rejects feedback auth', async () => {
-    // Same opt-in as above: the setup default keeps the Vela sink off.
+  it('does not fall back to retired Cloud when the relay rejects feedback', async () => {
+    // A relay failure must not activate the retired Cloud transport.
     vi.stubEnv('OPEN_DESIGN_VELA_TELEMETRY', 'on');
     vi.stubEnv('VELA_CONTROL_KEY', 'ck_expired');
     vi.stubEnv('VELA_API_URL', 'https://vela.example.test');
@@ -3095,7 +3089,7 @@ describe('reportRunFeedback', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(fetchSpy.mock.calls[0]![0]).toBe(
-      'https://vela.example.test/api/v1/open-design/telemetry',
+      'https://telemetry.open-design.ai/api/langfuse',
     );
   });
 

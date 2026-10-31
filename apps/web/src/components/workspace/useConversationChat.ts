@@ -114,7 +114,7 @@ export function useConversationChat(
   currentScopeRef.current = messageScopeKey;
   const abortRef = useRef<AbortController | null>(null);
   const cancelRef = useRef<AbortController | null>(null);
-  // Coalesces streamed deltas into ~one React update per animation frame
+  // Coalesces streamed deltas into at most 30 React updates per second
   // (same primitive the primary chat loop uses) so a side chat doesn't rebuild
   // the whole messages array on every SSE token.
   const textBufferRef = useRef<ReturnType<typeof createBufferedTextUpdates> | null>(null);

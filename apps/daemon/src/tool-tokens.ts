@@ -19,8 +19,10 @@ export const MEDIA_TASK_WAIT_TOOL_ENDPOINT = '/api/media/tasks/:id/wait';
 export const HYPERFRAMES_SCAFFOLD_TOOL_ENDPOINT = '/api/tools/media/hyperframes/scaffold';
 export const PROJECT_EXPORT_TOOL_ENDPOINT = '/api/projects/:id/export/:format';
 export const DELIVERABLE_SYNTAX_CHECK_TOOL_ENDPOINT = '/api/tools/deliverable-syntax/check';
+export const MCP_TOOL_ENDPOINT = '/mcp';
 
 export const CHAT_TOOL_ENDPOINTS = [
+  MCP_TOOL_ENDPOINT,
   '/api/tools/live-artifacts/create',
   '/api/tools/live-artifacts/list',
   '/api/tools/live-artifacts/refresh',
@@ -38,6 +40,44 @@ export const CHAT_TOOL_ENDPOINTS = [
 ] as const;
 
 export const CHAT_TOOL_OPERATIONS = [
+  'browser/snapshot',
+  'browser/inspect',
+  'browser/screenshot',
+  'browser/click',
+  'browser/type',
+  'browser/navigate',
+  'browser/scroll',
+  'browser/viewport',
+  'browser/style',
+  'browser/evaluate',
+  'browser/devtools',
+  'browser/performance/start',
+  'browser/performance/stop',
+  'browser/performance/status',
+  'browser/performance/compare',
+  'browser/performance/list',
+  'browser/performance/report',
+  'browser/performance/page',
+  'browser/console',
+  'browser/network-list',
+  'browser/network-get',
+  'browser/network-failures',
+  'project/files:list',
+  'project/files:read',
+  'project/files:search',
+  'project/artifact:read',
+  'catalog/agents:list',
+  'catalog/skills:list',
+  'catalog/skills:read',
+  'catalog/design-systems:read',
+  'brief/collect',
+  'brief/confirm',
+  'brief/resource:read',
+  'project/files:write',
+  'project/files:delete',
+  'project/artifact:create',
+  'catalog/plugins:list',
+  'context/active:read',
   'live-artifacts:create',
   'live-artifacts:list',
   'live-artifacts:refresh',
@@ -154,6 +194,15 @@ export function checkConnectorAccess(
 export class ToolTokenRegistry {
   readonly #byTokenHash = new Map<string, StoredToolTokenGrant>();
   readonly #tokenHashesByRunId = new Map<string, Set<string>>();
+  readonly #revocationListeners = new Set<(runId: string) => void>();
+
+  // Subscriptions survive clear(); each owner must unsubscribe during shutdown.
+  // Notifications contain only the run identity, never a token or token hash.
+  onTokenRevoked(listener: (runId: string) => void): () => void {
+    const subscription = (runId: string) => listener(runId);
+    this.#revocationListeners.add(subscription);
+    return () => { this.#revocationListeners.delete(subscription); };
+  }
 
   mint(options: MintToolTokenOptions): ToolTokenGrant {
     const nowMs = options.nowMs ?? Date.now();
@@ -265,6 +314,13 @@ export class ToolTokenRegistry {
       runTokens.delete(hash);
       if (runTokens.size === 0) this.#tokenHashesByRunId.delete(stored.runId);
     }
+    for (const listener of [...this.#revocationListeners]) {
+      try {
+        listener(stored.runId);
+      } catch {
+        // A subscriber cannot prevent revocation or other notifications.
+      }
+    }
     return true;
   }
 
@@ -289,6 +345,7 @@ export class ToolTokenRegistry {
   }
 
   clear(): void {
+    // Bulk cleanup is silent and does not remove independently owned listeners.
     for (const stored of this.#byTokenHash.values()) {
       clearTimeout(stored.timer);
     }

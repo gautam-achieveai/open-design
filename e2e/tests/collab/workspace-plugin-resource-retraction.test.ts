@@ -1,223 +1,60 @@
 // @vitest-environment node
-
-// P0: a Team plugin retraction must converge on an already-running member
-// daemon through the real hub-event -> reconciliation -> registry gate chain.
-// A fresh/restarted daemon is not enough: the regression fixed by #6335 lived
-// in stale local materialization state and delayed positive hub reads.
-
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-
-import { afterEach, describe, expect, test } from 'vitest';
-
-import {
-  startFakeCollabHub,
-  type FakeCollabHub,
-} from '@/playwright/fake-collab-hub';
-import { requestJson } from '@/vitest/http';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join, relative, resolve } from 'node:path';
+import { expect, test } from 'vitest';
 import { createSmokeSuite } from '@/vitest/suite';
+import { requestJson } from '@/vitest/http';
+import { e2eWorkspaceRoot } from '@/tools-dev/runtime';
+import { localWorkspaceHeaders, readInstalledPlugin, readResourceBinding, seedLegacyTeamResource } from '@/vitest/local-workspace';
 
-const WORKSPACE_ID = 'ws-plugin-retraction';
-const PLUGIN_ID = 'workspace-retraction-plugin';
-
-const OWNER = {
-  controlKey: 'e2e-plugin-owner-key',
-  memberId: 'mem-plugin-owner',
-  name: 'Plugin Owner',
-  role: 'owner' as const,
-};
-
-const MEMBER = {
-  controlKey: 'e2e-plugin-member-key',
-  memberId: 'mem-plugin-member',
-  name: 'Plugin Member',
-  role: 'member' as const,
-};
-
-let hub: FakeCollabHub | null = null;
-
-afterEach(async () => {
-  await hub?.close();
-  hub = null;
-});
-
-function workspaceHeaders(identity: typeof OWNER | typeof MEMBER): Record<string, string> {
-  return {
-    'x-od-workspace-id': WORKSPACE_ID,
-    'x-od-workspace-type': 'team',
-    'x-od-workspace-member-id': identity.memberId,
-    'x-od-workspace-role': identity.role,
-    'x-od-workspace-member-status': 'active',
-    'x-od-workspace-lifecycle-state': 'active',
-    'x-od-workspace-can-share-projects': identity.role === 'owner' ? 'true' : 'false',
-    'x-od-workspace-can-write-synced-files': identity.role === 'owner' ? 'true' : 'false',
-    'x-od-workspace-can-manage-shared-resources': identity.role === 'owner' ? 'true' : 'false',
-  };
-}
-
-async function installPlugin(
-  webUrl: string,
-  source: string,
-  identity: typeof OWNER | typeof MEMBER,
-): Promise<void> {
-  const response = await fetch(new URL('/api/plugins/install', webUrl), {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...workspaceHeaders(identity),
-    },
-    body: JSON.stringify({ source }),
+test('[P0] local plugins apply while stored Team plugins remain hidden and preserved', { timeout: 300_000 }, async () => {
+  const suite = await createSmokeSuite('local-plugin-team-unavailable');
+  const source = join(suite.scratchDir, 'local-plugin');
+  // tools-dev launches the daemon with the repository root as cwd. Use its
+  // supported relative local-source form on both Windows and POSIX hosts.
+  const daemonCwd = e2eWorkspaceRoot();
+  const installSource = `./${relative(daemonCwd, source).replaceAll('\\', '/')}`;
+  expect(resolve(daemonCwd, installSource)).toBe(source);
+  const id = 'workspace-retraction-plugin';
+  await mkdir(source, { recursive: true });
+  const manifest = JSON.stringify({
+    name: id, version: '1.0.0', title: 'Local fixture plugin', description: 'Local plugin isolation witness',
+    od: { kind: 'skill', taskKind: 'new-generation', useCase: { query: 'Build a {{topic}} brief.' },
+      inputs: [{ name: 'topic', type: 'string', required: true }] },
   });
-  expect(response.status).toBe(200);
-  expect(await response.text()).toContain('event: success');
-}
-
-async function applyStatus(
-  webUrl: string,
-  identity: typeof OWNER | typeof MEMBER,
-): Promise<number> {
-  return (await fetch(new URL(`/api/plugins/${PLUGIN_ID}/apply`, webUrl), {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...workspaceHeaders(identity),
-    },
-    body: JSON.stringify({ inputs: { topic: 'workspace authority' } }),
-  })).status;
-}
-
-describe('workspace Team plugin retraction', () => {
-  test(
-    '[P0] an already-running member daemon stops listing and applying a retracted Team plugin',
-    { timeout: 300_000 },
-    async () => {
-      const ownerSuite = await createSmokeSuite('collab-plugin-retraction-owner');
-      const memberSuite = await createSmokeSuite('collab-plugin-retraction-member');
-      const pluginSource = join(ownerSuite.scratchDir, 'workspace-retraction-plugin-source');
-      await mkdir(pluginSource, { recursive: true });
-      await writeFile(
-        join(pluginSource, 'open-design.json'),
-        JSON.stringify({
-          name: PLUGIN_ID,
-          version: '1.0.0',
-          title: 'Workspace Retraction Plugin',
-          description: 'Pins live Team resource retraction.',
-          od: {
-            kind: 'skill',
-            taskKind: 'new-generation',
-            useCase: { query: 'Build a {{topic}} brief.' },
-            inputs: [{ name: 'topic', type: 'string', required: true }],
-          },
-        }, null, 2),
-        'utf8',
-      );
-
-      hub = await startFakeCollabHub({
-        root: join(ownerSuite.scratchDir, 'plugin-hub'),
-        workspaceId: WORKSPACE_ID,
-        workspaceName: 'Plugin Retraction Team',
-        clients: [OWNER, MEMBER],
-      });
-      const velaBin = await hub.writeVelaBin(join(ownerSuite.scratchDir, 'fake-vela-plugin'));
-      const commonEnv = {
-        OD_COLLAB_TRANSPORT: 'vela-cli',
-        OD_RESOURCE_TRANSPORT: 'vela-cli',
-        OD_WORKSPACE_CONTEXT_SOURCE: 'vela',
-        VELA_API_URL: hub.url,
-        VELA_BIN: velaBin,
-      };
-
-      await ownerSuite.with.toolsDev(
-        async ({ webUrl: ownerWebUrl }) => {
-          await requestJson(ownerWebUrl, '/api/workspace/active', {
-            method: 'PUT',
-            body: { workspaceId: WORKSPACE_ID, workspaceMemberId: OWNER.memberId },
-          });
-          await installPlugin(ownerWebUrl, pluginSource, OWNER);
-          expect(await applyStatus(ownerWebUrl, OWNER)).toBe(200);
-
-          await requestJson(
-            ownerWebUrl,
-            `/api/workspace/plugins/${encodeURIComponent(PLUGIN_ID)}/share`,
-            { method: 'POST', headers: workspaceHeaders(OWNER) },
-          );
-
-          await memberSuite.with.toolsDev(
-            async ({ webUrl: memberWebUrl }) => {
-              await requestJson(memberWebUrl, '/api/workspace/active', {
-                method: 'PUT',
-                body: { workspaceId: WORKSPACE_ID, workspaceMemberId: MEMBER.memberId },
-              });
-              // Hub streams are leased by explicit workspace billing
-              // interests. Establish the same lease the open shell owns before
-              // asserting push-driven resource convergence.
-              await requestJson(
-                memberWebUrl,
-                `/api/workspace/billing?scope=workspace&workspaceId=${WORKSPACE_ID}`,
-                { headers: workspaceHeaders(MEMBER) },
-              );
-              await expect.poll(() => hub?.eventSubscriberCount(MEMBER.memberId) ?? 0, {
-                timeout: 20_000,
-              }).toBeGreaterThan(0);
-
-              await expect.poll(async () => {
-                const team = await requestJson<{ ids: string[] }>(
-                  memberWebUrl,
-                  '/api/workspace/plugins/team',
-                  { headers: workspaceHeaders(MEMBER) },
-                );
-                return team.ids;
-              }, { timeout: 30_000 }).toContain(PLUGIN_ID);
-              await expect.poll(() => applyStatus(memberWebUrl, MEMBER), {
-                timeout: 30_000,
-              }).toBe(200);
-
-              await requestJson(
-                ownerWebUrl,
-                `/api/workspace/plugins/${encodeURIComponent(PLUGIN_ID)}/share`,
-                { method: 'DELETE', headers: workspaceHeaders(OWNER) },
-              );
-              await hub?.waitForEvent(
-                (event) =>
-                  event.type === 'team-resources-changed'
-                  && event.resourceKind === 'plugin'
-                  && event.resourceStatus === 'retracted',
-              );
-
-              // No focus event, daemon restart, or explicit Team-list refresh
-              // precedes this assertion. The hub signal itself must retire the
-              // binding before the next apply can use stale local bytes.
-              await expect.poll(() => applyStatus(memberWebUrl, MEMBER), {
-                timeout: 30_000,
-              }).toBe(404);
-              const teamAfterRetraction = await requestJson<{ ids: string[] }>(
-                memberWebUrl,
-                '/api/workspace/plugins/team',
-                { headers: workspaceHeaders(MEMBER) },
-              );
-              expect(teamAfterRetraction.ids).not.toContain(PLUGIN_ID);
-
-              // Retraction removes the Team projection, not the owner's
-              // independent Personal resource with the same manifest id.
-              expect(await applyStatus(ownerWebUrl, OWNER)).toBe(200);
-            },
-            {
-              env: {
-                ...commonEnv,
-                AMR_HOME: join(memberSuite.scratchDir, 'empty-amr-home'),
-                VELA_CONTROL_KEY: MEMBER.controlKey,
-              },
-            },
-          );
-        },
-        {
-          env: {
-            ...commonEnv,
-            AMR_HOME: join(ownerSuite.scratchDir, 'empty-amr-home'),
-            VELA_CONTROL_KEY: OWNER.controlKey,
-          },
-        },
-      );
-    },
-  );
+  await writeFile(join(source, 'open-design.json'), manifest);
+  await suite.with.toolsDev(async ({ webUrl }) => {
+    const installed = await fetch(new URL('/api/plugins/install', webUrl), {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: installSource }),
+    });
+    const installResult = await installed.text();
+    expect(installed.status, installResult).toBe(200);
+    expect(installResult).toContain('event: success');
+    const apply = (headers: Record<string, string> = {}) => fetch(new URL(`/api/plugins/${id}/apply`, webUrl), {
+      method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ inputs: { topic: 'local design' } }),
+    });
+    expect((await apply()).status).toBe(200);
+    const installedBefore = readInstalledPlugin(suite.dataDir, id);
+    const storedManifest = join(installedBefore.fs_path, 'open-design.json');
+    const storedBefore = await readFile(storedManifest, 'utf8');
+    const before = seedLegacyTeamResource(suite.dataDir, 'plugin', id);
+    const catalog = await requestJson<{ plugins: Array<{ id: string }> }>(webUrl, '/api/plugins');
+    expect(catalog.plugins.map(plugin => plugin.id)).not.toContain(id);
+    for (const denied of [
+      { name: 'unscoped lookup conceals the plugin', headers: {}, status: 404,
+        body: { error: 'plugin not found' } },
+      { name: 'spoofed Personal identity cannot claim stored Team resources',
+        headers: localWorkspaceHeaders('legacy-resource-team'), status: 403,
+        body: { error: { code: 'WORKSPACE_UNAVAILABLE',
+          message: 'Team resources are unavailable because Cloud support has been removed. Stored data has been preserved.' } } },
+    ]) {
+      const response = await apply(denied.headers);
+      expect(response.status, denied.name).toBe(denied.status);
+      expect(await response.json(), denied.name).toEqual(denied.body);
+    }
+    expect(readResourceBinding(suite.dataDir, 'plugin', id)).toEqual(before);
+    expect(readInstalledPlugin(suite.dataDir, id)).toEqual(installedBefore);
+    expect(await readFile(storedManifest, 'utf8')).toBe(storedBefore);
+    expect(await readFile(join(source, 'open-design.json'), 'utf8')).toBe(manifest);
+  });
 });

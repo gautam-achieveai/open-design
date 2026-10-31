@@ -93,12 +93,12 @@ describe('recorded media failures carry a next step', () => {
       .toBe('open-settings');
   });
 
-  it('reads an OD-owned credential failure as a sign-in, not a BYOK key', () => {
+  it('directs retired provider failures to another model and BYOK failures to Settings', () => {
     expect(
       mediaTaskErrorFromFailure(new Error('vela image 401: unauthorized'), {
         model: 'vela/gpt-image-2',
       }).nextStep,
-    ).toBe('sign-in');
+    ).toBe('switch-model');
     expect(
       mediaTaskErrorFromFailure(new Error('senseaudio image 401: unauthorized'), {
         model: 'senseaudio-image',

@@ -50,6 +50,23 @@ export {
 
 export type TestAgentDef = RuntimeAgentDef;
 
+/** Write a CLI fixture that the current platform can actually resolve and execute. */
+export function writeFakeCli(
+  dir: string,
+  name: string,
+  posixScript: string,
+  windowsScript = '@echo off\nexit /b 0\n',
+): string {
+  const bin = join(dir, process.platform === 'win32' ? `${name}.CMD` : name);
+  if (process.platform === 'win32') {
+    writeFileSync(bin, windowsScript.replace(/\r?\n/g, '\r\n'));
+  } else {
+    writeFileSync(bin, posixScript);
+    chmodSync(bin, 0o755);
+  }
+  return bin;
+}
+
 export function requireAgent(id: string): TestAgentDef {
   const agent = AGENT_DEFS.find((candidate) => candidate.id === id);
   assert.ok(agent, `missing agent definition for ${id}`);

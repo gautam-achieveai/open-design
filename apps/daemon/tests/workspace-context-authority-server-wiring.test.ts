@@ -30,6 +30,7 @@ const MANAGED_ENV = [
 let authority: Server | null = null;
 let daemon: StartedServer | null = null;
 let scratch: string | null = null;
+let closeFixtureDatabase: (() => void) | undefined;
 const savedEnv = new Map<string, string | undefined>();
 
 afterEach(async () => {
@@ -52,6 +53,8 @@ afterEach(async () => {
       await new Promise<void>((resolve) => current.close(() => resolve()));
     }
   }
+  closeFixtureDatabase?.();
+  closeFixtureDatabase = undefined;
   if (scratch) await rm(scratch, { recursive: true, force: true });
   scratch = null;
   for (const [key, value] of savedEnv) {
@@ -63,7 +66,7 @@ afterEach(async () => {
 }, 30_000);
 
 describe('server workspace context authority wiring', () => {
-  it('keeps directory Team authority and fences an unread A -> B -> A Settings transition', async () => {
+  it('does not revive retired Team authority after an A -> B -> A Settings transition', async () => {
     scratch = await mkdtemp(join(tmpdir(), 'od-context-authority-wiring-'));
     let directoryReads = 0;
     let allowHubReady = true;
@@ -92,65 +95,21 @@ describe('server workspace context authority wiring', () => {
       startServer(options: { port: number; returnServer: true }): Promise<StartedServer>;
     };
     daemon = await serverModule.startServer({ port: 0, returnServer: true });
+    closeFixtureDatabase = (await import('../src/db.js')).closeDatabase;
 
-    const initial = await getWorkspaceContext();
-    expect(initial).toMatchObject({ workspaceType: 'team', role: 'admin' });
-    const directoryReadsAfterInitial = directoryReads;
-    expect(directoryReadsAfterInitial).toBeGreaterThan(0);
-
-    const interest = await fetch(`${daemon.url}/api/workspace/billing/interests/context-test`, {
+    expect(await getWorkspaceContext()).toBeNull();
+    expect(directoryReads).toBe(0);
+    const interest = await fetch(daemon.url + '/api/workspace/billing/interests/context-test', {
       method: 'PUT',
       headers: { ...workspaceHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({
-        generation: '1',
-        interests: [{ workspaceId: WORKSPACE_ID, workspaceMemberId: MEMBER_ID }],
-      }),
+      body: JSON.stringify({ generation: '1', interests: [{ workspaceId: WORKSPACE_ID, workspaceMemberId: MEMBER_ID }] }),
     });
-    expect(interest.status).toBe(200);
-    await vi.waitFor(
-      () => expect(directoryReads).toBeGreaterThan(directoryReadsAfterInitial),
-      { timeout: 10_000, interval: 50 },
-    );
-
-    let warmContext: Record<string, unknown> | null = null;
-    await vi.waitFor(async () => {
-      const readsBefore = directoryReads;
-      const context = await getWorkspaceContext();
-      expect(directoryReads).toBe(readsBefore);
-      warmContext = context;
-    }, { timeout: 10_000, interval: 50 });
-
-    expect(warmContext).not.toBeNull();
-    expect(warmContext).toMatchObject({
-      workspaceId: WORKSPACE_ID,
-      workspaceMemberId: MEMBER_ID,
-      workspaceType: 'team',
-      role: 'admin',
-      teamId: WORKSPACE_ID,
-      planId: null,
-    });
-    const directoryReadsAfterCatchUp = directoryReads;
-    await getWorkspaceContext();
-    await getWorkspaceContext();
-    expect(directoryReads).toBe(directoryReadsAfterCatchUp);
-
-    // Red spec for the account-identity fence: both Settings writes complete
-    // without any directory/status read. The final credential identity is
-    // byte-for-byte A again, so a cache keyed only by the current identity
-    // would otherwise revive the old five-minute authority lease.
-    allowHubReady = false;
-    const directoryReadsBeforeCredentialRoundTrip = directoryReads;
+    expect(interest.status).toBe(410);
+    await expect(interest.json()).resolves.toMatchObject({ error: { code: 'CLOUD_FEATURES_DISABLED' } });
     await putAmrApiUrl('https://account-b.example');
     await putAmrApiUrl(authorityUrl);
-    expect(directoryReads).toBe(directoryReadsBeforeCredentialRoundTrip);
-
-    const afterCredentialRoundTrip = await getWorkspaceContext();
-    expect(afterCredentialRoundTrip).toMatchObject({
-      workspaceId: WORKSPACE_ID,
-      workspaceMemberId: MEMBER_ID,
-      role: 'admin',
-    });
-    expect(directoryReads).toBeGreaterThan(directoryReadsBeforeCredentialRoundTrip);
+    expect(await getWorkspaceContext()).toBeNull();
+    expect(directoryReads).toBe(0);
   }, 60_000);
 });
 

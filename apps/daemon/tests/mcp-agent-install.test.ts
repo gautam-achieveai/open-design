@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import path from 'node:path';
 
 import {
   AGENT_SLUGS,
   applyJsonInstall,
   isAgentSlug,
   planAgentInstall,
+  planHttpAgentInstall,
+  httpMcpUrlFromDaemonOrigin,
   removeJsonInstall,
   type JsonInstallPlan,
   type McpLaunchSpec,
@@ -36,6 +39,66 @@ describe('agent slug guard', () => {
 });
 
 describe('CLI-driven agents', () => {
+  it('plans Codex HTTP with only an environment-variable name and preserves stdio planning', () => {
+    const plan = planHttpAgentInstall('codex', { url: 'http://127.0.0.1:7456/mcp', bearerTokenEnvVar: 'OD_MCP_TOKEN' }, ctx());
+    expect(plan).toEqual({
+      kind: 'cli', slug: 'codex', bin: 'codex',
+      addArgv: ['mcp', 'add', 'open-design', '--url', 'http://127.0.0.1:7456/mcp', '--bearer-token-env-var', 'OD_MCP_TOKEN'],
+      getArgv: ['mcp', 'get', 'open-design'], removeArgv: ['mcp', 'remove', 'open-design'],
+    });
+    expect(planAgentInstall('codex', SPEC_NO_ENV, ctx())).toMatchObject({
+      kind: 'cli', addArgv: ['mcp', 'add', 'open-design', '--', SPEC_NO_ENV.command, ...SPEC_NO_ENV.args],
+    });
+    expect(planHttpAgentInstall('codex', { url: 'http://[::1]:7456/mcp', bearerTokenEnvVar: 'OD_MCP_TOKEN' }, ctx()).addArgv).toContain('http://[::1]:7456/mcp');
+  });
+
+  it('fails closed for unverified agents, nonlocal URLs and credential-like inputs without echoing them', () => {
+    const safe = { url: 'http://127.0.0.1:7456/mcp', bearerTokenEnvVar: 'OD_MCP_TOKEN' };
+    expect(planHttpAgentInstall('cursor', safe, ctx())).toMatchObject({ kind: 'manual', snippet: '' });
+    for (const url of [
+      'http://example.invalid/mcp', 'https://127.0.0.1/mcp', 'http://localhost/mcp',
+      'http://127.0.0.1/mcp?token=synthetic-secret', 'http://127.0.0.1/mcp?',
+      'http://127.0.0.1/mcp#synthetic-secret', 'http://user:synthetic-secret@127.0.0.1/mcp',
+      'http://127.0.0.1/not-mcp',
+    ]) {
+      expect(() => planHttpAgentInstall('codex', { ...safe, url }, ctx())).toThrow('invalid local HTTP MCP URL');
+      try { planHttpAgentInstall('codex', { ...safe, url }, ctx()); } catch (error) { expect(String(error)).not.toContain('synthetic-secret'); }
+    }
+    for (const bearerTokenEnvVar of ['odmcp_synthetic_secret', 'odtt_synthetic_secret', 'bad-name', 'BAD=VALUE', '']) {
+      expect(() => planHttpAgentInstall('codex', { ...safe, bearerTokenEnvVar }, ctx())).toThrow('invalid bearer environment variable name');
+    }
+    expect(() => planHttpAgentInstall('codex', safe, { ...ctx(), serverName: '--malicious' })).toThrow('invalid MCP server name');
+  });
+
+  it('rejects recognized token prefixes embedded in every caller-controlled HTTP plan output field', () => {
+    const safe = { url: 'http://127.0.0.1:7456/mcp', bearerTokenEnvVar: 'OD_MCP_TOKEN' };
+    for (const token of ['odtt_synthetic_secret', 'odmcp_synthetic_secret']) {
+      const cases = [
+        { spec: safe, context: { ...ctx(), serverName: `prefix-${token}` }, message: 'invalid MCP server name' },
+        { spec: { ...safe, bearerTokenEnvVar: `PREFIX_${token.toUpperCase()}` }, context: ctx(), message: 'invalid bearer environment variable name' },
+        { spec: { ...safe, url: `http://127.0.0.1:7456/mcp?x=${token}` }, context: ctx(), message: 'invalid local HTTP MCP URL' },
+        { spec: { ...safe, url: `http://${token}@127.0.0.1:7456/mcp` }, context: ctx(), message: 'invalid local HTTP MCP URL' },
+      ];
+      for (const test of cases) {
+        try {
+          planHttpAgentInstall('codex', test.spec, test.context);
+          throw new Error('expected token-bearing input to be rejected');
+        } catch (error) {
+          expect(String(error)).toBe(`Error: ${test.message}`);
+          expect(String(error).toLowerCase()).not.toContain(token.toLowerCase());
+        }
+      }
+    }
+    // The accepted names appear in every relevant argv list; no input token
+    // can reach add, remove, or get, and valid env-var names still work.
+    const plan = planHttpAgentInstall('codex', safe, { ...ctx(), serverName: 'test-server' });
+    expect(plan.addArgv).toContain('test-server');
+    expect(plan.removeArgv).toContain('test-server');
+    expect(plan.getArgv).toContain('test-server');
+    expect(plan.addArgv).toContain('OD_MCP_TOKEN');
+    expect(JSON.stringify(plan)).not.toMatch(/odtt_|odmcp_/i);
+  });
+
   it('claude registers via `claude mcp add --scope user` with env flags', () => {
     const plan = planAgentInstall('claude', SPEC, ctx());
     expect(plan.kind).toBe('cli');
@@ -75,10 +138,55 @@ describe('CLI-driven agents', () => {
 });
 
 describe('JSON-config agents', () => {
+  it('plans documented HTTP auth references without reading their values and preserves conflicts', () => {
+    const spec = { url: 'http://127.0.0.1:45678/mcp', bearerTokenEnvVar: 'OD_MCP_TOKEN' };
+    const claude = planHttpAgentInstall('claude', spec, ctx());
+    expect(claude.addArgv).toContain('Authorization: Bearer ${OD_MCP_TOKEN}');
+    const entries = {
+      kimi: { url: spec.url, bearerTokenEnvVar: 'OD_MCP_TOKEN' },
+      opencode: { type: 'remote', url: spec.url, enabled: true, oauth: false,
+        headers: { Authorization: 'Bearer {env:OD_MCP_TOKEN}' } },
+      kiro: { url: spec.url, headers: { Authorization: 'Bearer ${OD_MCP_TOKEN}' } },
+    };
+    for (const slug of ['kimi', 'opencode', 'kiro'] as const) {
+      const plan = planHttpAgentInstall(slug, spec, ctx());
+      if (plan.kind !== 'json') throw new Error('expected JSON HTTP plan');
+      expect(plan.entry).toEqual(entries[slug]);
+      const previous = JSON.stringify({ keep: true, [plan.keyPath[0]!]: { unrelated: { enabled: true } } });
+      const merged = applyJsonInstall(previous, plan);
+      expect(JSON.parse(merged).keep).toBe(true);
+      expect(JSON.parse(merged)[plan.keyPath[0]!].unrelated).toEqual({ enabled: true });
+      expect(applyJsonInstall(merged, plan)).toBe(merged);
+      const changed = { ...plan, entry: { url: 'http://127.0.0.1:45679/mcp' } };
+      expect(() => applyJsonInstall(merged, changed)).toThrow('already configured differently');
+      expect(() => applyJsonInstall(JSON.stringify({ [plan.keyPath[0]!]: [] }), plan)).toThrow('not an object');
+    }
+    const kimi = planHttpAgentInstall('kimi', spec, { ...ctx(), kimiCodeHome: path.join('/selected', 'kimi') });
+    expect(kimi).toMatchObject({ configPath: path.join('/selected', 'kimi', 'mcp.json') });
+  });
+
+  it('accepts only numeric loopback origins and never echoes credentials from invalid config', () => {
+    expect(httpMcpUrlFromDaemonOrigin('http://127.0.0.1:45678')).toBe('http://127.0.0.1:45678/mcp');
+    expect(httpMcpUrlFromDaemonOrigin('http://[::1]:45678/')).toBe('http://[::1]:45678/mcp');
+    for (const origin of ['https://127.0.0.1:45678', 'http://localhost:45678', 'http://example.invalid',
+      'http://127.0.0.1:45678/path', 'http://127.0.0.1:45678/?token=private-value', 'http://user:private-value@127.0.0.1:45678']) {
+      expect(() => httpMcpUrlFromDaemonOrigin(origin)).toThrow('invalid local daemon origin');
+    }
+    const plan = planHttpAgentInstall('opencode', { url: 'http://127.0.0.1:45678/mcp', bearerTokenEnvVar: 'OD_MCP_TOKEN' }, ctx());
+    if (plan.kind !== 'json') throw new Error('expected JSON HTTP plan');
+    try {
+      applyJsonInstall('private-value', plan);
+      throw new Error('expected invalid JSON');
+    } catch (error) {
+      expect(String(error)).toContain('not valid JSON');
+      expect(String(error)).not.toContain('private-value');
+    }
+  });
+
   it('cursor merges a stdio entry under mcpServers', () => {
     const plan = planAgentInstall('cursor', SPEC, ctx());
     if (plan.kind !== 'json') throw new Error('expected json');
-    expect(plan.configPath).toBe('/home/u/.cursor/mcp.json');
+    expect(plan.configPath).toBe(path.join('/home/u', '.cursor', 'mcp.json'));
     expect(plan.keyPath).toEqual(['mcpServers']);
     expect(plan.entry).toEqual({
       command: SPEC.command,
@@ -110,7 +218,7 @@ describe('JSON-config agents', () => {
   it('kiro merges a stdio entry into the user MCP settings file', () => {
     const plan = planAgentInstall('kiro', SPEC, ctx());
     if (plan.kind !== 'json') throw new Error('expected json');
-    expect(plan.configPath).toBe('/home/u/.kiro/settings/mcp.json');
+    expect(plan.configPath).toBe(path.join('/home/u', '.kiro', 'settings', 'mcp.json'));
     expect(plan.keyPath).toEqual(['mcpServers']);
     expect(plan.serverKey).toBe('open-design');
     expect(plan.entry).toEqual({
@@ -123,7 +231,7 @@ describe('JSON-config agents', () => {
   it('raven plans a stdio entry under tools.mcpServers', () => {
     const plan = planAgentInstall('raven', SPEC, ctx());
     if (plan.kind !== 'json') throw new Error('expected json');
-    expect(plan.configPath).toBe('/home/u/.raven/config.json');
+    expect(plan.configPath).toBe(path.join('/home/u', '.raven', 'config.json'));
     expect(plan.keyPath).toEqual(['tools', 'mcpServers']);
     expect(plan.serverKey).toBe('open-design');
     expect(plan.entry).toEqual({
@@ -173,15 +281,15 @@ describe('JSON-config agents', () => {
     const mac = planAgentInstall('cline', SPEC, ctx('darwin'));
     const linux = planAgentInstall('cline', SPEC, ctx('linux'));
     if (mac.kind !== 'json' || linux.kind !== 'json') throw new Error('expected json');
-    expect(mac.configPath).toContain('Library/Application Support/Code/User');
-    expect(linux.configPath).toContain('.config/Code/User');
+    expect(mac.configPath).toContain(path.join('Library', 'Application Support', 'Code', 'User'));
+    expect(linux.configPath).toContain(path.join('.config', 'Code', 'User'));
     expect(mac.configPath).toContain('saoudrizwan.claude-dev');
   });
 
   it('claude-desktop on macOS writes to Library/Application Support/Claude', () => {
     const plan = planAgentInstall('claude-desktop', SPEC, ctx('darwin'));
     if (plan.kind !== 'json') throw new Error('expected json');
-    expect(plan.configPath).toBe('/home/u/Library/Application Support/Claude/claude_desktop_config.json');
+    expect(plan.configPath).toBe(path.join('/home/u', 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'));
     expect(plan.keyPath).toEqual(['mcpServers']);
     expect(plan.serverKey).toBe('open-design');
     expect(plan.entry).toEqual({

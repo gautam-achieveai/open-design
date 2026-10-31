@@ -68,17 +68,15 @@ describe('G16 · 模型下线卡的固定 Cloud 入口', () => {
     const onSwitchModel = vi.fn();
     const onOpenSettings = vi.fn();
     const onRetry = vi.fn();
-    const onSwitchToAmrAndRetry = vi.fn();
     const { container } = renderPane({
-      ...(withPicker ? { onSwitchModel } : {}), onOpenSettings, onRetry, onSwitchToAmrAndRetry,
+      ...(withPicker ? { onSwitchModel } : {}), onOpenSettings, onRetry,
     });
     const card = screen.getByTestId('chat-run-error-card');
     expect(within(card).getAllByRole('button').map((button) => button.textContent?.trim())).toEqual([
-      'chat.runError.contactSupportCta', 'chat.runError.exportLogsCta', 'chat.amrCard.switchCta',
+      'chat.runError.contactSupportCta', 'chat.runError.exportLogsCta',
     ]);
     expect(container.querySelector('[data-testid="chat-error-switch-model"]')).toBeNull();
-    fireEvent.click(within(card).getByRole('button', { name: 'chat.amrCard.switchCta' }));
-    expect(onSwitchToAmrAndRetry).toHaveBeenCalledWith(expect.objectContaining({ id: 'assistant-1', agentId: 'claude' }));
+    expect(within(card).queryByRole('button', { name: 'chat.amrCard.switchCta' })).toBeNull();
     expect(onSwitchModel).not.toHaveBeenCalled();
     expect(onOpenSettings).not.toHaveBeenCalled();
     expect(onRetry).not.toHaveBeenCalled();

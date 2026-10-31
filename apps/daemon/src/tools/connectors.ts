@@ -1,4 +1,5 @@
-import type { ToolTokenGrant } from '../tool-tokens.js';
+import { checkConnectorAccess, type ToolTokenGrant } from '../tool-tokens.js';
+import { validateBoundedJsonObject } from '../live-artifacts/schema.js';
 
 import { classifyConnectorToolSafety, connectorDefinitionToDetail, type ConnectorCatalogDefinition, type ConnectorToolDetail, type ConnectorToolSafety, type ConnectorToolUseCase } from '../connectors/catalog.js';
 import { connectorService, ConnectorService, type ConnectorExecuteRequest } from '../connectors/service.js';
@@ -7,6 +8,7 @@ export interface ConnectorToolContext {
   grant: ToolTokenGrant;
   projectsRoot: string;
   service?: ConnectorService;
+  authorizeBeforeDispatch?: () => boolean;
 }
 
 function approvalRank(approval: ConnectorCatalogDefinition['minimumApproval']): number {
@@ -133,5 +135,35 @@ export async function executeConnectorTool(request: ConnectorExecuteRequest, con
     projectId: context.grant.projectId,
     runId: context.grant.runId,
     purpose: 'agent_preview',
+    ...(context.authorizeBeforeDispatch ? { authorizeBeforeDispatch: context.authorizeBeforeDispatch } : {}),
   });
+}
+
+/** The run-facing policy shared by HTTP and MCP, before the service executes. */
+export async function executeAuthorizedConnectorTool(
+  request: { projectId?: unknown; connectorId?: unknown; toolName?: unknown; input?: unknown; purpose?: unknown },
+  context: ConnectorToolContext,
+) {
+  const { projectId, connectorId, toolName, input, purpose } = request;
+  if (projectId && projectId !== context.grant.projectId) {
+    return { ok: false as const, status: 403, code: 'FORBIDDEN' as const, message: 'projectId is derived from the tool token', details: { suppliedProjectId: projectId } };
+  }
+  if (purpose !== undefined && purpose !== 'agent_preview') {
+    return { ok: false as const, status: 403, code: 'FORBIDDEN' as const, message: 'connector tool purpose is derived from the tool token', details: { suppliedPurpose: purpose } };
+  }
+  if (typeof connectorId !== 'string' || connectorId.length === 0) {
+    return { ok: false as const, status: 400, code: 'BAD_REQUEST' as const, message: 'connectorId is required' };
+  }
+  if (typeof toolName !== 'string' || toolName.length === 0) {
+    return { ok: false as const, status: 400, code: 'BAD_REQUEST' as const, message: 'toolName is required' };
+  }
+  const connectorGate = checkConnectorAccess(context.grant, connectorId);
+  if (!connectorGate.ok) {
+    return { ok: false as const, status: 403, code: 'CONNECTOR_NOT_GRANTED' as const, message: connectorGate.reason, details: { connectorId } };
+  }
+  const validation = validateBoundedJsonObject(input ?? {}, 'input');
+  if (!validation.ok) {
+    return { ok: false as const, status: 400, code: 'VALIDATION_FAILED' as const, message: validation.error, details: { kind: 'validation', issues: validation.issues } };
+  }
+  return { ok: true as const, result: await executeConnectorTool({ connectorId, toolName, input: validation.value }, context) };
 }

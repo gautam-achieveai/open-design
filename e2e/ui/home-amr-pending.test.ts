@@ -1,41 +1,16 @@
 import { expect, test } from '@/playwright/suite';
 import type { Page } from '@playwright/test';
 
-import {
-  AMR_PERSONAL_WORKSPACE_CONTEXT,
-  gotoEntryHome,
-  mockAmrPersonalWorkspace,
-  seedBrowserConfig,
-} from '@/playwright/amr';
+import { gotoEntryHome } from '@/playwright/amr';
 import {
   applyStandardMocks,
-  routeAgents,
   routeSuccessfulRuns,
   suppressWhatsNew,
 } from '@/playwright/mock-factory';
-import { mockSignedInVelaAccount } from '@/playwright/visual';
 import { T } from '@/timeouts';
 
-/*
- * OPEND-2614 · Home → project hand-off with OpenDesign Cloud (AMR).
- *
- * F6 (#7890) made a Home send flush the optimistic pending frame on the tick
- * the click lands — but only on the local-agent path. With AMR selected the
- * shell first awaits the pre-run balance gate (`GET /api/integrations/vela/
- * wallet` + `GET /api/workspace/billing?…&freshness=authoritative`, an
- * upstream Vela read of 1–2 s) and only then creates the project, so the user
- * sat on a frozen Home for that whole round trip.
- *
- * These cases pin the ORDER, not a stopwatch: the pending frame must be on
- * screen while the billing gate is still in flight, within one animation
- * frame of the click. The gate's verdict still lands before any project is
- * created.
- *
- * Coding Plan billing then dropped the empty-wallet client block: a $0 wallet
- * the rail already shows is no longer answered on the click tick. Home still
- * opens the pending frame, the scoped gate still runs, and Link decides
- * admission. Confirmed sign-out keeps the existing dialog.
- */
+// Pin the Home-to-project handoff order while real project creation is held.
+// The pending frame must paint within one animation frame of the click.
 
 declare global {
   interface Window {
@@ -46,29 +21,6 @@ declare global {
     };
   }
 }
-
-const AMR_AGENT = {
-  id: 'amr',
-  name: 'OpenDesign AMR',
-  bin: 'vela',
-  available: true,
-  version: 'test',
-  models: [{ id: 'glm-5', label: 'glm-5' }],
-};
-
-const AMR_CONFIG = {
-  mode: 'daemon',
-  apiKey: '',
-  baseUrl: 'https://api.anthropic.com',
-  model: 'claude-sonnet-4-5',
-  agentId: 'amr',
-  skillId: null,
-  designSystemId: null,
-  onboardingCompleted: true,
-  agentModels: {},
-  privacyDecisionAt: 1,
-  telemetry: { metrics: false, content: false, artifactManifest: false },
-};
 
 function deferred() {
   let resolve!: () => void;
@@ -136,46 +88,6 @@ async function holdProjectCreate(page: Page) {
   return { release: release.resolve, requested: () => requested };
 }
 
-/** Hold the authoritative workspace billing read the AMR gate depends on. */
-async function holdAmrBillingGate(page: Page) {
-  const release = deferred();
-  let held = false;
-  await page.route('**/api/workspace/billing**', async (route) => {
-    const url = new URL(route.request().url());
-    if (
-      route.request().method() === 'GET'
-      && url.pathname === '/api/workspace/billing'
-      && url.searchParams.get('freshness') === 'authoritative'
-    ) {
-      held = true;
-      await release.promise;
-    }
-    await route.fallback();
-  });
-  return { release: release.resolve, held: () => held };
-}
-
-async function wireSignedInAmrHome(
-  page: Page,
-  options: { accountBalanceUsd?: string } = {},
-): Promise<void> {
-  await seedBrowserConfig(page, AMR_CONFIG);
-  await page.route('**/api/app-config', async (route) => {
-    if (route.request().method() !== 'GET') {
-      await route.continue();
-      return;
-    }
-    await route.fulfill({ json: { config: AMR_CONFIG } });
-  });
-  await routeAgents(page, [AMR_AGENT]);
-  await mockSignedInVelaAccount(page, { balanceUsd: options.accountBalanceUsd ?? '20.00' });
-  await mockAmrPersonalWorkspace(page, undefined, {
-    accountBalanceUsd: options.accountBalanceUsd ?? '20.00',
-    accountCredits: 2_000,
-    accountPlan: 'free',
-  });
-}
-
 async function sendFromHome(page: Page, prompt: string): Promise<void> {
   const input = page.getByTestId('home-hero-input');
   await expect(input).toBeVisible({ timeout: T.medium });
@@ -192,121 +104,7 @@ test.beforeEach(async ({ page }) => {
   await installHandoffProbe(page);
 });
 
-test('[P0] AMR send from Home enters the pending frame before the balance gate answers', async ({ page }) => {
-  await wireSignedInAmrHome(page);
-  const billing = await holdAmrBillingGate(page);
-  const create = await holdProjectCreate(page);
-  const runBodies: Array<Record<string, unknown>> = [];
-  const runRequests = await routeSuccessfulRuns(page, {
-    bodies: runBodies,
-    runId: 'home-amr-pending-run',
-  });
-
-  await gotoEntryHome(page);
-  await sendFromHome(page, 'Draft a landing page for a coffee subscription.');
-
-  const pending = page.getByTestId('project-creation-pending-view');
-  // The frame is up while the gate is still reading the wallet: nothing was
-  // created yet, and the user already sees their prompt in the project shell.
-  await expect(pending).toBeVisible({ timeout: T.short });
-  expect(billing.held(), 'the balance gate was in flight').toBe(true);
-  expect(create.requested(), 'no project was created before the verdict').toBe(false);
-  await expect(page.getByTestId('project-creation-pending-chat')).toBeVisible();
-  expect(await readHandoffFrames(page)).toBeLessThanOrEqual(1);
-
-  // The verdict lands → the create leaves → the run starts, all behind the
-  // same frame; the frame never flashes back to Home in between.
-  billing.release();
-  await expect.poll(() => create.requested(), { timeout: T.medium }).toBe(true);
-  await expect(pending).toBeVisible();
-  create.release();
-  await runRequests.expectCount(1);
-  expect(runBodies[0]).toMatchObject({ agentId: 'amr' });
-  await expect(pending).toBeHidden({ timeout: T.medium });
-  await expect(page.getByTestId('chat-composer')).toBeVisible({ timeout: T.medium });
-});
-
-test('[P0] an empty wallet the shell already shows does not block Home: no dialog, frame opens, create proceeds', async ({ page }) => {
-  await wireSignedInAmrHome(page, { accountBalanceUsd: '0.00' });
-  const create = await holdProjectCreate(page);
-  const runRequests = await routeSuccessfulRuns(page, { runId: 'home-amr-empty-wallet-run' });
-  const prompt = 'Design a pricing page for an empty wallet.';
-
-  await gotoEntryHome(page);
-  await expect(page.getByTestId('home-hero-input')).toBeVisible({ timeout: T.medium });
-  await sendFromHome(page, prompt);
-
-  const pending = page.getByTestId('project-creation-pending-view');
-  await expect(pending).toBeVisible({ timeout: T.medium });
-  await expect(page.getByTestId('amr-balance-dialog')).toHaveCount(0);
-  await expect.poll(() => create.requested(), { timeout: T.medium }).toBe(true);
-  create.release();
-  await runRequests.expectCount(1);
-});
-
-test('[P0] a stale $0 projection: the confirmation reads a fundable wallet and the send continues into the frame', async ({ page }) => {
-  await wireSignedInAmrHome(page, { accountBalanceUsd: '0.00' });
-  // The shell's projection says $0, but the authoritative confirmation the
-  // dialog runs behind itself reads a recharged wallet.
-  await page.route('**/api/workspace/billing**', async (route) => {
-    const url = new URL(route.request().url());
-    if (
-      route.request().method() !== 'GET'
-      || url.pathname !== '/api/workspace/billing'
-      || url.searchParams.get('freshness') !== 'authoritative'
-    ) {
-      await route.fallback();
-      return;
-    }
-    const workspaceId = url.searchParams.get('workspaceId') ?? '';
-    const observedAt = '2026-09-17T00:00:00.000Z';
-    const workspaceMemberId = AMR_PERSONAL_WORKSPACE_CONTEXT.workspaceMemberId;
-    await route.fulfill({
-      json: {
-        summary: null,
-        workspaceBalance: {
-          workspaceId,
-          workspaceMemberId,
-          balanceUsd: '20.00',
-          billingScopeVersion: 2,
-          expiresAt: null,
-          updatedAt: observedAt,
-        },
-        workspaceRuntime: {
-          workspaceId,
-          workspaceMemberId,
-          status: 'fresh',
-          revision: '2',
-          observedAt,
-          softExpiresAt: '2099-07-26T00:00:30.000Z',
-          hardExpiresAt: '2099-07-26T00:02:00.000Z',
-          retryAt: null,
-          errorCode: null,
-          reason: 'authoritative-action-read',
-          sourceGapDetected: false,
-        },
-        authoritativeWorkspaceRead: { workspaceId, workspaceMemberId, observedAt },
-      },
-    });
-  });
-  const create = await holdProjectCreate(page);
-  const runRequests = await routeSuccessfulRuns(page, { runId: 'home-amr-stale-zero-run' });
-
-  await gotoEntryHome(page);
-  await expect(page.getByTestId('home-hero-input')).toBeVisible({ timeout: T.medium });
-  await sendFromHome(page, 'Draft a landing page after a recharge.');
-
-  const pending = page.getByTestId('project-creation-pending-view');
-  // The dialog may be visible only for the confirmation's round trip; what
-  // must hold is that the send ends up on the frame with a create in flight.
-  await expect(pending).toBeVisible({ timeout: T.medium });
-  await expect(page.getByTestId('amr-balance-dialog')).toHaveCount(0);
-  await expect.poll(() => create.requested(), { timeout: T.medium }).toBe(true);
-  create.release();
-  await runRequests.expectCount(1);
-});
-
-test('[P1] local-agent send from Home still enters the pending frame within a frame', async ({ page }) => {
+test('[P0] @critical local send paints the pending frame before project creation finishes', async ({ page }) => {
   await applyStandardMocks(page);
   const create = await holdProjectCreate(page);
   const runRequests = await routeSuccessfulRuns(page, { runId: 'home-local-pending-run' });
@@ -317,6 +115,8 @@ test('[P1] local-agent send from Home still enters the pending frame within a fr
   const pending = page.getByTestId('project-creation-pending-view');
   await expect(pending).toBeVisible({ timeout: T.short });
   expect(await readHandoffFrames(page)).toBeLessThanOrEqual(1);
+  await expect.poll(() => create.requested(), { timeout: T.medium }).toBe(true);
+  await expect(page.getByTestId('project-creation-pending-chat')).toBeVisible();
   create.release();
   await runRequests.expectCount(1);
   await expect(pending).toBeHidden({ timeout: T.medium });

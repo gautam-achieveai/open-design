@@ -45,6 +45,8 @@ export interface ToolRow {
   delta: DiffStat | null;
   /** 拿不到就是 null —— 不显示,不估算(§2.2b) */
   elapsedMs: number | null;
+  /** Live sample that can advance without rebuilding the event stream. */
+  liveElapsed?: number;
   /**
    * 调用发出去了、结果还没回来(OPEND-2419)。
    *
@@ -91,6 +93,8 @@ export interface ShellText {
    * 拿不到就是 `undefined`,界面上什么都不显示 —— 与工具行同一条纪律(§2.2b)。
    */
   elapsedMs?: number;
+  /** Live sample that can advance without rebuilding the event stream. */
+  liveElapsed?: number;
 }
 
 /** 「执行计划 · N 步」 */
@@ -149,6 +153,8 @@ export interface ImageRow {
   /** 还有调用没回来 */
   pending: boolean;
   elapsedMs: number | null;
+  /** Live sample that can advance without rebuilding the event stream. */
+  liveElapsed?: number;
 }
 
 export type ShellItem = ToolRow | ShellText | ShellPlan | ShellTodo | ImageRow;
@@ -175,6 +181,8 @@ export interface TodoSegment {
   implicit: boolean;
   items: ShellItem[];
   elapsedMs: number | null;
+  /** Live sample that can advance without rebuilding the event stream. */
+  liveElapsed?: number;
 }
 
 /** 本轮有没有这条 todo 的内容 —— 展开与否的唯一判据(D25 / D35) */
@@ -241,6 +249,8 @@ export interface ThinkingTokens {
    * 放这里也是为了这一条能脱离 React 测。
    */
   stale: boolean;
+  /** Last token-reading arrival, used by the isolated clock subscriber. */
+  changedAtMs?: number;
 }
 
 export interface ExecutionShell {
@@ -267,6 +277,8 @@ export interface ExecutionShell {
    */
   thinkingTokens?: ThinkingTokens | null;
   elapsedMs: number | null;
+  /** Live sample that can advance without rebuilding the event stream. */
+  liveElapsed?: number;
   /**
    * 壳里**最后一件事**之后过去了多久(还在跑时才有值,结束了就是 `null`)。
    *

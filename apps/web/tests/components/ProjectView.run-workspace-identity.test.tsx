@@ -52,7 +52,6 @@ import type { ProjectWorkspaceScopeState } from '../../src/collab/useProjectWork
 import { resetWorkspaceContextCache } from '../../src/collab/useWorkspaceContext';
 import { streamViaDaemon } from '../../src/providers/daemon';
 import { useProjectFileEvents } from '../../src/providers/project-events';
-import { checkAmrBalanceGate } from '../../src/runtime/amr-balance-gate';
 import {
   createConversation,
   listConversations,
@@ -172,15 +171,6 @@ vi.mock('../../src/providers/daemon', () => ({
   reattachDaemonRun: vi.fn(),
   streamViaDaemon: vi.fn(),
 }));
-
-// The balance gate is not what is under test; it must simply allow the send so
-// the run POST is reached. Its ARGUMENT is asserted below.
-vi.mock('../../src/runtime/amr-balance-gate', async () => {
-  const actual = await vi.importActual<typeof import('../../src/runtime/amr-balance-gate')>(
-    '../../src/runtime/amr-balance-gate',
-  );
-  return { ...actual, checkAmrBalanceGate: vi.fn().mockResolvedValue({ kind: 'allow' }) };
-});
 
 vi.mock('../../src/providers/project-events', () => ({
   useProjectFileEvents: vi.fn(),
@@ -313,7 +303,6 @@ vi.mock('../../src/components/ChatPane', () => ({
 }));
 
 const mockedStreamViaDaemon = vi.mocked(streamViaDaemon);
-const mockedCheckAmrBalanceGate = vi.mocked(checkAmrBalanceGate);
 const mockedListConversations = vi.mocked(listConversations);
 const mockedCreateConversation = vi.mocked(createConversation);
 const mockedListMessages = vi.mocked(listMessages);
@@ -332,7 +321,7 @@ const config: AppConfig = {
   apiKey: '',
   baseUrl: '',
   model: 'deepseek-v4-flash',
-  agentId: 'amr',
+  agentId: 'claude',
   skillId: null,
   designSystemId: null,
 };
@@ -421,8 +410,8 @@ function projectViewElement(overrides: Partial<ComponentProps<typeof ProjectView
       routeFileName={null}
       config={config}
       agents={[{
-        id: 'amr',
-        name: 'amr',
+        id: 'claude',
+        name: 'Claude',
         available: true,
         models: [{
           id: 'deepseek-v4-flash',
@@ -471,7 +460,6 @@ describe('a Home auto-send identifies its caller before the project scope resolv
     mockedFetchProjectFiles.mockResolvedValue([]);
     mockedFetchBrands.mockResolvedValue([]);
     mockedStreamViaDaemon.mockResolvedValue(undefined);
-    mockedCheckAmrBalanceGate.mockResolvedValue({ kind: 'allow' });
     workspaceScopeMocks.projectScope = { loading: true, scope: null };
     workspaceScopeMocks.ambientContext = CALLER_CONTEXT;
     projectCollabMocks.writerAuthority = 'allowed';
@@ -494,32 +482,9 @@ describe('a Home auto-send identifies its caller before the project scope resolv
   // no `x-od-workspace-*` and the daemon refuses the send with 401
   // WORKSPACE_CONTEXT_REQUIRED.
   it('passes the caller\'s workspace context to POST /api/runs', async () => {
-    mockedCheckAmrBalanceGate.mockImplementation(async (scope) =>
-      scope
-        ? { kind: 'allow' }
-        : {
-            kind: 'hard',
-            reason: 'insufficient',
-            snapshot: {
-              status: 'available',
-              profile: 'prod',
-              user: null,
-              balanceUsd: '0',
-              updatedAt: null,
-              fetchedAt: new Date().toISOString(),
-              stale: false,
-              source: 'vela_api',
-            },
-          } as never,
-    );
     renderProjectView();
 
     await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
-    expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
-      workspaceType: 'team',
-      workspaceId: TEAM_WORKSPACE,
-      workspaceMemberId: TEAM_MEMBER,
-    }, 'deepseek-v4-flash');
     const options = mockedStreamViaDaemon.mock.calls[0]?.[0];
     expect(
       options?.workspaceContext,
@@ -1330,25 +1295,6 @@ describe('a Home auto-send identifies its caller before the project scope resolv
     expect(chatPaneSpy.mock.calls.at(-1)?.[0].previewComments).toEqual([]);
   });
 
-  it('reuses the matching Home Team preflight while the project scope read is pending', async () => {
-    window.sessionStorage.setItem(
-      `od:auto-send-amr-gate-witness:${PROJECT_ID}`,
-      JSON.stringify({
-        workspaceType: 'team',
-        workspaceId: TEAM_WORKSPACE,
-        workspaceMemberId: TEAM_MEMBER,
-      }),
-    );
-
-    renderProjectView();
-
-    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
-    expect(mockedCheckAmrBalanceGate).not.toHaveBeenCalled();
-    expect(mockedStreamViaDaemon.mock.calls[0]?.[0].workspaceContext).toEqual(
-      CALLER_CONTEXT,
-    );
-  });
-
   it('keeps Team billing scope when its scope read is temporarily unavailable', async () => {
     workspaceScopeMocks.projectScope = {
       loading: false,
@@ -1365,149 +1311,9 @@ describe('a Home auto-send identifies its caller before the project scope resolv
     renderProjectView();
 
     await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
-    expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
-      workspaceType: 'team',
-      workspaceId: TEAM_WORKSPACE,
-      workspaceMemberId: TEAM_MEMBER,
-    }, 'deepseek-v4-flash');
     expect(mockedStreamViaDaemon.mock.calls[0]?.[0].workspaceContext).toEqual(
       CALLER_CONTEXT,
     );
-  });
-
-  it('consumes the Home handoff after an unavailable AMR gate durably queues it and starts it once after recovery', async () => {
-    workspaceScopeMocks.projectScope = {
-      loading: false,
-      scope: {
-        kind: 'team',
-        projectId: PROJECT_ID,
-        workspaceId: TEAM_WORKSPACE,
-        visibility: 'personal',
-        context: CALLER_CONTEXT as WorkspaceCollabContext & { workspaceType: 'team' },
-      },
-    };
-    mockedCheckAmrBalanceGate.mockResolvedValue({ kind: 'unavailable' });
-
-    const stableOverrides: Partial<ComponentProps<typeof ProjectView>> = {
-      project: project(),
-      agents: [{
-        id: 'amr',
-        name: 'amr',
-        available: true,
-        models: [{
-          id: 'deepseek-v4-flash',
-          label: 'DeepSeek V4 Flash',
-          default: true,
-        }],
-      }] as unknown as AgentInfo[],
-      skills: [] as SkillSummary[],
-      designTemplates: [] as SkillSummary[],
-      designSystems: [] as DesignSystemSummary[],
-      onModeChange: vi.fn(),
-      onAgentChange: vi.fn(),
-      onAgentModelChange: vi.fn(),
-      onRefreshAgents: vi.fn(),
-      onOpenSettings: vi.fn(),
-      onBack: vi.fn(),
-      onClearPendingPrompt: vi.fn(),
-      onTouchProject: vi.fn(),
-      onProjectChange: vi.fn(),
-      onProjectsRefresh: vi.fn(),
-    };
-    const view = renderProjectView(stableOverrides);
-
-    await waitFor(() => {
-      const latest = chatPaneSpy.mock.calls.at(-1)?.[0];
-      expect(latest?.queuedItems).toHaveLength(1);
-    });
-    expect(mockedStreamViaDaemon).not.toHaveBeenCalled();
-    expect(window.sessionStorage.getItem(`od:auto-send-first:${PROJECT_ID}`)).toBeNull();
-
-    view.rerender(projectViewElement({
-      ...stableOverrides,
-      config: { ...config, agentId: 'codex' },
-      agents: [{ id: 'codex', name: 'Codex', available: true }] as unknown as AgentInfo[],
-    }));
-
-    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalledTimes(1));
-    await waitFor(() => {
-      const latest = chatPaneSpy.mock.calls.at(-1)?.[0];
-      expect(latest?.queuedItems).toHaveLength(0);
-    });
-    expect(mockedStreamViaDaemon).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps an explicitly Personal project on the Personal preflight', async () => {
-    workspaceScopeMocks.projectScope = {
-      loading: false,
-      scope: {
-        kind: 'personal',
-        projectId: PROJECT_ID,
-        workspaceId: PERSONAL_CONTEXT.workspaceId,
-        visibility: 'personal',
-        context: PERSONAL_CONTEXT as WorkspaceCollabContext & { workspaceType: 'personal' },
-      },
-    };
-
-    renderProjectView({
-      project: {
-        ...project(),
-        workspaceId: PERSONAL_CONTEXT.workspaceId,
-      },
-    });
-
-    await waitFor(() => {
-      expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
-        workspaceType: 'personal',
-        workspaceId: PERSONAL_CONTEXT.workspaceId,
-        workspaceMemberId: PERSONAL_CONTEXT.workspaceMemberId,
-      }, 'deepseek-v4-flash');
-    });
-    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
-  });
-
-  it('uses an exact Personal witness to preflight and adopt a confirmed unbound Home project', async () => {
-    workspaceScopeMocks.ambientContext = PERSONAL_CONTEXT;
-    workspaceScopeMocks.projectScope = {
-      loading: false,
-      scope: {
-        kind: 'unbound',
-        projectId: PROJECT_ID,
-        workspaceId: null,
-        context: null,
-      },
-    };
-
-    renderProjectView({
-      project: {
-        ...project(),
-        workspaceId: undefined,
-      },
-    });
-
-    await waitFor(() => {
-      expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
-        workspaceType: 'personal',
-        workspaceId: PERSONAL_CONTEXT.workspaceId,
-        workspaceMemberId: PERSONAL_CONTEXT.workspaceMemberId,
-      }, 'deepseek-v4-flash');
-    });
-    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
-    expect(mockedStreamViaDaemon.mock.calls[0]?.[0].workspaceContext).toEqual(
-      PERSONAL_CONTEXT,
-    );
-    await waitFor(() => {
-      expect(
-        chatPaneSpy.mock.calls.at(-1)?.[0].amrAuthRetryPersonalAdoptionWitness,
-      ).toEqual({
-        workspaceIdentityKey:
-          'personal-workspace:personal:personal-member:member:active:active:true:true',
-        workspaceId: PERSONAL_CONTEXT.workspaceId,
-        workspaceMemberId: PERSONAL_CONTEXT.workspaceMemberId,
-        workspaceType: 'personal',
-        memberStatus: 'active',
-      });
-    });
   });
 
   it.each([
@@ -1543,7 +1349,6 @@ describe('a Home auto-send identifies its caller before the project scope resolv
       fireEvent.click(send);
 
       await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
-      expect(mockedCheckAmrBalanceGate).not.toHaveBeenCalled();
       expect(mockedStreamViaDaemon.mock.calls[0]?.[0].workspaceContext).toBeNull();
     },
   );
@@ -1564,7 +1369,6 @@ describe('a Home auto-send observes a project billing scope that settles after m
     mockedListMessages.mockResolvedValue([]);
     mockedFetchPreviewComments.mockResolvedValue([]);
     mockedFetchBrands.mockResolvedValue([]);
-    mockedCheckAmrBalanceGate.mockResolvedValue({ kind: 'allow' });
     workspaceScopeMocks.projectScope = { loading: true, scope: null };
     workspaceScopeMocks.ambientContext = CALLER_CONTEXT;
     projectCollabMocks.writerAuthority = 'allowed';
@@ -1578,95 +1382,6 @@ describe('a Home auto-send observes a project billing scope that settles after m
     vi.unstubAllGlobals();
     vi.clearAllMocks();
     resetWorkspaceContextCache();
-  });
-
-  it('preflights and auto-sends with the latest settled Team billing scope', async () => {
-    // Keep every prop that participates in `handleSend` or the auto-send effect
-    // referentially stable across the rerender. The project billing scope is the
-    // only dependency allowed to change in this regression.
-    const stableOverrides: Partial<ComponentProps<typeof ProjectView>> = {
-      project: project(),
-      agents: [{
-        id: 'amr',
-        name: 'amr',
-        available: true,
-        models: [{
-          id: 'deepseek-v4-flash',
-          label: 'DeepSeek V4 Flash',
-          default: true,
-        }],
-      }] as unknown as AgentInfo[],
-      skills: [] as SkillSummary[],
-      designTemplates: [] as SkillSummary[],
-      designSystems: [] as DesignSystemSummary[],
-      onModeChange: vi.fn(),
-      onAgentChange: vi.fn(),
-      onAgentModelChange: vi.fn(),
-      onRefreshAgents: vi.fn(),
-      onOpenSettings: vi.fn(),
-      onBack: vi.fn(),
-      onClearPendingPrompt: vi.fn(),
-      onTouchProject: vi.fn(),
-      onProjectChange: vi.fn(),
-      onProjectsRefresh: vi.fn(),
-    };
-    const view = renderProjectView(stableOverrides);
-    await waitFor(() => expect(mockedListMessages).toHaveBeenCalled());
-    expect(mockedStreamViaDaemon).not.toHaveBeenCalled();
-
-    // Add the Home hand-off only after mount, then settle the project scope to
-    // the SAME context object already used for run identity. That keeps
-    // `projectRunWorkspaceContext` referentially stable, so only the billing
-    // context changed. Without the `handleSend` billing dependency, the effect
-    // dispatches through a callback that still holds its mount-time `null`.
-    // The effect also lists the billing context it reads directly instead of
-    // relying on that callback's identity as a transitive dependency.
-    window.sessionStorage.setItem(`od:auto-send-first:${PROJECT_ID}`, '1');
-    workspaceScopeMocks.projectScope = {
-      loading: false,
-      scope: {
-        kind: 'team',
-        projectId: PROJECT_ID,
-        workspaceId: TEAM_WORKSPACE,
-        visibility: 'personal',
-        context: CALLER_CONTEXT as WorkspaceCollabContext & { workspaceType: 'team' },
-      },
-    };
-    view.rerender(projectViewElement(stableOverrides));
-
-    await waitFor(() => {
-      expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
-        workspaceType: 'team',
-        workspaceId: TEAM_WORKSPACE,
-        workspaceMemberId: TEAM_MEMBER,
-      }, 'deepseek-v4-flash');
-    });
-    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
-  });
-
-  it('auto-sends a cold unbound local project through the account-scoped Cloud lane', async () => {
-    window.sessionStorage.setItem(`od:auto-send-first:${PROJECT_ID}`, '1');
-    workspaceScopeMocks.ambientContext = null;
-    workspaceScopeMocks.projectScope = {
-      loading: false,
-      scope: {
-        kind: 'unbound',
-        projectId: PROJECT_ID,
-        workspaceId: null,
-        context: null,
-      },
-    };
-    const stableOverrides: Partial<ComponentProps<typeof ProjectView>> = {
-      project: { ...project(), workspaceId: undefined },
-    };
-    renderProjectView(stableOverrides);
-
-    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalledTimes(1));
-    // Home already performed the account-scoped balance gate. ProjectView
-    // must not duplicate it while handing off the accepted first prompt.
-    expect(mockedCheckAmrBalanceGate).not.toHaveBeenCalled();
-    expect(mockedStreamViaDaemon.mock.calls[0]?.[0].workspaceContext).toBeNull();
-    expect(window.sessionStorage.getItem(`od:auto-send-first:${PROJECT_ID}`)).toBeNull();
   });
 
   it.each(['event', 'focus'] as const)('refreshes browser annotations through %s after a conversation becomes active', async (signal) => {

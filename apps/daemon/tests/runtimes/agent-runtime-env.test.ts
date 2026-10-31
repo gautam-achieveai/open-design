@@ -257,7 +257,7 @@ describe('agent runtime tool environment', () => {
 
     const env = {
       ...spawnEnvForAgent(
-        'amr',
+        'opencode',
         base,
         configuredAgentEnv,
       ),
@@ -270,9 +270,8 @@ describe('agent runtime tool environment', () => {
     };
 
     expect(env.OD_DATA_DIR).toBe(process.env.OD_DATA_DIR);
-    expect(env.OPENCODE_TEST_HOME).toBe(
-      path.join(process.env.OD_DATA_DIR ?? '', 'amr', 'opencode-home'),
-    );
+    expect(env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe('true');
+    expect(env.OPENCODE_TEST_HOME).toBeUndefined();
     expect(env.OD_PROJECT_ID).toBe('project-1');
     expect(env.OD_PROJECT_DIR).toBe('/tmp/project');
     expect(env.OD_HYPERFRAMES_BIN).toBe('/opt/open-design/hyperframes/bin/hyperframes.mjs');
@@ -325,6 +324,9 @@ describe('agent runtime tool environment', () => {
     expect(prompt).toContain('"%OD_NODE_BIN%" "%OD_BIN%" browser tabs --project "%OD_PROJECT_ID%" --json');
     expect(prompt).toContain('Do not claim browser access until discovery succeeds');
     expect(prompt).toContain('## Browser: UI debugging and testing');
+    expect(prompt).toContain('When OpenDesign browser MCP tools are available');
+    expect(prompt).toContain('repeat the exact call with its `approvalRequestId`');
+    expect(prompt).toContain('If the MCP tools are unavailable, use the CLI below');
     expect(prompt).toContain('preferred way to debug and test UI changes');
     expect(prompt).toContain('Reproduce the issue in the intended live tab before editing');
     expect(prompt).toContain('verify the same flow after the change');

@@ -8,7 +8,8 @@
 // directory to prevent path traversal — see resolveSafe().
 
 import { constants as fsConstants, createReadStream } from 'node:fs';
-import { link, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { link, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import JSZip from 'jszip';
@@ -36,6 +37,8 @@ import {
   SANDBOX_IMPORTED_PROJECT_UNAVAILABLE_MESSAGE,
 } from './sandbox-mode.js';
 import { isOrchestratorScratchWorkspace } from './workspace-contract.js';
+import type { ProjectFileMutationHooks, ProjectFileWriteOptions } from './services/project-file-mutation-hooks.js';
+import type { ProjectFile } from '@open-design/contracts';
 
 const FORBIDDEN_SEGMENT = /^$|^\.\.?$/;
 const RESERVED_PROJECT_FILE_SEGMENTS = new Set(['.file-versions', '.live-artifacts']);
@@ -164,7 +167,7 @@ export async function listFiles(projectsRoot, projectId, opts = {}) {
   // projects can contain framework installs too; surfacing package HTML like
   // node_modules/tslib/*.html as artifacts produces blank previews.
   const gitIgnored = await gitIgnoredPathsForProject(dir, metadata);
-  await collectFiles(dir, '', out, isIgnoredProjectDirName, dir, gitIgnored);
+  await collectFiles(dir, '', out, isIgnoredProjectDirName, dir, gitIgnored, metadata);
   // Newest first — matches the visual order users expect after generating.
   out.sort((a, b) => b.mtime - a.mtime);
   const since = Number(opts.since);
@@ -300,6 +303,7 @@ async function collectFiles(
   shouldSkipDir?: (name: string) => boolean,
   projectRoot = dir,
   gitIgnored = null,
+  metadata?,
 ) {
   let entries = [];
   try {
@@ -315,7 +319,7 @@ async function collectFiles(
     if (e.isDirectory()) {
       if (shouldSkipDir?.(e.name)) continue;
       if (gitIgnored?.dirs.has(rel)) continue;
-      await collectFiles(full, rel, out, shouldSkipDir, projectRoot, gitIgnored);
+      await collectFiles(full, rel, out, shouldSkipDir, projectRoot, gitIgnored, metadata);
       continue;
     }
     if (!e.isFile()) continue;
@@ -325,7 +329,7 @@ async function collectFiles(
     let manifest;
     try {
       st = await stat(full);
-      manifest = await readManifestForPath(projectRoot, rel);
+      manifest = await readManifestForPath(projectRoot, rel, metadata);
     } catch (err) {
       if (err && err.code === 'ENOENT') continue;
       throw err;
@@ -830,11 +834,12 @@ export async function readProjectFile(projectsRoot, projectId, name, metadata?) 
   assertVisibleForImportedProject(name, metadata);
   const dir = resolveProjectDir(projectsRoot, projectId, metadata);
   const file = await resolveSafeReal(dir, name);
-  const buf = await readFile(file);
-  const st = await stat(file);
   const rootReal = await realpath(dir).catch(() => dir);
   const rel = toProjectPath(path.relative(rootReal, file));
-  const manifest = await readManifestForPath(dir, rel);
+  assertVisibleForImportedProject(rel, metadata);
+  const buf = await readFile(file);
+  const st = await stat(file);
+  const manifest = await readManifestForPath(dir, rel, metadata);
   return {
     buffer: buf,
     name: rel,
@@ -854,9 +859,10 @@ export async function resolveProjectFilePath(projectsRoot, projectId, name, meta
   assertVisibleForImportedProject(name, metadata);
   const dir = resolveProjectDir(projectsRoot, projectId, metadata);
   const file = await resolveSafeReal(dir, name);
-  const st = await stat(file);
   const rootReal = await realpath(dir).catch(() => dir);
   const rel = toProjectPath(path.relative(rootReal, file));
+  assertVisibleForImportedProject(rel, metadata);
+  const st = await stat(file);
   return {
     filePath: file,
     name: rel,
@@ -872,13 +878,16 @@ export async function writeProjectFile(
   projectId,
   name,
   body,
-  { overwrite = true, artifactManifest = null } = {},
+  { overwrite = true, artifactManifest = null, mutationHooks }: ProjectFileWriteOptions = {},
   metadata?,
-) {
+): Promise<ProjectFile> {
   assertVisibleForImportedProject(name, metadata);
-  const dir = await ensureProject(projectsRoot, projectId, metadata);
   const safeName = sanitizePath(name);
+  const dir = resolveProjectDir(projectsRoot, projectId, metadata);
   const target = await resolveSafeReal(dir, safeName);
+  const rootReal = await realpath(dir).catch(() => resolveExistingPrefix(dir));
+  const canonicalName = toProjectPath(path.relative(rootReal, target));
+  assertVisibleForImportedProject(canonicalName, metadata);
   body = normalizeArtifactRuntimeImports(safeName, body);
   if (!overwrite) {
     try {
@@ -890,7 +899,6 @@ export async function writeProjectFile(
       if (!err || err.code !== 'ENOENT') throw err;
     }
   }
-  await mkdir(path.dirname(target), { recursive: true });
   let stubGuardWarning = null;
   let validatedManifest = null;
   if (artifactManifest && typeof artifactManifest === 'object') {
@@ -945,16 +953,25 @@ export async function writeProjectFile(
       }
     }
   }
-  await writeFile(target, body);
+  mutationHooks?.beforeMutation?.();
+  await ensureProject(projectsRoot, projectId, metadata);
+  mutationHooks?.beforeMutation?.();
+  await mkdir(path.dirname(target), { recursive: true });
+  mutationHooks?.beforeMutation?.();
+  await writeFile(target, body, { flag: overwrite ? 'w' : 'wx' });
+  mutationHooks?.contentCommitted?.({ path: canonicalName, bytes: Buffer.byteLength(body),
+    sha256: createHash('sha256').update(body).digest('hex') });
   await projectFileWriteTestHooks.afterCommit?.({ safeName, target, body });
   if (validatedManifest) {
     const manifestFileName = artifactManifestNameFor(safeName);
     const manifestTarget = await resolveSafeReal(dir, manifestFileName);
+    assertVisibleForImportedProject(toProjectPath(path.relative(rootReal, manifestTarget)), metadata);
+    mutationHooks?.beforeMutation?.();
     await writeFile(manifestTarget, JSON.stringify(validatedManifest, null, 2));
   }
   const st = await stat(target);
-  const persistedManifest = await readManifestForPath(dir, safeName);
-  const result = {
+  const persistedManifest = await readManifestForPath(dir, safeName, metadata);
+  const result: ProjectFile = {
     name: safeName,
     path: safeName,
     size: st.size,
@@ -1031,12 +1048,14 @@ export async function reconcileHtmlArtifactManifest(projectsRoot, projectId, nam
   return validated.value;
 }
 
-async function readManifestForPath(projectDirPath, relPath) {
+async function readManifestForPath(projectDirPath, relPath, metadata?) {
   if (containsIgnoredProjectDirSegment(relPath)) return null;
   const fullPath = path.join(projectDirPath, relPath);
   if (await isViteDevHtmlEntry(projectDirPath, relPath, fullPath)) return null;
-  const manifestPath = path.join(projectDirPath, artifactManifestNameFor(relPath));
   try {
+    const manifestPath = await resolveSafeReal(projectDirPath, artifactManifestNameFor(relPath));
+    const rootReal = await realpath(projectDirPath).catch(() => projectDirPath);
+    assertVisibleForImportedProject(toProjectPath(path.relative(rootReal, manifestPath)), metadata);
     const raw = await readFile(manifestPath, 'utf8');
     const parsed = parseManifest(raw);
     if (parsed) return parsed;
@@ -1052,11 +1071,18 @@ function parseManifest(raw) {
   return parsePersistedManifest(raw, '');
 }
 
-export async function deleteProjectFile(projectsRoot, projectId, name, metadata?) {
+export async function deleteProjectFile(projectsRoot, projectId, name, metadata?, mutationHooks?: ProjectFileMutationHooks) {
   assertVisibleForImportedProject(name, metadata);
   const dir = resolveProjectDir(projectsRoot, projectId, metadata);
   const file = await resolveSafeReal(dir, name);
+  const rootReal = await realpath(dir).catch(() => dir);
+  const canonicalName = toProjectPath(path.relative(rootReal, file));
+  assertVisibleForImportedProject(canonicalName, metadata);
+  const existing = await lstat(file);
+  if (existing.isDirectory()) throw Object.assign(new Error('target is a directory'), { code: 'EISDIR' });
+  mutationHooks?.beforeMutation?.();
   await unlink(file);
+  mutationHooks?.fileDeleted?.(canonicalName);
 }
 
 export async function renameProjectFile(projectsRoot, projectId, fromName, toName, metadata?) {
@@ -1084,7 +1110,7 @@ export async function renameProjectFile(projectsRoot, projectId, fromName, toNam
   }
 
   if (oldName === newName) {
-    const manifest = await readManifestForPath(dir, oldName);
+    const manifest = await readManifestForPath(dir, oldName, metadata);
     return {
       file: {
         name: oldName,
@@ -1124,7 +1150,7 @@ export async function renameProjectFile(projectsRoot, projectId, fromName, toNam
   await updateArtifactManifestRefsForRename(dir, oldName, newName);
 
   const st = await stat(targetPath);
-  const manifest = await readManifestForPath(dir, newName);
+  const manifest = await readManifestForPath(dir, newName, metadata);
   return {
     file: {
       name: newName,
@@ -1491,7 +1517,7 @@ function resolveSafe(dir, name) {
 // descendant symlinks can't reach outside the project.
 async function resolveSafeReal(dir, name) {
   const candidate = resolveSafe(dir, name);
-  const rootReal = await realpath(dir).catch(() => dir);
+  const rootReal = await realpath(dir).catch(() => resolveExistingPrefix(dir));
   let real;
   try {
     real = await realpath(candidate);
@@ -1506,10 +1532,13 @@ async function resolveSafeReal(dir, name) {
     e.code = 'EPATHESCAPE';
     throw e;
   }
+  // A visible alias must not grant access to internal version/artifact data.
+  const relative = path.relative(rootReal, real);
+  if (relative) validateProjectPath(toProjectPath(relative));
   return real;
 }
 
-async function resolveExistingPrefix(p) {
+async function resolveExistingPrefix(p, followed = new Set<string>()) {
   const parts = p.split(path.sep);
   for (let i = parts.length; i > 0; i--) {
     const prefix = parts.slice(0, i).join(path.sep) || path.sep;
@@ -1519,6 +1548,19 @@ async function resolveExistingPrefix(p) {
       return rest ? path.join(real, rest) : real;
     } catch (err) {
       if (!err || err.code !== 'ENOENT') throw err;
+      let entry;
+      try { entry = await lstat(prefix); }
+      catch (missing) { if (!missing || missing.code !== 'ENOENT') throw missing; continue; }
+      if (!entry.isSymbolicLink()) continue;
+      const identity = process.platform === 'win32' ? prefix.toLowerCase() : prefix;
+      if (followed.has(identity) || followed.size >= 40) {
+        throw Object.assign(new Error('invalid project symlink chain'), { code: 'EPATHESCAPE' });
+      }
+      const next = new Set(followed).add(identity);
+      const target = path.resolve(path.dirname(prefix), await readlink(prefix));
+      const real = await resolveExistingPrefix(target, next);
+      const rest = parts.slice(i).join(path.sep);
+      return rest ? path.join(real, rest) : real;
     }
   }
   return p;
@@ -1541,16 +1583,21 @@ export function validateProjectPath(raw) {
   if (parts.length === 0 || parts.some((p) => FORBIDDEN_SEGMENT.test(p))) {
     throw new Error('invalid file name');
   }
-  if (parts.some((part) => RESERVED_PROJECT_FILE_SEGMENTS.has(part))) {
+  if (parts.some(isReservedProjectFileSegment)) {
     throw new Error('reserved project path');
   }
   return parts.join('/');
 }
 
+function isReservedProjectFileSegment(part: string): boolean {
+  const name = process.platform === 'win32' ? part.replace(/[ .]+$/u, '').toLowerCase() : part;
+  return RESERVED_PROJECT_FILE_SEGMENTS.has(name);
+}
+
 export function isReservedProjectFilePath(raw) {
   try {
     const normalized = String(raw ?? '').replace(/\\/g, '/');
-    return normalized.split('/').filter(Boolean).some((part) => RESERVED_PROJECT_FILE_SEGMENTS.has(part));
+    return normalized.split('/').filter(Boolean).some(isReservedProjectFileSegment);
   } catch {
     return false;
   }
@@ -1696,7 +1743,6 @@ export async function searchProjectFiles(projectsRoot, projectId, query, opts = 
   const pattern = opts.pattern || null;
   const metadata = opts.metadata;
   const items = await listFiles(projectsRoot, projectId, { metadata });
-  const dir = resolveProjectDir(projectsRoot, projectId, metadata);
   const escaped = String(query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(escaped, 'i');
   const matches = [];
@@ -1705,7 +1751,7 @@ export async function searchProjectFiles(projectsRoot, projectId, query, opts = 
     if (pattern && !globMatch(f.name, pattern)) continue;
     let content;
     try {
-      content = await readFile(path.join(dir, f.name), 'utf8');
+      content = (await readProjectFile(projectsRoot, projectId, f.name, metadata)).buffer.toString('utf8');
     } catch {
       continue;
     }

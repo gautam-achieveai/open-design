@@ -164,6 +164,8 @@ export interface ListSkillsOptions {
   db?: SqliteDb;
   workspaceId?: string | null;
   workspaceMemberId?: string | null;
+  /** Internal witness emitted synchronously with the final binding decision. */
+  onBindingSnapshot?: (id: string, fence: string) => void;
 }
 
 /**
@@ -221,6 +223,25 @@ function skillVisibleFromBinding(
   const creatorId = binding?.createdByWorkspaceMemberId?.trim();
   const callerId = workspaceMemberId?.trim();
   return Boolean(creatorId && callerId && creatorId === callerId);
+}
+
+/** Revalidate an ordinary catalog entry with the same binding policy as listing. */
+export function skillCatalogBindingStillVisible(
+  db: SqliteDb, entry: { id: string; source: SkillSource; teamSynced?: boolean },
+  scope: string | null, member: string | null,
+): boolean {
+  const bindingId = splitDerivedSkillId(entry.id)?.parentId ?? entry.id;
+  const binding = getWorkspaceResourceByResourceId(db, 'skill', bindingId);
+  return skillVisibleFromBinding(binding, scope, member, entry.source)
+    && (binding?.visibility === 'team') === (entry.teamSynced === true);
+}
+
+function skillBindingFence(binding: ReturnType<typeof getWorkspaceResourceByResourceId>): string {
+  return JSON.stringify(binding ?? null);
+}
+
+export function skillCatalogBindingFence(db: SqliteDb, id: string): string {
+  return skillBindingFence(getWorkspaceResourceByResourceId(db, 'skill', splitDerivedSkillId(id)?.parentId ?? id));
 }
 
 // Accept either a single root path or an array. When given multiple roots,
@@ -443,9 +464,10 @@ export async function listSkills(
     // teammate's share (see `syncSharedTeamSkill`'s `markTeamSynced` in
     // server.ts) — never the sharer's own skill, which is never bound this
     // way. Tombstoned Team bindings were removed by the visibility filter.
-    .map(({ entry, binding }) =>
-      binding?.visibility === "team" ? { ...entry, teamSynced: true } : entry,
-    );
+    .map(({ entry, binding }) => {
+      options.onBindingSnapshot?.(entry.id, skillBindingFence(binding));
+      return binding?.visibility === "team" ? { ...entry, teamSynced: true } : entry;
+    });
 }
 
 // Discover example artifacts that live alongside SKILL.md under

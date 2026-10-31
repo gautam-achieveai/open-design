@@ -1376,6 +1376,9 @@ export function createCodexFrameHandler(onEvent: StreamEventHandler) {
 }
 
 export interface JsonEventStreamHandlerOptions {
+  /** Captured run token; only the OpenCode/MiMo parser opts into this boundary. */
+  runToolToken?: string;
+  onUnsafeOutput?: () => void;
   openCodeChildEvidence?: {
     rootSessionId?: string;
     cliVersion: string;
@@ -1390,6 +1393,7 @@ export function createJsonEventStreamHandler(
   options: JsonEventStreamHandlerOptions = {},
 ) {
   let buffer = '';
+  let unsafeOutput = false;
   const state: ParserState = createParserState();
   const openCodeChildEvidence = kind === 'opencode' && options.openCodeChildEvidence
     ? createOpenCodeRootTaskEvidenceCollector(options.openCodeChildEvidence)
@@ -1401,6 +1405,7 @@ export function createJsonEventStreamHandler(
   // all carry the same bounded line — a cursor-agent `editToolCall` completion
   // alone repeats the edited file twice (see run-event-payload-budget.ts).
   function handleLine(line: string): void {
+    if (unsafeOutput) return;
     let obj: unknown;
     try {
       obj = JSON.parse(line);
@@ -1409,6 +1414,20 @@ export function createJsonEventStreamHandler(
       return;
     }
 
+    if (kind === 'opencode' && options.runToolToken && isRecord(obj)) {
+      const part = isRecord(obj.part) ? obj.part : {};
+      const partState = isRecord(part.state) ? part.state : {};
+      const metadata = isRecord(partState.metadata) ? partState.metadata : {};
+      const identities = [obj.id, obj.sessionID, obj.callID, obj.tool, part.id, part.callID, part.tool, part.sessionID, part.messageID,
+        metadata.parentSessionId, metadata.sessionId];
+      if (identities.some(value => typeof value === 'string' && value.includes(options.runToolToken!))) {
+        unsafeOutput = true;
+        try { options.onUnsafeOutput?.(); } catch { /* Never copy callback exceptions. */ }
+        try { onEvent({ type: 'error', message: 'Agent output could not be safely processed.' }); }
+        catch { /* Keep the failure latch nonthrowing even if the consumer fails. */ }
+        return;
+      }
+    }
     openCodeChildEvidence?.observe(obj);
 
     if (kind === 'opencode' && handleOpenCodeEvent(obj, onEvent, state)) return;
@@ -1421,6 +1440,7 @@ export function createJsonEventStreamHandler(
   }
 
   function feed(chunk: string): void {
+    if (unsafeOutput) return;
     buffer += chunk;
     let nl;
     while ((nl = buffer.indexOf('\n')) !== -1) {
@@ -1432,6 +1452,7 @@ export function createJsonEventStreamHandler(
   }
 
   function flush(): void {
+    if (unsafeOutput) { buffer = ''; return; }
     const rem = buffer.trim();
     buffer = '';
     if (rem) handleLine(rem);

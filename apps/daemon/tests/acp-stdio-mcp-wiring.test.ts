@@ -13,8 +13,8 @@ import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { existsSync, promises as fsp } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { delimiter, dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { startServer } from '../src/server.js';
 
@@ -43,13 +43,20 @@ async function withFakeKimi<T>(
   const sessionNewLog = join(dir, 'session-new.jsonl');
   const saved = {
     PATH: process.env.PATH,
+    KIMI_BIN: process.env.KIMI_BIN,
+    HERMES_BIN: process.env.HERMES_BIN,
     FAKE_KIMI_VERSION: process.env.FAKE_KIMI_VERSION,
     FAKE_KIMI_ACP_VERSION: process.env.FAKE_KIMI_ACP_VERSION,
     FAKE_KIMI_SESSION_NEW_LOG: process.env.FAKE_KIMI_SESSION_NEW_LOG,
   };
   try {
     const bin = join(dir, options.binName ?? 'kimi');
-    await fsp.writeFile(bin, `#!/usr/bin/env node\nimport(${JSON.stringify(FIXTURE)});\n`);
+    await fsp.writeFile(bin, `#!/usr/bin/env node\nimport(${JSON.stringify(pathToFileURL(FIXTURE).href)});\n`);
+    if (process.platform === 'win32') {
+      await fsp.writeFile(`${bin}.cmd`, `@"${process.execPath}" "${bin}" %*\r\n`);
+    }
+    delete process.env.KIMI_BIN;
+    delete process.env.HERMES_BIN;
     await fsp.chmod(bin, 0o755);
     process.env.PATH = `${dir}${delimiter}${saved.PATH ?? ''}`;
     process.env.FAKE_KIMI_VERSION = options.version;
@@ -96,8 +103,16 @@ describe('ACP stdio MCP servers are withheld from runtimes that reject them', ()
   let server: http.Server;
   let baseUrl: string;
   const projectsToClean: string[] = [];
+  const originalDiscovery = { PATH: process.env.PATH, OD_AGENT_HOME: process.env.OD_AGENT_HOME };
+  let discoveryHome = '';
 
   beforeAll(async () => {
+    // Discovery must inspect only our fake CLIs, never installed user agents.
+    discoveryHome = await fsp.mkdtemp(join(tmpdir(), 'od-acp-discovery-'));
+    process.env.OD_AGENT_HOME = discoveryHome;
+    process.env.PATH = [dirname(process.execPath),
+      ...(process.platform === 'win32' ? [join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')] : ['/usr/bin', '/bin']),
+    ].join(delimiter);
     const started = (await startServer({ port: 0, returnServer: true })) as {
       url: string;
       server: http.Server;
@@ -119,7 +134,15 @@ describe('ACP stdio MCP servers are withheld from runtimes that reject them', ()
         fetch(`${baseUrl}/api/projects/${id}`, { method: 'DELETE' }).catch(() => {}),
       ),
     );
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    try {
+      if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+    } finally {
+      for (const [key, value] of Object.entries(originalDiscovery)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      if (discoveryHome) await fsp.rm(discoveryHome, { recursive: true, force: true });
+    }
   }, 60_000);
 
   afterEach(async () => {
@@ -190,10 +213,11 @@ describe('ACP stdio MCP servers are withheld from runtimes that reject them', ()
     expect(stdioEntriesOf(params)).toEqual([]);
   }, 60_000);
 
-  it('still sends the live-artifacts stdio MCP server to Kimi 0.36.1', async () => {
+  it('sends the unified run MCP bridge to Kimi 0.36.1', async () => {
     const { params } = await runTurnAndReadSessionNew({ version: '0.36.1' });
     const names = (params.mcpServers ?? []).map((s) => s.name);
-    expect(names).toContain('open-design-live-artifacts');
+    expect(names).toContain('open-design-run');
+    expect(names).not.toContain('open-design-live-artifacts');
   }, 60_000);
 
   it('trusts the version the agent reports in the ACP handshake, not the `--version` probe', async () => {
@@ -244,6 +268,7 @@ describe('ACP stdio MCP servers are withheld from runtimes that reject them', ()
       binName: 'hermes',
     });
     const names = (params.mcpServers ?? []).map((s) => s.name);
-    expect(names).toContain('open-design-live-artifacts');
+    expect(names).toContain('open-design-run');
+    expect(names).not.toContain('open-design-live-artifacts');
   }, 60_000);
 });

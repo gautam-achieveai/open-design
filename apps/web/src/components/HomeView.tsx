@@ -7,7 +7,22 @@
 // surface by lifting its plugin orchestration up here so the prompt
 // textarea can live centered in the hero.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+// Composed Home view — the top-down layout the entry view renders
+// when the left nav rail's "Home" tab is active.
+//
+// Owns the prompt state + active plugin lifecycle and stitches
+// together the smaller pieces (HomeHero, PluginsHomeSection; the recent
+// projects live in the entry rail, not here). Replaces the older left-side `PluginLoopHome`
+// surface by lifting its plugin orchestration up here so the prompt
+// textarea can live centered in the hero.
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { Dialog, DialogFooter, DialogTitle } from '@open-design/components';
 import type {
   ApplyResult,
@@ -61,21 +76,12 @@ import {
 import { FigmaImportModal } from './FigmaImportModal';
 import { fetchMcpServers } from '../state/mcp';
 import { takeHomeComposerAssetSeed } from '../state/libraryHandoff';
-import { useI18n, useT } from '../i18n';
-import {
-  formatModelWindowRetryAt,
-  modelWindowLimitCopy,
-} from '../runtime/amr-guidance';
-import {
-  localizeSkillName,
-  localizeSkillPrompt,
-} from '../i18n/content';
+import { useI18n } from '../i18n';
+import { formatModelWindowRetryAt, modelWindowLimitCopy } from '../runtime/amr-guidance';
+import { localizeSkillName, localizeSkillPrompt } from '../i18n/content';
 import { fetchElevenLabsVoiceOptions } from '../providers/elevenlabs-voices';
 import { IMAGE_MODELS } from '../media/models';
-import {
-  mergeAihubmixImageModels,
-  useAIHubMixImageModels,
-} from '../media/aihubmix-image-models';
+import { mergeAihubmixImageModels, useAIHubMixImageModels } from '../media/aihubmix-image-models';
 import {
   daemonIsLive,
   dirExists,
@@ -99,7 +105,7 @@ import {
   requiredInputsAreUserFillable,
 } from '../utils/pluginRequiredInputs';
 import { HomeHero, type ExamplePromptInfo, type HomeHeroHandle } from './HomeHero';
-import { findChip, HOME_HERO_CHIPS, type HomeHeroChip } from './home-hero/chips';
+import { findChip, type HomeHeroChip } from './home-hero/chips';
 import {
   legacyPrototypeSceneForChipId,
   prototypeSceneProjectMetadata,
@@ -108,7 +114,11 @@ import {
 } from './home-hero/sub-chips';
 import { homeHeroChipLabel } from './home-hero/chip-labels';
 import type { PlaceholderScenario } from './home-hero/placeholderScenarios';
-import { consumePendingHomeChip, hasPendingHomeChip, HOME_CHIP_INTENT_EVENT } from '../runtime/home-intent';
+import {
+  consumePendingHomeChip,
+  hasPendingHomeChip,
+  HOME_CHIP_INTENT_EVENT,
+} from '../runtime/home-intent';
 import { navigate } from '../router';
 import { setPendingDesignSystemCreateEntry } from '../analytics/ds-create-entry';
 import { workspaceContextLinkedDirs } from './workspace-context';
@@ -149,8 +159,6 @@ import { localizePluginDescription } from './plugins-home/localization';
 import type { Recommendation } from '../onboarding/recommendation';
 import type { OnboardingEntry } from '../onboarding/onboarding-entry';
 import { AnimatePresence } from 'motion/react';
-import { DeepSeekV4FlashCampaign } from './DeepSeekV4FlashCampaign';
-import type { DeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
 
 export interface ActivePlugin {
   record: InstalledPluginRecord;
@@ -264,7 +272,6 @@ const AUTHORING_DEFAULT_SCENARIO_INPUTS = {
   topic: 'packaging a reusable workflow as an OpenDesign plugin',
 };
 
-
 interface Props {
   isActive?: boolean;
   projects: Project[];
@@ -309,15 +316,6 @@ interface Props {
   onRecommendationDismiss?: () => void;
   executionSwitcher?: ReactNode;
   artifactUpgradeSlot?: ReactNode;
-  deepSeekV4FlashCampaignAudience?: DeepSeekV4FlashCampaignAudience;
-  /** Real model switch for the campaign modal's paid 立即使用 CTA (D5).
-   *  EntryShell owns the agent/model persistence callbacks; HomeView only
-   *  threads them through, like the audience above. */
-  onDeepSeekV4FlashCampaignUseNow?: (agentId: string, modelId: string) => void;
-  /** Telemetry opt-in + install id for the modal's consent-gated AMR
-   *  attribution — EntryShell reads them off config, HomeView threads. */
-  deepSeekV4FlashCampaignMetricsConsent?: boolean;
-  deepSeekV4FlashCampaignInstallationId?: string | null;
   /**
    * `page` is Home itself. `dock` renders the composer ALONE — no campaign
    * modal, no recent-projects strip — for hosts that want Home's input bar
@@ -518,10 +516,6 @@ export function HomeView({
   onRecommendationDismiss,
   executionSwitcher,
   artifactUpgradeSlot,
-  deepSeekV4FlashCampaignAudience = 'unknown',
-  onDeepSeekV4FlashCampaignUseNow,
-  deepSeekV4FlashCampaignMetricsConsent = false,
-  deepSeekV4FlashCampaignInstallationId = null,
   variant = 'page',
 }: Props) {
   const { locale, t } = useI18n();
@@ -622,9 +616,12 @@ export function HomeView({
     chipId: string | null;
   } | null>(null);
   // The Home composer no longer exposes a mode picker (the 「设计」 pill was
-  // removed), so every Home create runs in the default design mode; the
-  // per-conversation picker still lives in the project chat composer.
-  const sessionMode: ChatSessionMode = 'design';
+  // removed). The selected scenario owns the initial mode: Active UI development
+  // edits an existing product, so it starts in Build; every other Home create
+  // keeps the default Design mode. The per-conversation picker still lives in
+  // the project chat composer.
+  const sessionMode: ChatSessionMode =
+    active?.chipId === 'active-ui-development' ? 'build' : 'design';
   const [activeSkill, setActiveSkill] = useState<SkillSummary | null>(null);
   const [activeSkillCatalogScope, setActiveSkillCatalogScope] =
     useState<LocalCatalogScope | null>(null);
@@ -2961,13 +2958,15 @@ export function HomeView({
       const productAutomaticScenario = submittedChip?.action.kind === 'apply-scenario'
         && submittedChip.action.automaticDefault === true
         && !pinsPluginOverAutomaticRoute(submittedActive, submittedRouteChipId);
+      const automaticScenarioMode = sessionMode === 'design'
+        || (sessionMode === 'build' && submittedRouteChipId === 'active-ui-development');
       const routedPluginId =
         automaticStrategyTaskProfile
           ? null
           : sessionMode === 'design'
           ? submittedActive?.record.id ?? DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID
           : submittedActive?.record.id ?? null;
-      const pluginSelectionProvenance = sessionMode === 'design'
+      const pluginSelectionProvenance = automaticScenarioMode
         && (!submittedActive || productAutomaticScenario)
         ? 'automatic-default' as const
         : null;
@@ -3063,7 +3062,7 @@ export function HomeView({
         err instanceof ProjectCreateError
         && err.code === 'AMR_AUTH_REQUIRED'
       ) {
-        setError(t('entry.authExpiredBody'));
+        setError(t('chat.runError.modelUnavailableMessage'));
       } else {
         // A rolling model window is the one upstream failure whose own wording
         // must not reach the user: the gateway writes it in English for API
@@ -3104,20 +3103,6 @@ export function HomeView({
       data-variant={variant}
       ref={homeViewRef}
     >
-      {/* `active` gates the portal-escaping campaign dialog to the ACTIVE home
-          view: EntryShell only hides inactive views with display:none, which a
-          document.body portal ignores. A docked composer never runs it at all —
-          it is a Home-page moment, and a second copy of the modal would fight
-          the page one over the same dismissal state. */}
-      {variant === 'dock' ? null : (
-        <DeepSeekV4FlashCampaign
-          audience={deepSeekV4FlashCampaignAudience}
-          active={isActive}
-          onUseCampaignModel={onDeepSeekV4FlashCampaignUseNow}
-          metricsConsent={deepSeekV4FlashCampaignMetricsConsent}
-          installationId={deepSeekV4FlashCampaignInstallationId}
-        />
-      )}
       <HomeHero
         variant={variant}
         collapseSignal={collapseSignal}
@@ -3855,7 +3840,6 @@ function removeContextMentionsFromPrompt(prompt: string, labels: string[]): stri
     );
   }, prompt);
 }
-
 
 function inputsEqual(
   left: Record<string, unknown> | undefined,

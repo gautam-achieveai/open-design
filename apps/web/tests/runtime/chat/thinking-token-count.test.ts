@@ -116,7 +116,7 @@ describe('「很久没变」在这一层算 —— 组件不起第二个 timer',
       [thinking(), count(3_278, T0)],
       T0 + THINKING_TOKENS_STALL_MS,
     );
-    expect(shell.thinkingTokens).toEqual({ count: 3_278, stale: false });
+    expect(shell.thinkingTokens).toEqual({ count: 3_278, stale: false, changedAtMs: T0 });
   });
 
   it(`过了 ${THINKING_TOKENS_STALL_MS}ms 就标成停了`, () => {
@@ -124,7 +124,7 @@ describe('「很久没变」在这一层算 —— 组件不起第二个 timer',
       [thinking(), count(3_278, T0)],
       T0 + THINKING_TOKENS_STALL_MS + 1,
     );
-    expect(shell.thinkingTokens).toEqual({ count: 3_278, stale: true });
+    expect(shell.thinkingTokens).toEqual({ count: 3_278, stale: true, changedAtMs: T0 });
   });
 
   it('门槛远在健康推理的帧距之上 —— p50 1.4s、最大观测 4.88s 都翻不动它', () => {
@@ -137,7 +137,7 @@ describe('「很久没变」在这一层算 —— 组件不起第二个 timer',
       [thinking(), count(3_278, T0), count(3_400, T0 + 9_000)],
       T0 + 10_000,
     );
-    expect(shell.thinkingTokens).toEqual({ count: 3_400, stale: false });
+    expect(shell.thinkingTokens).toEqual({ count: 3_400, stale: false, changedAtMs: T0 + 9_000 });
   });
 
   /**

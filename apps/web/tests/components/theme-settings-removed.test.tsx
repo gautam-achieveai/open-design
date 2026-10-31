@@ -145,7 +145,6 @@ describe('Onboarding welcome (theme toggle removed)', () => {
           onRefreshAgents={vi.fn(() => AGENTS)}
           onCreateProject={vi.fn()}
           onBeginProjectCreation={() => ({ projectId: 'optimistic-project', rollback: () => undefined })}
-          onAmrBalanceGateBlockChange={() => undefined}
           onCreatePluginShareProject={vi.fn()}
           onImportClaudeDesign={vi.fn()}
           onOpenProject={vi.fn()}

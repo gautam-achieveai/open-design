@@ -242,15 +242,10 @@ describe('重试也失败:同一段原文该出 S10「服务暂时不可用」',
   });
 });
 
-// 反向对照:本来就该说清楚的那一类(余额不足)不受影响 ——
-// 少了这条,把所有报错糊成同一句话也会绿。
-//
-// 断言从「卡面」下移到了**映射**:用户 2026-09-02 裁决之后,余额那一档在流水里
-// 交给升级卡(交付稿组件 18),报错卡整张不画(`suppressCard`),所以这里没有
-// 卡面文字可读。要守的东西没变 —— 这一路仍然有它自己那份人话,没被 S10
-// 「服务暂时不可用」糊掉。
-describe('余额不足那一路没有被连带糊掉', () => {
-  it('照旧是余额那一份文案,而且整张报错卡让位给升级卡', () => {
+// Keep historical balance errors distinguishable after retiring billing UI.
+// The old mapping survives for stored runs; recovery must still be reachable.
+describe('legacy balance failures after Cloud retirement', () => {
+  it('retains the specific error mapping and exposes recovery without an upgrade card', () => {
     const message = {
       id: 'msg-balance',
       role: 'assistant',
@@ -276,7 +271,10 @@ describe('余额不足那一路没有被连带糊掉', () => {
 
     const { container } = renderChat({ message });
 
-    // 白色通用报错卡不在了 —— 钱的事只有升级卡一张。
-    expect(container.querySelector('[data-user-action-card="run-recovery"]')).toBeNull();
+    // Historical errors remain readable, but the removed billing surface
+    // must not hide the ordinary recovery controls.
+    expect(container.querySelector('[data-user-action-card="run-recovery"]')).toBeTruthy();
+    expect(screen.getByTestId('chat-error-export-logs')).toBeTruthy();
+    expect(screen.queryByTestId('chat-upgrade-card')).toBeNull();
   });
 });

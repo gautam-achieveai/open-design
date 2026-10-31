@@ -1126,306 +1126,21 @@ process.exit(1);
     );
   });
 
-  it('rejects a requested media-only model before AMR ACP launch', async () => {
-    const { body, invocations, responseOk } = await runAmrModelRequest('nano-banana-2');
-
+  it.each(['nano-banana-2', 'custom-provider/future-chat-2027', 'default'])('rejects retired AMR chat before spawning (%s)', async (model) => {
+    const { body, invocations, responseOk } = await runAmrModelRequest(model);
     expect(responseOk).toBe(true);
-    expect(invocations).toEqual([]);
-    expect(body).toContain('AMR_MODEL_UNAVAILABLE');
-    expect(body).toContain('model_not_chat_capable');
+    expect(body).toContain('AGENT_UNAVAILABLE');
     expect(body).toContain('"status":"failed"');
-    expect(body).not.toContain('Hello from fake vela.');
+    expect(invocations).toEqual([]);
   });
 
-  it('forwards an unknown custom-provider chat slug when the AMR catalog is stale', async () => {
-    const { body, invocations, responseOk } = await runAmrModelRequest(
-      'custom-provider/future-chat-2027',
-    );
 
-    expect(responseOk).toBe(true);
-    expect(invocations).toEqual([
-      'new',
-      'set_model:custom-provider/future-chat-2027',
-      'prompt',
-    ]);
-    expect(body).not.toContain('AMR_MODEL_UNAVAILABLE');
-    expect(body).toContain('"type":"text_delta","delta":"Hello from fake "');
-    expect(body).toContain('"type":"text_delta","delta":"vela."');
-    expect(body).toContain('"status":"succeeded"');
-  });
 
-  it('survives transient AMR Link catalog failures without aborting the run', async () => {
-    // The run preflight resolves the AMR catalog through the shared
-    // AmrModelLoadingCache, which degrades to the offline `vela model preset`
-    // seed whenever the authoritative `vela model list` is momentarily
-    // unavailable (and refreshes the remote catalog in the background). So a
-    // transient catalog failure must NOT abort the run — the per-run path no
-    // longer blocks on a synchronous `model list` retry loop.
-    const previousRuntimeKey = process.env.VELA_RUNTIME_KEY;
-    const previousLinkUrl = process.env.VELA_LINK_URL;
-    const stateFile = join(tmpdir(), `od-amr-model-retry-${randomUUID()}.json`);
-    try {
-      // Unique key so the shared model cache key is unique per test run.
-      process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-      process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
-      const workspaceFixture =
-        await createPersonalWorkspaceBoundProjectFixture('Transient AMR catalog fixture');
 
-      await withFakeAgent(
-        'vela',
-        `
-const { existsSync, readFileSync, writeFileSync } = require('node:fs');
-const { spawn } = require('node:child_process');
-const fixture = ${JSON.stringify(FAKE_VELA_FIXTURE)};
-const stateFile = ${JSON.stringify(stateFile)};
-const args = process.argv.slice(2);
-if (args[0] === 'model' && args[1] === 'list') {
-  const state = existsSync(stateFile)
-    ? JSON.parse(readFileSync(stateFile, 'utf8'))
-    : { attempts: 0 };
-  state.attempts += 1;
-  writeFileSync(stateFile, JSON.stringify(state), 'utf8');
-  if (state.attempts < 3) {
-    process.stderr.write('Get "https://amr-link.open-design.ai/v1/models": context deadline exceeded\\n');
-    process.exit(1);
-  }
-}
-const child = spawn(process.execPath, [fixture, ...args], {
-  stdio: 'inherit',
-  env: process.env,
-});
-child.on('exit', (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
-  process.exit(code ?? 0);
-});
-`,
-        async () => {
-          const response = await fetch(`${baseUrl}/api/chat`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...workspaceFixture.headers,
-            },
-            body: JSON.stringify({
-              agentId: 'amr',
-              projectId: workspaceFixture.projectId,
-              message: 'hello',
-              model: 'deepseek-v3.2',
-            }),
-          });
-          const body = await response.text();
 
-          expect(response.ok).toBe(true);
-          expect(body).toContain('"type":"text_delta","delta":"Hello from fake "');
-          expect(body).toContain('"type":"text_delta","delta":"vela."');
-          expect(body).not.toContain('model_catalog_unavailable');
-          expect(body).not.toContain('AMR_MODEL_UNAVAILABLE');
-          expect(body).not.toContain('AMR_WORKSPACE_SCOPE_REQUIRED');
-          // The catalog probe runs at least once (remote attempted, then the
-          // run proceeds from the preset seed). We no longer assert an exact
-          // synchronous retry count: the remote retry/backoff now happens in
-          // the cache's background refresh, not on the per-run hot path.
-          const attempts = JSON.parse(readFileSync(stateFile, 'utf8')) as { attempts: number };
-          expect(attempts.attempts).toBeGreaterThanOrEqual(1);
-        },
-      );
-    } finally {
-      rmSync(stateFile, { force: true });
-      if (previousRuntimeKey == null) delete process.env.VELA_RUNTIME_KEY;
-      else process.env.VELA_RUNTIME_KEY = previousRuntimeKey;
-      if (previousLinkUrl == null) delete process.env.VELA_LINK_URL;
-      else process.env.VELA_LINK_URL = previousLinkUrl;
-    }
-  });
 
-  it('proceeds with the AMR run via the cached/preset catalog when the live model list is unavailable', async () => {
-    // Red spec for the packaged-prerelease "AMR model the selected model is not
-    // available from Vela" report: the run preflight used to do a fresh,
-    // blocking `vela model list` (authoritative remote catalog) on EVERY run
-    // and fail-close the run whenever that single call timed out / errored —
-    // even though the user is logged in, the model picker already shows a
-    // model (seeded from the offline `vela model preset`), and the selected
-    // model is real. Under CorpLink/飞连 the remote call routinely exceeds the
-    // 10s timeout, so a logged-in user with a valid model could not run AMR at
-    // all. The fix reuses the shared AmrModelLoadingCache (cached remote when
-    // hot, otherwise the offline preset seed) instead of a per-run blocking
-    // remote probe, so a transient `model list` failure no longer kills the run.
-    const previousRuntimeKey = process.env.VELA_RUNTIME_KEY;
-    const previousLinkUrl = process.env.VELA_LINK_URL;
-    try {
-      // A unique runtime key both marks the user as logged-in AND makes the
-      // shared model cache key unique so this case never reuses another test's
-      // cached remote catalog.
-      process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-      process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
-      const workspaceFixture =
-        await createPersonalWorkspaceBoundProjectFixture('Cached AMR catalog fixture');
 
-      await withFakeAgent(
-        'vela',
-        `
-const { spawn } = require('node:child_process');
-const fixture = ${JSON.stringify(FAKE_VELA_FIXTURE)};
-const args = process.argv.slice(2);
-// Simulate a persistently unreachable authoritative catalog (gateway
-// timeout / 飞连 congestion): every \`vela model list\` fails. \`model preset\`,
-// \`login\`, and \`agent run\` still delegate to the fixture, mirroring the real
-// CLI where the offline preset and the ACP run do not need the gateway.
-if (args[0] === 'model' && args[1] === 'list') {
-  process.stderr.write('Get "https://amr-link.open-design.ai/v1/models": context deadline exceeded\\n');
-  process.exit(1);
-}
-const child = spawn(process.execPath, [fixture, ...args], {
-  stdio: 'inherit',
-  env: process.env,
-});
-child.on('exit', (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
-  process.exit(code ?? 0);
-});
-`,
-        async () => {
-          const response = await fetch(`${baseUrl}/api/chat`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...workspaceFixture.headers,
-            },
-            body: JSON.stringify({
-              agentId: 'amr',
-              projectId: workspaceFixture.projectId,
-              message: 'hello',
-              // Present in the preset seed (DEFAULT_MODEL_PRESET_JSON) but the
-              // live `model list` is unavailable, so only the preset path can
-              // surface it.
-              model: 'glm-5.1',
-            }),
-          });
-          const body = await response.text();
 
-          expect(response.ok).toBe(true);
-          // The run must NOT be fail-closed on the unavailable live catalog.
-          expect(body).not.toContain('AMR_MODEL_UNAVAILABLE');
-          expect(body).not.toContain('model_catalog_unavailable');
-          expect(body).not.toContain('is not available from Vela');
-          expect(body).not.toContain('AMR_WORKSPACE_SCOPE_REQUIRED');
-          // It must actually proceed into the ACP run and stream assistant text.
-          expect(body).toContain('"type":"text_delta","delta":"Hello from fake "');
-          expect(body).toContain('"type":"text_delta","delta":"vela."');
-        },
-      );
-    } finally {
-      if (previousRuntimeKey == null) delete process.env.VELA_RUNTIME_KEY;
-      else process.env.VELA_RUNTIME_KEY = previousRuntimeKey;
-      if (previousLinkUrl == null) delete process.env.VELA_LINK_URL;
-      else process.env.VELA_LINK_URL = previousLinkUrl;
-    }
-  });
-
-  it('persists exact AMR prompt budget context across new and resumed sessions', async () => {
-    const previousRuntimeKey = process.env.VELA_RUNTIME_KEY;
-    const previousLinkUrl = process.env.VELA_LINK_URL;
-    const previousPreset = process.env.FAKE_VELA_MODEL_PRESET_JSON;
-    const previousList = process.env.FAKE_VELA_MODEL_LIST_JSON;
-    const model = 'claude-observability-5';
-    try {
-      process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-      process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
-      process.env.FAKE_VELA_MODEL_PRESET_JSON = JSON.stringify({
-        source: 'preset',
-        data: [{
-          id: model,
-          enabled: true,
-          default: true,
-          metadata: { contextWindowTokens: 200_000 },
-        }],
-      });
-      process.env.FAKE_VELA_MODEL_LIST_JSON = JSON.stringify({
-        source: 'remote',
-        data: [{
-          id: model,
-          enabled: true,
-          default: true,
-          metadata: { contextWindowTokens: 200_000 },
-        }],
-      });
-      const workspaceFixture =
-        await createPersonalWorkspaceBoundProjectFixture('AMR prompt budget fixture');
-      const conversationsResponse = await fetch(
-        `${baseUrl}/api/projects/${workspaceFixture.projectId}/conversations`,
-      );
-      const conversationsBody = await conversationsResponse.json() as {
-        conversations: Array<{ id: string }>;
-      };
-      const conversationId = conversationsBody.conversations[0]?.id;
-      expect(conversationId).toBeTruthy();
-
-      await withFakeAgent(
-        'vela',
-        `
-const { spawn } = require('node:child_process');
-const fixture = ${JSON.stringify(FAKE_VELA_FIXTURE)};
-const child = spawn(process.execPath, [fixture, ...process.argv.slice(2)], {
-  stdio: 'inherit',
-  env: process.env,
-});
-child.on('exit', (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
-  process.exit(code ?? 0);
-});
-`,
-        async () => {
-          const runTurn = async (message: string) => {
-            const createResponse = await fetch(`${baseUrl}/api/runs`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                ...workspaceFixture.headers,
-              },
-              body: JSON.stringify({
-                agentId: 'amr',
-                projectId: workspaceFixture.projectId,
-                conversationId,
-                model,
-                message,
-                currentPrompt: message,
-              }),
-            });
-            expect(createResponse.status).toBe(202);
-            const { runId } = await createResponse.json() as { runId: string };
-            const eventsResponse = await fetch(`${baseUrl}/api/runs/${runId}/events`);
-            const eventsBody = await readSseUntil(eventsResponse, 'event: final');
-            const statusBody = await waitForRunStatus(baseUrl, runId);
-            expect(statusBody.status).toBe('succeeded');
-            return eventsBody;
-          };
-
-          const first = await runTurn('first exact-frame turn');
-          expect(first).toContain('"name":"prompt_budget_v1"');
-          expect(first).toContain('"sessionMode":"new"');
-          expect(first).toContain('"contextWindowSource":"model_metadata"');
-          expect(first).toContain('"contextWindowTokens":200000');
-          expect(first).toContain('"priorSessionUsageSource":"unknown"');
-
-          const second = await runTurn('second resumed turn');
-          expect(second).toContain('"name":"prompt_budget_v1"');
-          expect(second).toContain('"sessionMode":"resume"');
-          expect(second).toContain('"contextWindowSource":"model_metadata"');
-          expect(second).toContain('"priorSessionUsageSource":"agent_session"');
-          expect(second).toContain('"priorSessionInputTokens":12');
-        },
-      );
-    } finally {
-      if (previousRuntimeKey == null) delete process.env.VELA_RUNTIME_KEY;
-      else process.env.VELA_RUNTIME_KEY = previousRuntimeKey;
-      if (previousLinkUrl == null) delete process.env.VELA_LINK_URL;
-      else process.env.VELA_LINK_URL = previousLinkUrl;
-      if (previousPreset == null) delete process.env.FAKE_VELA_MODEL_PRESET_JSON;
-      else process.env.FAKE_VELA_MODEL_PRESET_JSON = previousPreset;
-      if (previousList == null) delete process.env.FAKE_VELA_MODEL_LIST_JSON;
-      else process.env.FAKE_VELA_MODEL_LIST_JSON = previousList;
-    }
-  });
 
   it('keeps service tier overrides when /api/runs omits model but settings has one', async () => {
     if (!process.env.OD_DATA_DIR) {
@@ -1435,7 +1150,7 @@ child.on('exit', (code, signal) => {
     const previousConfig = await readAppConfig(process.env.OD_DATA_DIR);
     try {
       await writeAppConfig(process.env.OD_DATA_DIR, {
-        agentModels: { codex: { model: 'gpt-5.5' } },
+        agentModels: { codex: { model: 'gpt-6.1-sol' } },
       });
       await withCodexExecJson(() => withFakeAgent(
         'codex',
@@ -1443,7 +1158,7 @@ child.on('exit', (code, signal) => {
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 if (args[0] === 'debug' && args[1] === 'models') {
-  console.log(JSON.stringify([{ id: 'gpt-5.5', name: 'gpt-5.5', service_tiers: [{ id: 'priority', label: 'Fast' }] }]));
+  console.log(JSON.stringify([{ id: 'gpt-6.1-sol', name: 'gpt-6.1-sol', service_tiers: [{ id: 'priority', label: 'Fast' }] }]));
   process.exit(0);
 }
 if (args[0] === 'login' && args[1] === 'status') {
@@ -1470,7 +1185,7 @@ process.exit(0);
 
           const args = JSON.parse(readFileSync(argsPath, 'utf8')) as string[];
           expect(args).toContain('--model');
-          expect(args).toContain('gpt-5.5');
+          expect(args).toContain('gpt-6.1-sol');
           expect(args).toContain('service_tier="priority"');
         },
       ));
@@ -4103,7 +3818,7 @@ process.stdin.on('end', () => {
     }
   });
 
-  it('composes a Team design system without touching same-slug Personal or foreign projects', async () => {
+  it('rejects a retired Team design system without touching Personal or foreign projects', async () => {
     if (!process.env.OD_DATA_DIR) {
       throw new Error('OD_DATA_DIR is required for Workspace design-system prompt tests');
     }
@@ -4299,9 +4014,11 @@ process.stdin.on('end', () => {
             verificationDb.close();
           }
 
-          expect.soft(response.ok).toBe(true);
-          expect.soft(body).toContain('team-design-system-visible');
-          expect.soft(body).not.toContain('team-design-system-missing');
+          expect.soft(response.status).toBe(403);
+          expect.soft(body).toContain('WORKSPACE_UNAVAILABLE');
+          expect.soft(body).not.toContain(teamMarker);
+          expect.soft(body).not.toContain(globalMarker);
+          expect.soft(body).not.toContain(foreignProjectMarker);
         },
       );
     } finally {

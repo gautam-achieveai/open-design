@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, promises as fsp, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, isAbsolute, join, relative } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { insertConversation } from '../src/db.js';
 import { startServer } from '../src/server.js';
@@ -572,6 +572,8 @@ if (argv.includes('--help')) { console.log('--add-dir <dirs...>\\n--mcp-config <
 if (argv.includes('--version')) { console.log('9.9.9 (Claude Code)'); process.exit(0); }
 if (argv[0] === 'auth') { console.log('{"loggedIn":true}'); process.exit(0); }
 fs.writeFileSync(path.join(__dirname, 'argv.json'), JSON.stringify(argv));
+const configPath = argv[argv.indexOf('--mcp-config') + 1];
+fs.writeFileSync(path.join(__dirname, 'mcp-at-spawn.json'), fs.readFileSync(configPath, 'utf8'));
 console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, duration_ms: 1, total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 }, result: 'ok' }));
 process.exit(0);
 `;
@@ -595,22 +597,29 @@ process.exit(0);
       });
       expect(runsRes.status).toBe(202);
       const { runId } = (await runsRes.json()) as { runId: string };
-      await waitForRunStatus(baseUrl, runId);
+      expect((await waitForRunStatus(baseUrl, runId)).status).toBe('succeeded');
 
       const dataRoot = process.env.OD_DATA_DIR ?? join(process.cwd(), '.od');
-      const mcpFile = join(dataRoot, 'claude-mcp-config', `${id}.json`);
-      const written = JSON.parse(await fsp.readFile(mcpFile, 'utf8'));
+      const recordedRoot = process.env.PATH!.split(delimiter)[0]!;
+      const written = JSON.parse(await fsp.readFile(join(recordedRoot, 'mcp-at-spawn.json'), 'utf8'));
       expect(written.mcpServers['imported-sse']).toMatchObject({ type: 'sse' });
+      expect(written.mcpServers['open-design-run']).toMatchObject({
+        type: 'http', url: `${baseUrl}/mcp`, headers: { Authorization: 'Bearer ${OD_TOOL_TOKEN}' },
+      });
       const argv = JSON.parse(
-        await fsp.readFile(join(process.env.PATH!.split(delimiter)[0]!, 'argv.json'), 'utf8'),
+        await fsp.readFile(join(recordedRoot, 'argv.json'), 'utf8'),
       ) as string[];
-      expect(argv[argv.indexOf('--mcp-config') + 1]).toBe(mcpFile);
+      expect(argv).toContain('--mcp-config');
+      const mcpFile = argv[argv.indexOf('--mcp-config') + 1]!;
+      const relativeConfig = relative(join(dataRoot, 'runtime-mcp'), mcpFile);
+      expect(isAbsolute(relativeConfig)).toBe(false);
+      expect(relativeConfig.startsWith('..')).toBe(false);
+      expect(existsSync(mcpFile)).toBe(false);
       expect(argv).not.toContain('--strict-mcp-config');
       expect(existsSync(join(externalDir, '.mcp.json'))).toBe(false);
       expect(await fsp.readFile(join(externalDir, '.git', 'info', 'exclude'), 'utf8')).toContain(
         '# OpenDesign staging (local, not committed)\n.od-skills/\n.od-frames/\n',
       );
-      rmSync(mcpFile, { force: true });
     }, recordingScript);
   }, 60_000);
 
@@ -712,7 +721,7 @@ require('node:readline').createInterface({ input: process.stdin }).once('line', 
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        agentId: 'codex',
+        agentId: 'aider',
         projectId: id,
         message: 'bad tools',
         toolBundle: {
@@ -731,7 +740,7 @@ require('node:readline').createInterface({ input: process.stdin }).once('line', 
       error?: { message?: string };
     };
     expect(unsupportedRuntimeBody.error?.message).toContain(
-      'Codex CLI (codex) does not support run-scoped MCP tool bundles',
+      'Aider (aider) does not support run-scoped MCP tool bundles',
     );
     const messagesRes = await fetch(
       `${baseUrl}/api/projects/${id}/conversations/${conversationId}/messages`,
@@ -746,7 +755,7 @@ require('node:readline').createInterface({ input: process.stdin }).once('line', 
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        agentId: 'hermes',
+        agentId: 'kilo',
         projectId: id,
         message: 'bad remote tools',
         toolBundle: {
@@ -765,7 +774,7 @@ require('node:readline').createInterface({ input: process.stdin }).once('line', 
       error?: { message?: string };
     };
     expect(unsupportedTransportBody.error?.message).toContain(
-      'Hermes (hermes) only supports stdio run-scoped MCP servers',
+      'Kilo (kilo) only supports stdio run-scoped MCP servers',
     );
   });
 

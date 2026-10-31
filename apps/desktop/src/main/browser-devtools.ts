@@ -6,6 +6,11 @@ import {
 } from "@open-design/contracts";
 import type { OpenDesignHostBrowserDevtoolsOperation } from "@open-design/host";
 import type { WebContents } from "electron";
+import { createHash, randomUUID } from "node:crypto";
+import { addInteractionEvidence, boundPerformanceReport, buildPerformanceReport } from "./browser-performance.js";
+import { addLoadEvidence, collectLoadEvent, createLoadCapture, reconcileLoadSnapshot, type LoadCapture } from "./browser-performance-load.js";
+import { addRenderingEvidence, appendMatchedCss, clsSessions, collectMatchedCss, type RenderTarget, type StyleSheetLocation } from "./browser-performance-rendering.js";
+import type { BrowserPerformanceEnvironment, BrowserPerformanceRestoration } from "@open-design/contracts";
 
 // Named DevTools actions for the in-app browser. Each one is a bounded use of
 // CDP on the tab's existing debugger session: no raw passthrough, no new port.
@@ -16,6 +21,7 @@ type Send = (method: string, params?: UnknownRecord) => Promise<UnknownRecord>;
 type ActionResult = { ok: true; value: unknown } | { ok: false; reason: string };
 
 const MAX_TRACE_EVENTS = 400_000;
+const MAX_TRACE_BYTES = 16 * 1_048_576;
 const MAX_TRACKED_ANIMATIONS = 200;
 const MAX_TRACKED_ISSUES = 200;
 const MAX_A11Y_NODES = 2_000;
@@ -70,6 +76,16 @@ type TraceEvent = {
 };
 
 type Recording = {
+  reportId: string;
+  environment: BrowserPerformanceEnvironment;
+  reasons: Set<string>;
+  retainedBytes: number;
+  traceComplete: boolean;
+  collecting: boolean;
+  sampleCpu: boolean;
+  load: LoadCapture;
+  settingsRevision: number;
+  cpuOverride: { priorCpu: number; appliedCpu: number; ownedRevision: number; pending: Promise<void> } | null;
   startedAt: number;
   maxMs: number;
   visible: boolean;
@@ -95,8 +111,17 @@ export type DevtoolsState = {
   versions: Map<string, UnknownRecord>;
   workerErrors: UnknownRecord[];
   recording: Recording | null;
+  /** Remains fenced after timeout until Chromium acknowledges the old trace ended. */
+  tracingOwner: Recording | null;
+  profilingOwner: Recording | null;
+  hostActive: boolean | null;
+  settingsRevision: number;
+  cpuRevision: number;
+  cpuCleanup: Promise<void> | null;
+  starting: boolean;
   // A report the auto-stop finished before render-stop asked for it.
   lastReport: unknown;
+  styleSheets: Map<string, StyleSheetLocation>;
 };
 
 export function createDevtoolsState(): DevtoolsState {
@@ -109,8 +134,16 @@ export function createDevtoolsState(): DevtoolsState {
     forcedStates: new Map(),
     issues: [],
     lastReport: null,
+    styleSheets: new Map(),
     overlays: null,
     recording: null,
+    tracingOwner: null,
+    profilingOwner: null,
+    hostActive: null,
+    settingsRevision: 0,
+    cpuRevision: 0,
+    cpuCleanup: null,
+    starting: false,
     registrations: new Map(),
     throttle: null,
     versions: new Map(),
@@ -151,29 +184,62 @@ function selectorParam(params: UnknownRecord, key: string): string | undefined |
   return typeof value === "string" && value.trim() && value.length <= MAX_SELECTOR_LENGTH ? value.trim() : undefined;
 }
 
+/** A retained webview can report visible even when the host selected another panel. */
+export function updateDevtoolsHostActivity(state: DevtoolsState, active: boolean): void {
+  state.hostActive = active;
+  if (!active && state.recording) {
+    state.recording.reasons.add("target-hidden");
+    state.recording.visible = false;
+    state.recording.environment.visible = false;
+  }
+}
+
 /** Stops timers when the guest goes away. */
 export function disposeDevtoolsState(state: DevtoolsState): void {
   if (state.recording?.timer) clearTimeout(state.recording.timer);
+  if (state.recording) {
+    state.recording.reasons.add("target-detached");
+    state.recording.markComplete();
+  }
   state.recording = null;
+  state.tracingOwner = null;
+  state.profilingOwner = null;
 }
 
 /** Collects the CDP events that devtools actions report on later. */
 export function onDevtoolsEvent(state: DevtoolsState, method: string, payload: UnknownRecord): void {
+  if (method === "CSS.styleSheetAdded" && isRecord(payload.header) && typeof payload.header.styleSheetId === "string") {
+    state.styleSheets.set(payload.header.styleSheetId, { url: stringValue(payload.header.sourceURL) ?? "",
+      startLine: finiteNumber(payload.header.startLine) ?? 0, startColumn: finiteNumber(payload.header.startColumn) ?? 0 });
+    if (state.styleSheets.size > 200) state.styleSheets.delete(state.styleSheets.keys().next().value!);
+  }
+  if (method === "CSS.styleSheetRemoved" && typeof payload.styleSheetId === "string") state.styleSheets.delete(payload.styleSheetId);
+  if (state.recording?.collecting) collectLoadEvent(state.recording.load, method, payload);
   if (method === "Tracing.dataCollected") {
-    const recording = state.recording;
-    if (!recording || !Array.isArray(payload.value)) return;
+    const recording = state.tracingOwner;
+    if (!recording?.collecting || !Array.isArray(payload.value)) return;
     for (const event of payload.value) {
-      if (recording.events.length >= MAX_TRACE_EVENTS) {
+      const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
+      if (recording.events.length >= MAX_TRACE_EVENTS || recording.retainedBytes + bytes > MAX_TRACE_BYTES) {
         recording.droppedEvents += 1;
         continue;
       }
       recording.events.push(event as TraceEvent);
+      recording.retainedBytes += bytes;
     }
     return;
   }
   if (method === "Tracing.tracingComplete") {
-    state.recording?.markComplete();
+    const owner = state.tracingOwner;
+    if (owner) {
+      owner.traceComplete = true;
+      owner.markComplete();
+      state.tracingOwner = null;
+    }
     return;
+  }
+  if (method === "Page.frameNavigated" && isRecord(payload.frame) && !payload.frame.parentId) {
+    state.recording?.reasons.add("document-changed");
   }
   if (method === "Animation.animationStarted" && isRecord(payload.animation)) {
     const animation = summarizeAnimation(payload.animation);
@@ -265,10 +331,12 @@ async function ensureDomain(send: Send, state: DevtoolsState, domain: string): P
   state.enabled.add(domain);
 }
 
-async function queryNode(send: Send, selector: string): Promise<{ nodeId: number; backendNodeId: number } | null> {
-  const document = await send("DOM.getDocument", { depth: 0, pierce: true });
-  const root = isRecord(document.root) ? document.root : {};
-  const rootNodeId = finiteNumber(root.nodeId);
+async function queryNode(send: Send, selector: string, rootNodeId?: number): Promise<{ nodeId: number; backendNodeId: number } | null> {
+  if (rootNodeId === undefined) {
+    const document = await send("DOM.getDocument", { depth: 0, pierce: true });
+    const root = isRecord(document.root) ? document.root : {};
+    rootNodeId = finiteNumber(root.nodeId);
+  }
   if (rootNodeId === undefined) return null;
   const result = await send("DOM.querySelector", { nodeId: rootNodeId, selector });
   const nodeId = finiteNumber(result.nodeId);
@@ -322,30 +390,51 @@ const __odSel = (node) => {
   return parts.join(' > ');
 };`;
 
-const RENDER_OBSERVER_START = `(() => {
+const renderObserverStart = (captureId: string, bindingName: string, beforeLoad = false) => `(() => {
+  if (window.top !== window) return null;
 ${PAGE_SELECTOR_HELPER}
   const prior = window.__odRender;
-  if (prior) prior.observers.forEach((o) => o.disconnect());
-  const data = { shifts: [], loaf: [], observers: [] };
+  if (prior) {
+    prior.observers.forEach((o) => o.disconnect());
+    document.removeEventListener('visibilitychange', prior.visibilityListener);
+  }
+  const data = { captureId: ${JSON.stringify(captureId)}, observerStartedAtMs: performance.now(), beforeLoad: ${beforeLoad}, lcp: null, shifts: [], droppedShifts: 0, loaf: [], inputs: [], droppedInputs: 0, inputSupported: PerformanceObserver.supportedEntryTypes.includes('event'), observers: [], flushers: [], timeOriginMs: performance.timeOrigin, visible: document.visibilityState === 'visible', hidden: document.visibilityState !== 'visible' };
+  const emit = (kind, entry) => { try { const binding = window[${JSON.stringify(bindingName)}];
+    if (typeof binding === 'function') binding(JSON.stringify({ kind, entry, timeOriginMs: performance.timeOrigin })); } catch {} };
+  emit('document', { atMs: data.observerStartedAtMs, beforeLoad: data.beforeLoad, lcpSupported: PerformanceObserver.supportedEntryTypes.includes('largest-contentful-paint'), shiftSupported: PerformanceObserver.supportedEntryTypes.includes('layout-shift') });
+  data.visibilityListener = () => { if (document.visibilityState !== 'visible') data.hidden = true; };
+  document.addEventListener('visibilitychange', data.visibilityListener);
   const watch = (type, fn) => {
     if (!PerformanceObserver.supportedEntryTypes.includes(type)) return;
     const observer = new PerformanceObserver((list) => list.getEntries().forEach(fn));
-    observer.observe({ type, buffered: false });
+    observer.observe({ type, buffered: false, ...(type === 'event' ? { durationThreshold: 16 } : {}) });
     data.observers.push(observer);
+    data.flushers.push(() => observer.takeRecords().forEach(fn));
   };
-  watch('layout-shift', (e) => data.shifts.length < 200 && data.shifts.push({
+  watch('event', (e) => {
+    if (data.inputs.length >= 200) { data.droppedInputs++; return; }
+    const input = { atMs: e.startTime, durationMs: e.duration, interactionId: e.interactionId || 0,
+      processingStartMs: e.processingStart, processingEndMs: e.processingEnd };
+    data.inputs.push(input); emit('input', input);
+  });
+  watch('largest-contentful-paint', (e) => { const n = performance.getEntriesByType('navigation')[0];
+    data.lcp = { atMs: e.startTime, size: e.size, url: (e.url || '').slice(0, 8192), navigation: n ? { responseStart: n.responseStart } : {} };
+    emit('lcp', data.lcp); });
+  watch('layout-shift', (e) => { if (data.shifts.length >= 200) { if (++data.droppedShifts === 1) emit('shift-dropped', {}); return; } const shift = {
     atMs: Math.round(e.startTime), value: e.value, hadRecentInput: e.hadRecentInput,
     sources: (e.sources || []).map((s) => ({ element: __odSel(s.node),
       from: s.previousRect && [Math.round(s.previousRect.x), Math.round(s.previousRect.y), Math.round(s.previousRect.width), Math.round(s.previousRect.height)],
       to: s.currentRect && [Math.round(s.currentRect.x), Math.round(s.currentRect.y), Math.round(s.currentRect.width), Math.round(s.currentRect.height)] })),
-  }));
+  }; data.shifts.push(shift); emit('shift', { atMs: shift.atMs, value: shift.value, hadRecentInput: shift.hadRecentInput }); });
   watch('long-animation-frame', (e) => data.loaf.length < 100 && data.loaf.push({
     atMs: Math.round(e.startTime), durationMs: Math.round(e.duration), blockingMs: Math.round(e.blockingDuration || 0),
     scripts: (e.scripts || []).slice(0, 5).map((s) => ({ invoker: s.invoker, source: s.sourceURL ? s.sourceURL.slice(0, 200) : '',
       fn: s.sourceFunctionName || '', durationMs: Math.round(s.duration), forcedLayoutMs: Math.round(s.forcedStyleAndLayoutDuration || 0) })),
   }));
   window.__odRender = data;
-  return document.visibilityState === 'visible';
+  return { visible: data.visible, timeOriginMs: data.timeOriginMs, width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio,
+    observerStartedAtMs: data.observerStartedAtMs, lcpSupported: PerformanceObserver.supportedEntryTypes.includes('largest-contentful-paint'), shiftSupported: PerformanceObserver.supportedEntryTypes.includes('layout-shift'),
+    reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches };
 })()`;
 
 // CDP only reports animations that start while it listens, so the page lists
@@ -363,15 +452,27 @@ const __odAnimations = () => document.getAnimations().slice(0, 100).map((a) => {
     playState: a.playState, properties: [...properties] };
 });`;
 
-const RENDER_OBSERVER_STOP = `(() => {
+const renderObserverStop = (captureId: string) => `(() => {
 ${PAGE_SELECTOR_HELPER}
 ${PAGE_ANIMATIONS}
   const data = window.__odRender;
   const animations = __odAnimations();
-  if (!data) return { shifts: [], loaf: [], animations };
+  if (!data || data.captureId !== ${JSON.stringify(captureId)}) return { shifts: [], loaf: [], animations: [], observerAvailable: false };
+  data.flushers.forEach((flush) => flush());
   data.observers.forEach((o) => o.disconnect());
+  document.removeEventListener('visibilitychange', data.visibilityListener);
   delete window.__odRender;
-  return { shifts: data.shifts, loaf: data.loaf, animations };
+  // The parser preload scanner can start requests before a new-document script executes.
+  const resources = performance.getEntriesByType('resource').filter((r) => data.beforeLoad || r.startTime >= data.observerStartedAtMs).slice(0, 200).map((r) => ({
+    url: r.name.slice(0, 8192), initiatorType: r.initiatorType, startTime: r.startTime, duration: r.duration,
+    domainLookupStart: r.domainLookupStart, domainLookupEnd: r.domainLookupEnd, connectStart: r.connectStart, connectEnd: r.connectEnd,
+    secureConnectionStart: r.secureConnectionStart, requestStart: r.requestStart, responseStart: r.responseStart, responseEnd: r.responseEnd,
+    transferSize: r.transferSize, encodedBodySize: r.encodedBodySize, responseStatus: r.responseStatus, fromCache: r.deliveryType === 'cache' ? true : null,
+  }));
+  return { shifts: data.shifts, droppedShifts: data.droppedShifts, loaf: data.loaf, inputs: data.inputs, droppedInputs: data.droppedInputs, inputSupported: data.inputSupported, shiftSupported: PerformanceObserver.supportedEntryTypes.includes('layout-shift'),
+    observerStartedAtMs: data.observerStartedAtMs, beforeLoad: data.beforeLoad, lcp: data.lcp, resources,
+    lcpSupported: PerformanceObserver.supportedEntryTypes.includes('largest-contentful-paint'),
+    animations, observerAvailable: true, observedAtMs: performance.now(), timeOriginMs: data.timeOriginMs, visible: !data.hidden && document.visibilityState === 'visible' };
 })()`;
 
 const PAGE_ANIMATIONS_SCRIPT = `(() => {
@@ -406,6 +507,11 @@ ${PAGE_SELECTOR_HELPER}
   const [lcp, shifts, events] = await Promise.all([buffered('largest-contentful-paint'), buffered('layout-shift'), buffered('event')]);
   const lastLcp = lcp[lcp.length - 1];
   const worstEvent = events.filter((e) => e.interactionId).sort((a, b) => b.duration - a.duration)[0];
+  let cls = 0, session = 0, firstShift = -Infinity, lastShift = -Infinity;
+  for (const shift of shifts.filter((e) => !e.hadRecentInput).sort((a, b) => a.startTime - b.startTime)) {
+    if (shift.startTime - lastShift >= 1000 || shift.startTime - firstShift >= 5000) { firstShift = shift.startTime; session = 0; }
+    session += shift.value; lastShift = shift.startTime; cls = Math.max(cls, session);
+  }
   return {
     ttfbMs: nav ? Math.round(nav.responseStart) : null,
     fcpMs: paint['first-contentful-paint'] ?? null,
@@ -413,8 +519,10 @@ ${PAGE_SELECTOR_HELPER}
     loadMs: nav ? Math.round(nav.loadEventEnd) : null,
     lcpMs: lastLcp ? Math.round(lastLcp.startTime) : null,
     lcpElement: lastLcp ? __odSel(lastLcp.element) : null,
-    cls: Math.round(shifts.filter((e) => !e.hadRecentInput).reduce((sum, e) => sum + e.value, 0) * 1000) / 1000,
-    inpMs: worstEvent ? Math.round(worstEvent.duration) : null,
+    cls: Math.round(cls * 1000) / 1000,
+    inpMs: null,
+    observedInteractionLatencyMs: worstEvent ? Math.round(worstEvent.duration) : null,
+    interactionTimingNote: 'Observed buffered event latency; not a complete INP measurement.',
     inpEvent: worstEvent ? worstEvent.name : null,
     requests: resources.length,
     transferKB: Math.round(resources.reduce((sum, r) => sum + (r.transferSize || 0), 0) / 1024),
@@ -540,23 +648,22 @@ export function analyzeRendering(input: {
   const p95 = sortedIntervals.length > 0 ? sortedIntervals[Math.min(sortedIntervals.length - 1, Math.floor(sortedIntervals.length * 0.95))] ?? null : null;
 
   const shifts = input.page.shifts.filter((shift) => shift.hadRecentInput !== true);
-  const cls = round(shifts.reduce((sum, shift) => sum + (finiteNumber(shift.value) ?? 0), 0), 4);
+  const cls = round(clsSessions(shifts.map((shift) => ({ atMs: finiteNumber(shift.atMs) ?? 0,
+    value: finiteNumber(shift.value) ?? 0, hadRecentInput: shift.hadRecentInput === true }))).cls, 4);
   const shiftedElements = [...new Set(shifts.flatMap((shift) =>
     (Array.isArray(shift.sources) ? shift.sources : []).map((source) => (isRecord(source) ? stringValue(source.element) : undefined)).filter(Boolean)))];
 
   const costlyAnimations = input.animations.filter((animation) => Array.isArray(animation.costlyProperties));
   const verdicts: string[] = [];
+  if (tasks.length === 0) verdicts.push("Insufficient evidence: no usable renderer tasks were captured.");
   if (!input.visible) verdicts.push("The tab was not visible, so frame and paint numbers are not meaningful. Show the tab and record again.");
   if (cls > 0.1) verdicts.push(`Layout shift: CLS ${cls} (needs work above 0.1, poor above 0.25). Moved: ${shiftedElements.slice(0, 5).join(", ") || "unknown"}.`);
   else if (cls > 0) verdicts.push(`Minor layout shift: CLS ${cls}. Moved: ${shiftedElements.slice(0, 5).join(", ")}.`);
   if (longTasks.length > 0) verdicts.push(`${longTasks.length} long task(s) over ${LONG_TASK_MS} ms, longest ${longTasks[0]?.durationMs} ms. The page cannot respond to input during these.`);
-  if (thrash.length > 0) verdicts.push(`Layout thrash: one task ran ${thrash[0]?.layouts} layouts. Script is reading layout (offsetWidth, getBoundingClientRect) right after writing styles.`);
+  if (thrash.length > 0) verdicts.push(`Possible layout thrash: one task ran ${thrash[0]?.layouts} layouts. Repeated layout is observed; read-after-write causation is not established.`);
   if (framesWithLayout > 0) verdicts.push(`${framesWithLayout} animation frame(s) triggered layout. Animate transform or opacity instead of left, top, width or height.`);
   for (const animation of costlyAnimations.slice(0, 5)) {
     verdicts.push(`Animation "${String(animation.name || animation.id || "")}"${animation.element ? ` on ${String(animation.element)}` : ""} animates ${(animation.costlyProperties as string[]).join(", ")}, which repaints every frame. Prefer transform or opacity.`);
-  }
-  if (input.visible && intervals.length >= 10 && slowFrames / intervals.length > 0.1) {
-    verdicts.push(`Jank: ${slowFrames} of ${intervals.length} frames took longer than 33 ms (below 30 fps).`);
   }
   if (input.droppedEvents > 0) verdicts.push(`The recording was cut after ${MAX_TRACE_EVENTS} trace events. Record a shorter interaction.`);
   if (verdicts.length === 0) verdicts.push("No rendering problems found during the recording.");
@@ -570,6 +677,7 @@ export function analyzeRendering(input: {
       fps: input.visible ? round(drawn.length / seconds, 1) : null,
       slowFrames,
       p95FrameMs: p95 === null ? null : round(p95, 1),
+      note: "Observed draw intervals; idle gaps do not prove dropped frames or display refresh rate.",
     },
     longTasks,
     layout: { count: layouts.length, totalMs: totalMs(layouts), thrash, animationFramesWithLayout: framesWithLayout },
@@ -582,66 +690,289 @@ export function analyzeRendering(input: {
   };
 }
 
-async function stopRecording(send: Send, state: DevtoolsState, recording: Recording): Promise<unknown> {
+function stopRecording(send: Send, state: DevtoolsState, recording: Recording): Promise<unknown> {
+  // Publish the promise synchronously so explicit stop and auto-stop share one owner.
+  recording.report ??= finishRecording(send, state, recording);
+  return recording.report;
+}
+
+const CAPTURE_TIMEOUT = Symbol("capture-timeout");
+
+/** Bound host cleanup independently of whether a renderer can execute JavaScript. */
+async function captureDeadline<T>(operation: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([operation, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(CAPTURE_TIMEOUT), milliseconds);
+    })]);
+  } finally { if (timer) clearTimeout(timer); }
+}
+
+async function cleanupLoadObserver(send: Send, load: LoadCapture): Promise<boolean> {
+  const results = await Promise.allSettled([
+    ...(load.scriptId ? [captureDeadline(send("Page.removeScriptToEvaluateOnNewDocument", { identifier: load.scriptId }), 2_000)] : []),
+    captureDeadline(send("Runtime.removeBinding", { name: load.bindingName }), 2_000),
+  ]);
+  return results.every((result) => result.status === "fulfilled");
+}
+
+async function captureThrottle(send: Send, state: DevtoolsState, params: UnknownRecord): Promise<ActionResult> {
+  const recording = state.recording;
+  if (!recording || state.starting || recording.report || params.reportId !== recording.reportId) return { ok: false, reason: "capture is not actively recording with this report ID" };
+  const cpu = finiteNumber(params.cpu);
+  if (cpu === undefined || cpu < 1 || cpu > 20) return invalid("cpu must be a slowdown factor 1-20");
+  if (recording.cpuOverride) return { ok: false, reason: "this capture already used its temporary CPU override" };
+  const override = { priorCpu: state.throttle?.cpu ?? 1, appliedCpu: cpu, ownedRevision: ++state.cpuRevision, pending: Promise.resolve() };
+  recording.cpuOverride = override;
+  recording.environment.appliedCpuThrottle = cpu;
+  recording.reasons.add("cpu-override-during-capture");
+  override.pending = send("Emulation.setCPUThrottlingRate", { rate: cpu }).then(() => {
+    if (state.cpuRevision === override.ownedRevision) state.throttle = { cpu, network: state.throttle?.network ?? "off" };
+  });
+  try {
+    await captureDeadline(override.pending, 2_000);
+    return { ok: true, value: { reportId: recording.reportId, priorCpu: override.priorCpu, appliedCpu: cpu, restoreOnStop: true } };
+  } catch { return { ok: false, reason: "CPU override acknowledgement failed; capture stop will attempt owned restoration" }; }
+}
+
+async function restoreCaptureCpu(send: Send, state: DevtoolsState, recording: Recording): Promise<BrowserPerformanceRestoration> {
+  const changed = state.settingsRevision !== recording.settingsRevision;
+  const override = recording.cpuOverride;
+  if (!override) return { status: "not-modified-by-capture", settingsChangedDuringCapture: changed };
+  const receipt = { priorCpu: override.priorCpu, appliedCpu: override.appliedCpu, restoredCpu: null, settingsChangedDuringCapture: changed };
+  let restoring = false;
+  // Keep one ordered cleanup alive after the bounded response. A late acknowledgement
+  // must not leave capture-owned slowdown installed or overwrite a newer CPU setting.
+  const restore = override.pending.catch(() => undefined).then(async () => {
+    if (state.cpuRevision !== override.ownedRevision) return false;
+    restoring = true;
+    await send("Emulation.setCPUThrottlingRate", { rate: override.priorCpu });
+    if (state.cpuRevision !== override.ownedRevision) return false;
+    state.cpuRevision++;
+    const network = state.throttle?.network ?? "off";
+    state.throttle = override.priorCpu === 1 && network === "off" ? null : { cpu: override.priorCpu, network };
+    return true;
+  });
+  const cleanup = restore.then(() => undefined, () => undefined).finally(() => { if (state.cpuCleanup === cleanup) state.cpuCleanup = null; });
+  state.cpuCleanup = cleanup;
+  try {
+    const restored = await captureDeadline(restore, 4_000);
+    if (!restored) {
+      recording.reasons.add("cpu-restoration-conflict");
+      return { ...receipt, status: "conflict", reason: "cpu-changed-externally" };
+    }
+    return { ...receipt, status: "restored", restoredCpu: override.priorCpu };
+  } catch {
+    recording.reasons.add("cpu-restoration-failed");
+    return { ...receipt, status: "failed", reason: restoring ? "restore-failed" : "apply-timeout" };
+  }
+}
+async function finishRecording(send: Send, state: DevtoolsState, recording: Recording): Promise<unknown> {
   if (recording.timer) clearTimeout(recording.timer);
   recording.timer = null;
   const durationMs = Date.now() - recording.startedAt;
   let page: { shifts: UnknownRecord[]; loaf: UnknownRecord[] } = { shifts: [], loaf: [] };
   let pageAnimations: UnknownRecord[] = [];
-  try {
-    const value = await evaluateInPage(send, RENDER_OBSERVER_STOP);
-    if (isRecord(value)) {
-      page = {
-        loaf: Array.isArray(value.loaf) ? value.loaf.filter(isRecord) : [],
-        shifts: Array.isArray(value.shifts) ? value.shifts.filter(isRecord) : [],
-      };
-      pageAnimations = Array.isArray(value.animations) ? value.animations.filter(isRecord) : [];
+  let observerAvailable = false;
+  let interactionPage: UnknownRecord = {};
+  let cpuProfile: unknown;
+  const collectPage = async () => {
+    try {
+      const value = await captureDeadline(evaluateInPage(send, renderObserverStop(recording.reportId)), 2_000);
+      if (isRecord(value)) {
+        interactionPage = value;
+        reconcileLoadSnapshot(recording.load, value);
+        observerAvailable = value.observerAvailable === true && (value.timeOriginMs === recording.environment.timeOriginMs ||
+          (typeof value.timeOriginMs === "number" && recording.load.documents.has(value.timeOriginMs)));
+        if (value.visible === false) recording.reasons.add("target-hidden");
+        page = {
+          loaf: Array.isArray(value.loaf) ? value.loaf.filter(isRecord) : [],
+          shifts: Array.isArray(value.shifts) ? value.shifts.filter(isRecord) : [],
+        };
+        pageAnimations = Array.isArray(value.animations) ? value.animations.filter(isRecord) : [];
+      }
+    } catch (error) {
+      recording.reasons.add(error === CAPTURE_TIMEOUT ? "observer-collection-timeout" : "observer-unavailable");
     }
-  } catch {
-    // The page may have navigated away; the trace still has the rendering work.
-  }
-  await send("Tracing.end");
-  await Promise.race([recording.complete, new Promise((resolve) => setTimeout(resolve, 15_000))]);
+  };
+  const endProfile = async () => {
+    if (state.profilingOwner !== recording) return;
+    try {
+      const response = await captureDeadline(send("Profiler.stop").then((value) => {
+        if (state.profilingOwner === recording) state.profilingOwner = null;
+        return value;
+      }), 5_000);
+      cpuProfile = response.profile;
+    } catch (error) {
+      recording.reasons.add(error === CAPTURE_TIMEOUT ? "profiler-stop-timeout" : "profiler-unavailable");
+      // Acknowledged disable is also a safe ownership release; a stalled renderer stays fenced.
+      void send("Profiler.disable").then(() => {
+        if (state.profilingOwner === recording) state.profilingOwner = null;
+        state.enabled.delete("Profiler");
+      }).catch(() => undefined);
+    }
+  };
+  const endTrace = async () => {
+    try {
+      await captureDeadline(Promise.all([send("Tracing.end"), recording.complete]), 5_000);
+    } catch (error) {
+      recording.reasons.add(error === CAPTURE_TIMEOUT ? "trace-completion-timeout" : "trace-stop-failed");
+    }
+  };
+  // Tracing is browser-owned and must end even when page JavaScript never yields.
+  await Promise.all([endTrace(), collectPage(), endProfile()]);
+  const restoration = await restoreCaptureCpu(send, state, recording);
+  if (!await cleanupLoadObserver(send, recording.load)) recording.reasons.add("document-observer-cleanup-failed");
+  recording.collecting = false;
   const animations = mergeAnimations(pageAnimations, [...state.animations.values()]);
-  if (state.recording === recording) state.recording = null;
-  return (state.lastReport = analyzeRendering({
+  const legacy = analyzeRendering({
     animations,
     droppedEvents: recording.droppedEvents,
     durationMs,
     events: recording.events,
     page,
     visible: recording.visible,
-  }));
+  });
+  const streamedInputs = [...recording.load.documents.values()].flatMap((document) => document.inputs.map((input) => ({ ...input, documentId: document.documentId })));
+  if (streamedInputs.length) interactionPage.inputs = streamedInputs;
+  else if (Array.isArray(interactionPage.inputs) && interactionPage.inputs.length) {
+    const document = typeof interactionPage.timeOriginMs === "number" ? recording.load.documents.get(interactionPage.timeOriginMs) : undefined;
+    interactionPage.inputs = interactionPage.inputs.filter(isRecord).map((input) => ({ ...input, documentId: document?.documentId ?? null }));
+    if (!document) recording.reasons.add("input-document-unavailable");
+  }
+  const performanceReport = buildPerformanceReport({ ...recording, durationMs, observerAvailable, main: mainRendererThread(recording.events) });
+  const performanceSources = addInteractionEvidence(performanceReport, cpuProfile, interactionPage, recording.sampleCpu);
+  addLoadEvidence(performanceReport, recording.load);
+  const paintTargets = addRenderingEvidence(performanceReport, { events: recording.events, main: mainRendererThread(recording.events), page: interactionPage, load: recording.load });
+  const selectors = [...new Set(page.shifts.flatMap((shift) => Array.isArray(shift.sources)
+    ? shift.sources.filter(isRecord).map((source) => stringValue(source.element)).filter((selector): selector is string => !!selector && selector.length <= MAX_SELECTOR_LENGTH)
+    : []))].slice(0, 6);
+  if (selectors.length || paintTargets.length) {
+    const deadline = Date.now() + 2_000;
+    const cssSend: Send = (method, params) => Date.now() >= deadline ? Promise.reject(CAPTURE_TIMEOUT) : captureDeadline(send(method, params), Math.min(500, deadline - Date.now()));
+    try {
+      const targets: RenderTarget[] = [];
+      // getDocument discards prior frontend bindings; resolve it once for this CSS batch.
+      const documentRoot = await cssSend("DOM.getDocument", { depth: 0, pierce: true });
+      const rootNodeId = isRecord(documentRoot.root) ? finiteNumber(documentRoot.root.nodeId) : undefined;
+      if (rootNodeId === undefined) throw new Error("DOM document unavailable");
+      for (const selector of selectors) {
+        const node = await queryNode(cssSend, selector, rootNodeId).catch(() => null);
+        if (node && !targets.some((target) => target.backendNodeId === node.backendNodeId)) targets.push({ ...node, selector, label: `target-${node.backendNodeId}` });
+      }
+      const remaining = paintTargets.filter((id) => !targets.some((target) => target.backendNodeId === id)).slice(0, 8 - targets.length);
+      if (remaining.length) {
+        const pushed = await cssSend("DOM.pushNodesByBackendIdsToFrontend", { backendNodeIds: remaining });
+        for (const [index, nodeId] of (Array.isArray(pushed.nodeIds) ? pushed.nodeIds : []).entries()) {
+          if (typeof nodeId === "number" && nodeId > 0 && remaining[index] !== undefined) targets.push({ label: `target-${remaining[index]}`, nodeId, backendNodeId: remaining[index]! });
+        }
+      }
+      const matches = await collectMatchedCss(cssSend, targets, state.styleSheets, performanceSources.length);
+      const document = typeof interactionPage.timeOriginMs === "number" ? recording.load.documents.get(interactionPage.timeOriginMs) : undefined;
+      appendMatchedCss(performanceReport, matches, performanceSources, interactionPage, document?.documentId ?? null);
+      if (!matches.length || matches.some((match) => !match.references.length)) throw new Error("CSS attribution unavailable");
+    } catch {
+      performanceReport.coverage.reasons.push("css-attribution-unavailable");
+      if (performanceReport.completeness !== "failed") performanceReport.completeness = "partial";
+      performanceReport.summary = "Capture incomplete; only retained evidence assessed.";
+    }
+  }
+  performanceReport.restoration = restoration;
+  boundPerformanceReport(performanceReport);
+  recording.events.length = 0;
+  if (state.recording === recording) state.recording = null;
+  return (state.lastReport = { ...legacy, performanceReport, performanceSources });
 }
 
 async function renderStart(send: Send, state: DevtoolsState, params: UnknownRecord): Promise<ActionResult> {
-  if (state.recording) return { ok: false, reason: "a rendering recording is already running; call render-stop first" };
+  if (state.cpuCleanup) return { ok: false, reason: "previous CPU restoration is pending; wait for cleanup or reopen the tab" };
+  if (state.starting || state.recording) return { ok: false, reason: "a rendering recording is already running; call render-stop first" };
+  if (state.tracingOwner) return { ok: false, reason: "previous trace cleanup is pending; wait for tracing completion or reopen the tab" };
+  if (state.profilingOwner) return { ok: false, reason: "previous profiler cleanup is pending; wait for profiling completion or reopen the tab" };
+  state.starting = true;
+  try { return await beginRenderStart(send, state, params); }
+  finally { state.starting = false; }
+}
+
+async function beginRenderStart(send: Send, state: DevtoolsState, params: UnknownRecord): Promise<ActionResult> {
   const requested = params.maxMs === undefined ? DEFAULT_RENDER_MS : finiteNumber(params.maxMs);
   if (requested === undefined || requested < 500 || requested > MAX_RENDER_MS) return invalid(`maxMs must be 500-${MAX_RENDER_MS}`);
+  if (params.sampleCpu !== undefined && typeof params.sampleCpu !== "boolean") return invalid("sampleCpu must be true or false");
   await ensureDomain(send, state, "Animation");
+  await captureDeadline(ensureDomain(send, state, "CSS"), 2_000).catch(() => undefined);
   state.animations.clear();
-  const visible = (await evaluateInPage(send, RENDER_OBSERVER_START)) === true;
+  const reportId = randomUUID();
+  const documentId = `document-${randomUUID()}`;
+  const load = createLoadCapture(reportId, documentId, null);
+  try {
+    await captureDeadline(send("Runtime.addBinding", { name: load.bindingName }), 2_000);
+    const script = await captureDeadline(send("Page.addScriptToEvaluateOnNewDocument", { source: renderObserverStart(reportId, load.bindingName, true) }), 2_000);
+    load.scriptId = typeof script.identifier === "string" ? script.identifier : null;
+    load.preNavigation = load.scriptId !== null;
+    const frameTree = await captureDeadline(send("Page.getFrameTree"), 2_000);
+    if (isRecord(frameTree.frameTree) && isRecord(frameTree.frameTree.frame)) load.mainFrameId = stringValue(frameTree.frameTree.frame.id) ?? "";
+  } catch { /* Report unavailable load instrumentation; retain interaction capture. */ }
+  let metadata: unknown;
+  try { metadata = await captureDeadline(evaluateInPage(send, renderObserverStart(reportId, load.bindingName)), 2_000); }
+  catch (error) { await cleanupLoadObserver(send, load); throw error; }
+  const pageMetadata = isRecord(metadata) ? metadata : {};
+  const visible = pageMetadata.visible === true && state.hostActive !== false;
+  const timeOriginMs = finiteNumber(pageMetadata.timeOriginMs) ?? null;
+  if (timeOriginMs !== null) load.documents.set(timeOriginMs, { documentId, timeOriginMs,
+    observerStartedAtMs: finiteNumber(pageMetadata.observerStartedAtMs) ?? 0, observedBeforeLoad: false,
+    lcpSupported: pageMetadata.lcpSupported === true, shiftSupported: pageMetadata.shiftSupported === true, inputs: [], shifts: [] });
+  const version = await send("Browser.getVersion").catch(() => ({} as UnknownRecord));
   let markComplete = () => {};
   const complete = new Promise<void>((resolve) => { markComplete = resolve; });
   const recording: Recording = {
+    reportId, retainedBytes: 0, traceComplete: false, collecting: true, sampleCpu: params.sampleCpu === true, reasons: new Set(),
+    load, settingsRevision: state.settingsRevision, cpuOverride: null,
+    environment: {
+      browserVersion: typeof version.product === "string" ? version.product.replace(/[^\d.]/g, "").slice(0, 40) : "unknown",
+      viewport: typeof pageMetadata.width === "number" && typeof pageMetadata.height === "number" ? {
+        width: pageMetadata.width, height: pageMetadata.height, deviceScaleFactor: finiteNumber(pageMetadata.deviceScaleFactor) ?? 1,
+      } : null,
+      visible, cpuThrottle: state.throttle?.cpu ?? 1,
+      network: typeof state.throttle?.network === "string" ? state.throttle.network : state.throttle ? "custom" : "off",
+      cacheDisabled: state.cacheDisabled, animationRate: state.animationRate,
+      reducedMotion: typeof pageMetadata.reducedMotion === "boolean" ? pageMetadata.reducedMotion : null,
+      documentId, timeOriginMs,
+      overridesFingerprint: createHash("sha256").update(JSON.stringify({ emulation: state.emulation, throttle: state.throttle,
+        cacheDisabled: state.cacheDisabled, animationRate: state.animationRate, overlays: state.overlays,
+        forcedStates: [...state.forcedStates.entries()].sort(([a], [b]) => a.localeCompare(b)) })).digest("hex"),
+    },
     complete, droppedEvents: 0, events: [], markComplete, maxMs: requested, report: null,
     startedAt: Date.now(), timer: null, visible,
   };
   state.recording = recording;
+  state.tracingOwner = recording;
+  state.lastReport = null;
   try {
     await send("Tracing.start", { transferMode: "ReportEvents", traceConfig: { includedCategories: TRACE_CATEGORIES } });
   } catch (error) {
+    await captureDeadline(evaluateInPage(send, renderObserverStop(reportId)), 2_000).catch(() => undefined);
+    await cleanupLoadObserver(send, load);
     state.recording = null;
+    state.tracingOwner = null;
     throw error;
+  }
+  if (recording.sampleCpu) try {
+    await captureDeadline(ensureDomain(send, state, "Profiler"), 2_000);
+    await captureDeadline(send("Profiler.setSamplingInterval", { interval: 5_000 }), 2_000);
+    state.profilingOwner = recording;
+    await captureDeadline(send("Profiler.start"), 2_000);
+  } catch {
+    recording.reasons.add("profiler-unavailable");
   }
   // A forgotten recording must not trace forever: stop it and keep the report.
   recording.timer = setTimeout(() => {
-    recording.report = stopRecording(send, state, recording).catch((error: unknown) => ({ error: String(error) }));
-  }, requested);
+    void stopRecording(send, state, recording);
+  }, Math.max(0, requested - (Date.now() - recording.startedAt)));
   return {
     ok: true,
     value: {
       recording: true,
+      reportId: recording.reportId,
       maxMs: requested,
       visible,
       next: "Interact with the page (click, scroll, type, eval), then run render-stop.",
@@ -651,10 +982,10 @@ async function renderStart(send: Send, state: DevtoolsState, params: UnknownReco
 }
 
 async function renderStop(send: Send, state: DevtoolsState): Promise<ActionResult> {
+  if (state.starting) return { ok: false, reason: "rendering recording is starting; retry render-stop after render-start finishes" };
   const recording = state.recording;
   const report = recording?.report ? await recording.report : recording ? await stopRecording(send, state, recording) : state.lastReport;
-  state.recording = null;
-  state.lastReport = null;
+  // Keep the last bounded terminal result for retries until the next start.
   return report === null ? { ok: false, reason: "no rendering recording is running; call render-start first" } : { ok: true, value: report };
 }
 
@@ -1085,18 +1416,27 @@ async function throttle(send: Send, state: DevtoolsState, params: UnknownRecord)
       return invalid(`network must be off, offline, ${Object.keys(NETWORK_PRESETS).join(", ")} or { latencyMs, downKbps, upKbps }`);
     }
   }
-  await send("Emulation.setCPUThrottlingRate", { rate: next.cpu });
-  const profile = typeof next.network === "string" ? NETWORK_PRESETS[next.network] : next.network;
-  await send("Network.emulateNetworkConditions", next.network === "offline"
-    ? { downloadThroughput: -1, latency: 0, offline: true, uploadThroughput: -1 }
-    : profile
-      ? { downloadThroughput: (profile.downKbps * 1000) / 8, latency: profile.latencyMs, offline: false, uploadThroughput: (profile.upKbps * 1000) / 8 }
-      : { downloadThroughput: -1, latency: 0, offline: false, uploadThroughput: -1 });
-  state.throttle = next.cpu === 1 && next.network === "off" ? null : next;
+  if (params.cpu !== undefined) {
+    const revision = ++state.cpuRevision;
+    await send("Emulation.setCPUThrottlingRate", { rate: next.cpu });
+    if (state.cpuRevision === revision) state.throttle = { cpu: next.cpu, network: state.throttle?.network ?? "off" };
+  }
+  if (params.network !== undefined) {
+    const profile = typeof next.network === "string" ? NETWORK_PRESETS[next.network] : next.network;
+    await send("Network.emulateNetworkConditions", next.network === "offline"
+      ? { downloadThroughput: -1, latency: 0, offline: true, uploadThroughput: -1 }
+      : profile
+        ? { downloadThroughput: (profile.downKbps * 1000) / 8, latency: profile.latencyMs, offline: false, uploadThroughput: (profile.upKbps * 1000) / 8 }
+        : { downloadThroughput: -1, latency: 0, offline: false, uploadThroughput: -1 });
+    const currentCpu = state.throttle?.cpu ?? 1;
+    state.throttle = currentCpu === 1 && next.network === "off" ? null : { cpu: currentCpu, network: next.network };
+  }
   return { ok: true, value: { throttle: state.throttle, presets: NETWORK_PRESETS } };
 }
 
 async function reset(send: Send, state: DevtoolsState): Promise<ActionResult> {
+  if (state.starting) return { ok: false, reason: "rendering recording is starting; retry reset after render-start finishes" };
+  state.cpuRevision++;
   const errors: string[] = [];
   const attempt = async (label: string, run: () => Promise<unknown>) => {
     try { await run(); } catch (error) { errors.push(`${label}: ${error instanceof Error ? error.message : String(error)}`); }
@@ -1128,7 +1468,7 @@ async function reset(send: Send, state: DevtoolsState): Promise<ActionResult> {
       if (node) await send("CSS.forcePseudoState", { forcedPseudoClasses: [], nodeId: node.nodeId });
     });
   }
-  if (state.throttle) {
+  if (state.throttle || state.cpuCleanup) {
     await attempt("cpu", () => send("Emulation.setCPUThrottlingRate", { rate: 1 }));
     await attempt("network", () => send("Network.emulateNetworkConditions", { downloadThroughput: -1, latency: 0, offline: false, uploadThroughput: -1 }));
   }
@@ -1153,6 +1493,7 @@ export async function executeDevtoolsAction(
   const params = operation.params;
   const url = guest.getURL();
   const action = operation.action as BrowserDevtoolsAction;
+  if (browserDevtoolsActionMutates(action) && action !== "capture-throttle") state.settingsRevision++;
   switch (action) {
     case "status": return { ok: true, value: statusOf(state) };
     case "reset": return reset(send, state);
@@ -1181,5 +1522,6 @@ export async function executeDevtoolsAction(
       return { ok: true, value: { cacheDisabled: state.cacheDisabled } };
     }
     case "throttle": return throttle(send, state, params);
+    case "capture-throttle": return captureThrottle(send, state, params);
   }
 }

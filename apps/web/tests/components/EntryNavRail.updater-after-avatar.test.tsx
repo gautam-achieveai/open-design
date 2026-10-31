@@ -30,7 +30,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EntryNavRail,
-  resetWorkspaceDirectoryCache,
   WorkspaceTopRightAccountCluster,
 } from '../../src/components/EntryNavRail';
 import { UpdaterPopup } from '../../src/components/UpdaterPopup';
@@ -98,9 +97,7 @@ function renderRail(context: WorkspaceCollabContext | null) {
         onViewChange={() => {}}
         onNewProject={() => {}}
         open
-        context={context}
-        billing={null}
-        updaterSlot={<UpdaterPopup />}
+        context={context}        updaterSlot={<UpdaterPopup />}
       />
     </I18nProvider>,
   );
@@ -124,7 +121,6 @@ let restoreHost: (() => void) | null = null;
 
 beforeEach(() => {
   localStorage.clear();
-  resetWorkspaceDirectoryCache();
   stubFetch();
 });
 
@@ -132,7 +128,6 @@ afterEach(() => {
   cleanup();
   restoreHost?.();
   restoreHost = null;
-  resetWorkspaceDirectoryCache();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -148,32 +143,11 @@ async function renderWithDownloadedUpdate(context: WorkspaceCollabContext | null
 }
 
 describe('updater rocket placement after the account avatar', () => {
-  it('shows the shared DeepSeek campaign badge on an unpaid project detail route', () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-08-20T10:00:00.000Z'));
-
-    render(
-      <I18nProvider initial="zh-CN">
-        <WorkspaceTopRightAccountCluster
-          workspaceContextOverride={freeContext()}
-          amrLoggedIn
-          metricsConsent={false}
-          installationId="test-installation"
-        />
-      </I18nProvider>,
-    );
-
-    expect(screen.getByTestId('deepseek-campaign-pricing-badge').textContent).toContain(
-      'DeepSeek V4 Pro + V4 Flash 无限免费用',
-    );
-  });
 
   it('keeps the project-detail updater slot outside the shared account capsule', () => {
     render(
       <I18nProvider initial="zh-CN">
-        <WorkspaceTopRightAccountCluster
-          workspaceContextOverride={teamContext()}
-          updaterSlot={<span data-testid="project-updater-slot-content" />}
+        <WorkspaceTopRightAccountCluster          updaterSlot={<span data-testid="project-updater-slot-content" />}
         />
       </I18nProvider>,
     );
@@ -186,100 +160,6 @@ describe('updater rocket placement after the account avatar', () => {
     expect(slot.closest('.entry-top-right-cluster')).not.toBeNull();
     expect(slot.closest('.entry-top-right-account-pill')).toBeNull();
     expect(screen.queryByTestId('entry-nav-account')).toBeNull();
-  });
-
-  it('renders the rocket at the end of the rail account row, after the avatar and bell', async () => {
-    await renderWithDownloadedUpdate();
-
-    const rocket = screen.getByTestId('entry-nav-updater');
-    const trigger = screen.getByTestId('entry-nav-account');
-
-    // Its own slot, not inside the identity chip.
-    const slot = rocket.closest('[data-testid="entry-nav-account-updater"]');
-    expect(slot, 'rocket must live in the updater slot').not.toBeNull();
-    expect(slot?.contains(trigger)).toBe(false);
-
-    // AFTER the avatar chip, in the same account container at the foot of the
-    // rail. The message-centre bell is a peer of the identity (it used to be
-    // a row behind the account menu), so the row reads trigger -> bell ->
-    // updater slot and nothing else may slip in.
-    const account = trigger.closest('.entry-nav-rail__account');
-    expect(account?.contains(slot as Node)).toBe(true);
-    expect(account?.closest('.entry-nav-rail__account-dock')).not.toBeNull();
-    expect(slot?.closest('.entry-top-right-cluster')).toBeNull();
-    const bell = screen.getByTestId('entry-nav-account-message-center');
-    expect(trigger.nextElementSibling).toBe(bell);
-    expect(bell.nextElementSibling).toBe(slot);
-    expect(
-      trigger.compareDocumentPosition(rocket) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-
-    // The avatar chip itself still carries the account initial, and the row
-    // now names the identity beside it.
-    expect(trigger.querySelector('.entry-nav-rail__account-avatar')?.textContent).toContain('X');
-    expect(trigger.querySelector('.entry-nav-rail__account-name')?.textContent).toBe('XINYU SHANG');
-
-    // The rail footer is no longer the rocket's host.
-    expect(rocket.closest('.entry-nav-rail__footer')).toBeNull();
-  });
-
-  it('keeps the account-menu trigger clickable with the rocket present', async () => {
-    await renderWithDownloadedUpdate();
-
-    const rocket = screen.getByTestId('entry-nav-updater');
-    const trigger = screen.getByTestId('entry-nav-account');
-
-    // Never nested inside the trigger: that would be a button inside a button
-    // and every rocket click would also toggle the account menu.
-    expect(rocket.closest('[data-testid="entry-nav-account"]')).toBeNull();
-    expect(trigger.contains(rocket)).toBe(false);
-
-    fireEvent.click(trigger);
-    // The message-centre row left this menu, so the menu itself is the proxy
-    // for "the trigger still opens".
-    await waitFor(() => expect(screen.getByRole('menu')).toBeTruthy());
-    expect(trigger.getAttribute('aria-expanded')).toBe('true');
-  });
-
-  it('leaves an empty slot at the end of the account row while no update is in flight', async () => {
-    restoreHost = installMockOpenDesignHost({
-      host: { updater: { status: vi.fn(async () => idleStatus()) } },
-    });
-
-    renderRail(teamContext());
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    expect(screen.queryByTestId('entry-nav-updater')).toBeNull();
-    expect(screen.queryByTestId('updater-rocket-glyph')).toBeNull();
-    // The account row still renders its identity — only the rocket is absent.
-    expect(screen.getByTestId('entry-nav-account')).toBeTruthy();
-    // The slot stays mounted but must hold NO element children, which is what
-    // lets `:empty { display: none }` keep it from reserving width and
-    // shifting the row. A stray wrapper here would defeat that rule.
-    const slot = screen.getByTestId('entry-nav-account-updater');
-    expect(slot.children.length).toBe(0);
-    expect(slot.closest('.entry-nav-rail__account')).not.toBeNull();
-  });
-
-  it('falls back to the top-right cluster while a narrow window has auto-collapsed the rail', async () => {
-    // entry-layout.css zeroes the rail track below 1080px; the account row
-    // goes off screen with it, so the rocket must not be parked there.
-    const listeners = new Set<() => void>();
-    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
-      matches: query === '(max-width: 1080px)',
-      media: query,
-      addEventListener: (_type: string, fn: () => void) => listeners.add(fn),
-      removeEventListener: (_type: string, fn: () => void) => listeners.delete(fn),
-    })));
-    await renderWithDownloadedUpdate();
-
-    const rocket = screen.getByTestId('entry-nav-updater');
-    expect(rocket.closest('.entry-top-right-cluster')).not.toBeNull();
-    expect(rocket.closest('.entry-nav-rail__account')).toBeNull();
-    // The account row itself stays in the rail — only the rocket moves.
-    expect(screen.getByTestId('entry-nav-account').closest('.entry-nav-rail__account-dock')).not.toBeNull();
   });
 
   it('keeps the signed-out rocket in the top-right cluster without an account capsule', async () => {

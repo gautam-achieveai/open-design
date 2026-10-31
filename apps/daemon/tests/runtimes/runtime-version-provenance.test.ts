@@ -108,8 +108,8 @@ describe('runtime version provenance', () => {
       .resolves.toEqual({ invocable: true });
   });
 
-  it.runIf(process.platform !== 'win32')(
-    'records the Vela CLI and its OpenCode companion as separate versions',
+  it(
+    'does not detect retired AMR even when legacy executable settings exist',
     async () => {
       const vela = executable('vela', 'vela 0.0.26');
       const opencode = executable('opencode', 'opencode 1.2.3');
@@ -121,12 +121,7 @@ describe('runtime version provenance', () => {
         },
       });
 
-      expect(getDetectedRuntimeVersions('amr')).toEqual({
-        invocable: true,
-        agentCliVersion: 'vela 0.0.26',
-        runtimeCompanionName: 'opencode',
-        runtimeCompanionVersion: 'opencode 1.2.3',
-      });
+      expect(getDetectedRuntimeVersions('amr')).toBeNull();
     },
   );
 });

@@ -10,7 +10,26 @@
 // no-name create path (`handleCreateProjectFromDesignSystem`, the New Project
 // panel's blank pick), which already tag `nameSource: 'generated'`.
 
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+// @vitest-environment jsdom
+//
+// recvpZCr4MAqNQ: a project's name stayed "未命名" forever, even after its
+// first prompt ran and produced real content. Root cause: the Drafts / All-
+// projects empty-state "New project" CTA (`EntryShell.startBlankProjectFromRail`)
+// created a project with the literal placeholder name and NO `nameSource`
+// metadata at all. `canAutoRenameProjectFromPrompt` (utils/projectName.ts)
+// only re-engages for `nameSource: 'generated' | 'prompt'` — a project
+// missing the field entirely fails closed forever, unlike every other blank/
+// no-name create path (`handleCreateProjectFromDesignSystem`, the New Project
+// panel's blank pick), which already tag `nameSource: 'generated'`.
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import {
   buildWorkspacePermissions,
   buildWorkspaceSeatSummary,
@@ -27,11 +46,7 @@ import {
   resetWorkspaceContextCache,
 } from '../../src/collab/useWorkspaceContext';
 import { workspaceDirectoryFixture } from '../helpers/workspace-context';
-import {
-  fetchProjectFiles,
-  invalidateProjectFilesCache,
-} from '../../src/providers/registry';
-
+import { fetchProjectFiles, invalidateProjectFilesCache } from '../../src/providers/registry';
 
 const originalFetch = globalThis.fetch;
 const originalResizeObserver = globalThis.ResizeObserver;
@@ -175,7 +190,7 @@ function renderAt(path: string, overrides: Partial<React.ComponentProps<typeof E
     onRefreshAgents: vi.fn(() => [cliAgent()]),
     onCreateProject: vi.fn(() => Promise.resolve(true)),
     onBeginProjectCreation: () => ({ projectId: 'optimistic-project', rollback: () => undefined }),
-    onAmrBalanceGateBlockChange: () => undefined,
+
     onCreatePluginShareProject: vi.fn(),
     onImportClaudeDesign: vi.fn(),
     onOpenProject: vi.fn(),
@@ -753,12 +768,11 @@ describe('EntryShell team project content readiness', () => {
         }),
       });
     });
-    // Barrier: the member switch must land in the shell before the click
-    // below, or it would capture wm-1. The account name is no longer rendered
-    // as visible text (320a36ac1 made the trigger avatar-only and moved the
-    // name into the hover menu) — it survives as the trigger's aria-label,
-    // which is the same value in the always-mounted chrome.
-    expect(await screen.findByLabelText('Member B')).toBeTruthy();
+    // The account avatar was retired. The scoped event subscription proves
+    // the new membership reached the shell before the subsequent click.
+    await waitFor(() => expect(MockWorkspaceEventSource.instances.some((source) =>
+      new URL(source.url, 'http://d.local').searchParams.get('workspaceMemberId') === 'wm-2',
+    )).toBe(true));
 
     fireEvent.click(screen.getByTitle('Ready shared project'));
     await waitFor(() => expect(onOpenProject).toHaveBeenCalledWith(
@@ -801,10 +815,10 @@ describe('EntryShell team project content readiness', () => {
     renderAt('/all-projects', { onTeamProjectContentReady });
 
     await waitFor(() => expect(MockWorkspaceEventSource.instances).toHaveLength(1));
-    // Barrier: wait for the workspace context to land before dispatching the
-    // readiness event. Read it off the account trigger's aria-label — the
-    // avatar-only trigger (320a36ac1) no longer prints the name as text.
-    await screen.findByLabelText('Ma Shu');
+    // The scoped subscription is the readiness barrier, independent of the
+    // retired account avatar. Keep the catalog response pending below.
+    expect(new URL(MockWorkspaceEventSource.instances[0]!.url, 'http://d.local')
+      .searchParams.get('workspaceMemberId')).toBe('wm-1');
     act(() => {
       MockWorkspaceEventSource.instances[0]!.dispatch('team-project-content-ready', {
         type: 'team-project-content-ready',

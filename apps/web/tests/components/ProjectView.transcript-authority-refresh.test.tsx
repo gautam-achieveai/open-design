@@ -38,10 +38,6 @@ vi.mock('../../src/providers/daemon', () => ({
   streamViaDaemon: vi.fn(),
 }));
 vi.mock('../../src/providers/project-events', () => ({ useProjectFileEvents: vi.fn() }));
-vi.mock('../../src/runtime/amr-balance-gate', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/runtime/amr-balance-gate')>()),
-  checkAmrBalanceGate: vi.fn().mockResolvedValue({ kind: 'allow' }),
-}));
 vi.mock('../../src/collab/useWorkspaceContext', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/collab/useWorkspaceContext')>()),
   useWorkspaceContext: () => ({ context: workspace.caller, loading: false }),

@@ -158,4 +158,34 @@ describe('artifact card registration without an optional artifact-focus marker',
     expect(document.querySelectorAll('[data-artifact-card]')).toHaveLength(1);
     expect(document.querySelectorAll('[data-testid="file-ops-summary"]')).toHaveLength(1);
   });
+
+  it('withholds a pending artifact placeholder in Build mode', () => {
+    renderMessage(
+      message({
+        sessionMode: 'build',
+        runStatus: 'running',
+        events: writeEvents(false),
+        producedFiles: undefined,
+      }),
+      true,
+    );
+
+    expect(screen.queryByTestId(`artifact-card-${FILE_NAME}`)).toBeNull();
+    expect(screen.queryByTestId('file-ops-summary')).toBeNull();
+  });
+
+  it('shows the real Build-mode artifact once the write completes', () => {
+    renderMessage(
+      message({
+        sessionMode: 'build',
+        runStatus: 'running',
+        events: writeEvents(true),
+        producedFiles: undefined,
+      }),
+      true,
+    );
+
+    expect(screen.getByTestId(`artifact-card-${FILE_NAME}`)).toBeTruthy();
+    expect(document.querySelectorAll('[data-artifact-card]')).toHaveLength(1);
+  });
 });

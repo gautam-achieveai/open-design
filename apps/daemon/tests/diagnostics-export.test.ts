@@ -137,7 +137,7 @@ describe('diagnostics export handler — non-sidecar launch', () => {
     ).toEqual([]);
   });
 
-  it('reports the AMR session from the Settings-backed agent environment', async () => {
+  it('does not activate a retired AMR session from saved Settings credentials', async () => {
     const dataDir = join(tmpdir(), `od-diag-amr-settings-${randomUUID()}`);
     const runtimeKey = 'settings-only-runtime-key';
     try {
@@ -176,9 +176,8 @@ describe('diagnostics export handler — non-sidecar launch', () => {
         };
       };
       expect(runtimeHealth.amr).toMatchObject({
-        profile: 'local',
-        loggedIn: true,
-        sessionState: 'authenticated',
+        loggedIn: false,
+        sessionState: 'signed_out',
         credentialRevision: expect.any(String),
       });
       expect(runtimeHealthRaw).not.toContain(runtimeKey);

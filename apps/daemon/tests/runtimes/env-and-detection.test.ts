@@ -5,7 +5,7 @@ import { delimiter, dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as platform from '@open-design/platform';
 import {
-  antigravity, assert, chmodSync, detectAgents, detectAgentsStream, inspectAgentExecutableResolution, join, minimalAgentDef, mkdirSync, mkdtempSync, opencode, resolveAgentExecutable, rmSync, spawnEnvForAgent, tmpdir, withEnvSnapshot, withPlatform, writeFileSync,
+  antigravity, assert, chmodSync, detectAgents, detectAgentsStream, inspectAgentExecutableResolution, join, minimalAgentDef, mkdirSync, mkdtempSync, opencode, resolveAgentExecutable, rmSync, spawnEnvForAgent, tmpdir, withEnvSnapshot, withPlatform, writeFakeCli, writeFileSync,
 } from './helpers/test-helpers.js';
 import { isCursorAuthFailureText } from '../../src/runtimes/auth.js';
 import { agentCapabilities } from '../../src/runtimes/capabilities.js';
@@ -173,21 +173,9 @@ test('spawnEnvForAgent reapplies sandbox state roots after configured env overri
       join(dataDir, 'sandbox', 'config', 'claude'),
     );
 
-    const amrEnv = spawnEnvForAgent(
-      'amr',
-      {
-        OD_DATA_DIR: dataDir,
-        OD_SANDBOX_MODE: '1',
-        PATH: '/usr/bin',
-      },
-      {
-        OPENCODE_TEST_HOME: '/Users/test/.opencode-host',
-      },
-    );
-    assert.equal(
-      amrEnv.OPENCODE_TEST_HOME,
-      join(dataDir, 'sandbox', 'agent-home', '.opencode'),
-    );
+    assert.throws(() => spawnEnvForAgent('amr', {
+      OD_DATA_DIR: dataDir, OD_SANDBOX_MODE: '1', PATH: '/usr/bin',
+    }), /Cloud runtime has been removed/);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
@@ -335,106 +323,31 @@ test('spawnEnvForAgent expands configured env home paths', () => {
   assert.equal(env.PATH, '/usr/bin');
 });
 
-test('spawnEnvForAgent injects the resolved AMR profile after configured env', () => {
-  const env = spawnEnvForAgent(
-    'amr',
-    {
-      OPEN_DESIGN_AMR_PROFILE: 'feature-test',
-      VELA_PROFILE: 'prod',
-      PATH: '/usr/bin',
-    },
-    {
-      VELA_PROFILE: 'local',
-    },
-  );
-
-  assert.equal(env.VELA_PROFILE, 'feature-test');
-  assert.equal(env.OPEN_DESIGN_AMR_PROFILE, 'feature-test');
-  assert.equal(env.PATH, '/usr/bin');
-});
-
-test('spawnEnvForAgent enables OpenCode web search providers for AMR by default', () => {
-  const env = spawnEnvForAgent('amr', { PATH: '/usr/bin' });
-
-  assert.equal(env.OPENCODE_ENABLE_EXA, '1');
-  assert.equal(env.VELA_ENABLE_PARALLEL_MCP, '1');
-
-  const overridden = spawnEnvForAgent('amr', {
-    OPENCODE_ENABLE_EXA: '0',
-    VELA_ENABLE_PARALLEL_MCP: '0',
-    PATH: '/usr/bin',
-  });
-  assert.equal(overridden.OPENCODE_ENABLE_EXA, '0');
-  assert.equal(overridden.VELA_ENABLE_PARALLEL_MCP, '0');
-});
-
-test('spawnEnvForAgent gives AMR a stable OpenCode home under OD_DATA_DIR', () => {
-  const dataDir = mkdtempSync(join(tmpdir(), 'od-amr-data-'));
-  try {
-    const env = spawnEnvForAgent('amr', {
-      OD_DATA_DIR: dataDir,
-      PATH: '/usr/bin',
-    });
-
-    assert.equal(
-      env.OPENCODE_TEST_HOME,
-      join(dataDir, 'amr', 'opencode-home'),
-    );
-  } finally {
-    rmSync(dataDir, { recursive: true, force: true });
+test('retired AMR cannot launch with legacy profile, home, search or binary overrides', () => {
+  for (const configured of [
+    { VELA_PROFILE: 'local' },
+    { OPENCODE_ENABLE_EXA: '1', VELA_ENABLE_PARALLEL_MCP: '1' },
+    { OPENCODE_TEST_HOME: '/legacy/home' },
+    { VELA_OPENCODE_BIN: '/legacy/bin/opencode' },
+  ]) {
+    assert.throws(() => spawnEnvForAgent('amr', { PATH: '/usr/bin' }, configured),
+      /Cloud runtime has been removed/);
   }
 });
 
-test('spawnEnvForAgent preserves a configured AMR OpenCode home override', () => {
-  const dataDir = mkdtempSync(join(tmpdir(), 'od-amr-data-'));
-  try {
-    const configuredHome = join(dataDir, 'custom-opencode-home');
-    const env = spawnEnvForAgent(
-      'amr',
-      {
-        OD_DATA_DIR: dataDir,
-        PATH: '/usr/bin',
-      },
-      {
-        OPENCODE_TEST_HOME: configuredHome,
-      },
-    );
 
-    assert.equal(env.OPENCODE_TEST_HOME, configuredHome);
-  } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-  }
-});
 
-fsTest('spawnEnvForAgent gives AMR a discovered OpenCode binary under a minimal child PATH', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'od-amr-opencode-home-'));
-  try {
-    return withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], () => {
-      const opencodeBinDir = join(dir, '.opencode', 'bin');
-      const opencodeBin = join(opencodeBinDir, 'opencode');
-      mkdirSync(opencodeBinDir, { recursive: true });
-      writeFileSync(opencodeBin, '#!/bin/sh\nexit 0\n');
-      chmodSync(opencodeBin, 0o755);
-      process.env.PATH = '/usr/bin';
-      process.env.OD_AGENT_HOME = dir;
 
-      const env = spawnEnvForAgent('amr', { PATH: '/usr/bin' });
 
-      assert.equal(env.PATH, '/usr/bin');
-      assert.equal(env.VELA_OPENCODE_BIN, opencodeBin);
-    });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
+
+
+
 
 test('resolveAgentExecutable prefers a configured CODEX_BIN override over PATH resolution', () => {
   const dir = mkdtempSync(join(tmpdir(), 'od-codex-bin-'));
   try {
     return withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], () => {
-      const configured = join(dir, 'codex-custom');
-      writeFileSync(configured, '#!/bin/sh\nexit 0\n');
-      chmodSync(configured, 0o755);
+      const configured = writeFakeCli(dir, 'codex-custom', '#!/bin/sh\nexit 0\n');
       process.env.PATH = '';
       process.env.OD_AGENT_HOME = dir;
 
@@ -454,12 +367,8 @@ test('inspectAgentExecutableResolution reports configured and PATH Codex binarie
   const dir = mkdtempSync(join(tmpdir(), 'od-codex-bin-inspect-'));
   try {
     return withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], () => {
-      const configured = join(dir, 'codex-custom');
-      const fallback = join(dir, 'codex');
-      writeFileSync(configured, '#!/bin/sh\nexit 0\n');
-      writeFileSync(fallback, '#!/bin/sh\nexit 0\n');
-      chmodSync(configured, 0o755);
-      chmodSync(fallback, 0o755);
+      const configured = writeFakeCli(dir, 'codex-custom', '#!/bin/sh\nexit 0\n');
+      const fallback = writeFakeCli(dir, 'codex', '#!/bin/sh\nexit 0\n');
       process.env.PATH = dir;
       process.env.OD_AGENT_HOME = dir;
 
@@ -498,9 +407,7 @@ test('resolveAgentExecutable supports configured binary overrides for non-Codex 
       process.env.OD_AGENT_HOME = dir;
 
       for (const [id, binName, envKey] of cases) {
-        const configured = join(dir, `${binName}-custom`);
-        writeFileSync(configured, '#!/bin/sh\nexit 0\n');
-        chmodSync(configured, 0o755);
+        const configured = writeFakeCli(dir, `${binName}-custom`, '#!/bin/sh\nexit 0\n');
 
         const resolved = resolveAgentExecutable(
           minimalAgentDef({ id, bin: binName }),
@@ -562,12 +469,8 @@ test('resolveAgentExecutable prefers opencode-cli before desktop opencode fallba
   const dir = mkdtempSync(join(tmpdir(), 'od-opencode-cli-'));
   try {
     return withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], () => {
-      const cli = join(dir, 'opencode-cli');
-      const desktop = join(dir, 'opencode');
-      writeFileSync(cli, '#!/bin/sh\nexit 0\n');
-      writeFileSync(desktop, '#!/bin/sh\nexit 0\n');
-      chmodSync(cli, 0o755);
-      chmodSync(desktop, 0o755);
+      const cli = writeFakeCli(dir, 'opencode-cli', '#!/bin/sh\nexit 0\n');
+      const desktop = writeFakeCli(dir, 'opencode', '#!/bin/sh\nexit 0\n');
       process.env.PATH = dir;
       process.env.OD_AGENT_HOME = dir;
 
@@ -596,9 +499,7 @@ test('detectAgents includes sanitized install and docs metadata from split runti
       const deepseek = agents.find((agent) => agent.id === 'deepseek');
       const kimi = agents.find((agent) => agent.id === 'kimi');
 
-      assert.ok(amr);
-      assert.equal(amr.available, false);
-      assert.equal(amr.installUrl, 'https://open-design.powerformer.net/cloud/dashboard');
+      assert.equal(amr, undefined);
       assert.ok(qoder);
       assert.equal(qoder.available, false);
       assert.equal(qoder.installUrl, 'https://qoder.com/download');
@@ -653,10 +554,15 @@ fsTest('detectAgents keeps Kimi available when ACP model discovery fails', async
       assert.ok(kimi);
       assert.equal(kimi.available, true);
       assert.equal(kimi.version, 'kimi 0.6.0');
-      assert.equal(kimi.models[0]?.id, 'default');
-      assert.equal(kimi.models[1]?.id, 'kimi-k2-turbo-preview');
-      assert.equal(kimi.models[2]?.id, 'moonshot-v1-8k');
-      assert.equal(kimi.models[3]?.id, 'moonshot-v1-32k');
+      assert.deepEqual(kimi.models.map((model) => model.id), [
+        'default',
+        'k3.1-pro',
+        'k3.1-pro-highspeed',
+        'k3',
+        'k3-256k',
+        'kimi-for-coding',
+        'kimi-for-coding-highspeed',
+      ]);
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -733,17 +639,14 @@ fsTest('detectAgents keeps packaged built-in AMR unavailable when OpenCode canno
       const agents = await detectAgents();
       const amrAgent = agents.find((agent) => agent.id === 'amr');
 
-      assert.ok(amrAgent);
-      assert.equal(amrAgent.available, false);
-      assert.equal(amrAgent.path, undefined);
-      assert.equal(amrAgent.version, undefined);
+      assert.equal(amrAgent, undefined);
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-fsTest('detectAgents marks AMR available from packaged built-in Vela with the bundled OpenCode companion tree', async () => {
+fsTest('detectAgents excludes AMR even with packaged Vela and OpenCode', async () => {
   const root = mkdtempSync(join(tmpdir(), 'od-detect-amr-built-in-'));
   try {
     return await withEnvSnapshot(['PATH', 'OD_AGENT_HOME', 'OD_RESOURCE_ROOT', 'VELA_OPENCODE_BIN'], async () => {
@@ -772,10 +675,7 @@ fsTest('detectAgents marks AMR available from packaged built-in Vela with the bu
       const agents = await detectAgents();
       const amrAgent = agents.find((agent) => agent.id === 'amr');
 
-      assert.ok(amrAgent);
-      assert.equal(amrAgent.available, true);
-      assert.equal(amrAgent.path, builtInVela);
-      assert.equal(amrAgent.version, 'vela manual-amr');
+      assert.equal(amrAgent, undefined);
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -783,7 +683,7 @@ fsTest('detectAgents marks AMR available from packaged built-in Vela with the bu
 });
 
 
-fsTest('detectAgents prefers configured AMR live models over stale fallback defaults', async () => {
+fsTest('detectAgents ignores configured legacy AMR model probes', async () => {
   const root = mkdtempSync(join(tmpdir(), 'od-detect-amr-live-models-'));
   try {
     return await withEnvSnapshot(['PATH', 'OD_AGENT_HOME', 'OD_RESOURCE_ROOT', 'VELA_OPENCODE_BIN'], async () => {
@@ -815,24 +715,14 @@ exit 0
       });
       const amrAgent = agents.find((agent) => agent.id === 'amr');
 
-      assert.ok(amrAgent);
-      assert.equal(amrAgent.available, true);
-      assert.equal(amrAgent.path, fakeVela);
-      assert.equal(amrAgent.version, 'vela custom-live');
-      assert.equal(amrAgent.modelsSource, 'live');
-      assert.deepEqual(amrAgent.models, [
-        { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash' },
-        { id: 'glm-5', label: 'glm-5' },
-      ]);
-      assert.equal(amrAgent.models.some((model) => model.id === 'default'), false);
-      assert.equal(amrAgent.models.some((model) => model.id === 'gpt-5.4-mini'), false);
+      assert.equal(amrAgent, undefined);
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-fsTest('detectAgents preserves the scoped AMR cache when a later probe returns no models', async () => {
+fsTest('detectAgents leaves existing legacy cache unchanged without probing AMR', async () => {
   const root = mkdtempSync(join(tmpdir(), 'od-detect-amr-empty-models-'));
   try {
     return await withEnvSnapshot(['PATH', 'OD_AGENT_HOME', 'OD_RESOURCE_ROOT', 'VELA_OPENCODE_BIN'], async () => {
@@ -863,6 +753,7 @@ exit 0
       delete process.env.OD_RESOURCE_ROOT;
       delete process.env.VELA_OPENCODE_BIN;
 
+      const cacheBefore = getRememberedLiveModels('amr', 'prod');
       await detectAgents({
         amr: {
           VELA_BIN: fakeVela,
@@ -870,9 +761,7 @@ exit 0
           OPEN_DESIGN_AMR_PROFILE: 'prod',
         },
       });
-      assert.deepEqual(getRememberedLiveModels('amr', 'prod'), [
-        { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash' },
-      ]);
+      assert.deepEqual(getRememberedLiveModels('amr', 'prod'), cacheBefore);
 
       writeFileSync(modeFile, 'empty');
       const agents = await detectAgents({
@@ -884,13 +773,7 @@ exit 0
       });
       const amrAgent = agents.find((agent) => agent.id === 'amr');
 
-      assert.ok(amrAgent);
-      assert.deepEqual(amrAgent.models, [
-        { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash' },
-      ]);
-      assert.deepEqual(getRememberedLiveModels('amr', 'prod'), [
-        { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash' },
-      ]);
+      assert.equal(amrAgent, undefined);
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -1047,15 +930,24 @@ test('detectAgents records Antigravity permission capability from stderr help ou
   const dir = mkdtempSync(join(tmpdir(), 'od-antigravity-capability-'));
   try {
     await withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], async () => {
-      const bin = join(dir, 'agy');
-      writeFileSync(
-        bin,
+      const bin = writeFakeCli(
+        dir,
+        'agy',
         '#!/bin/sh\n' +
           'if [ "$1" = "--version" ]; then echo "agy 1.0.3"; exit 0; fi\n' +
           'if [ "$1" = "--help" ]; then echo "--dangerously-skip-permissions" >&2; exit 0; fi\n' +
           'exit 0\n',
+        '@echo off\n' +
+          'if "%~1"=="--version" (\n' +
+          '  echo agy 1.0.3\n' +
+          '  exit /b 0\n' +
+          ')\n' +
+          'if "%~1"=="--help" (\n' +
+          '  >&2 echo --dangerously-skip-permissions\n' +
+          '  exit /b 0\n' +
+          ')\n' +
+          'exit /b 0\n',
       );
-      chmodSync(bin, 0o755);
       process.env.PATH = dir;
       process.env.OD_AGENT_HOME = dir;
       agentCapabilities.delete('antigravity');
@@ -1159,7 +1051,7 @@ test('detectAgents surfaces Cursor Agent model labels without putting labels in 
       if (process.platform === 'win32') {
         writeFileSync(
           bin,
-          '@echo off\r\nif "%~1"=="--version" echo 2026.05.16-test& exit /b 0\r\nif "%~1"=="models" (\r\n  echo Available models\r\n  echo auto - Auto\r\n  echo composer-2.5 - Composer 2.5 (current)\r\n  exit /b 0\r\n)\r\nif "%~1"=="status" echo Authenticated& exit /b 0\r\nexit /b 0\r\n',
+          '@echo off\r\nif "%~1"=="--version" echo 2026.05.16-test& exit /b 0\r\nif "%~1"=="models" (\r\n  echo Available models\r\n  echo auto - Auto\r\n  echo composer-2.5 - Composer 2.5 (current^)\r\n  exit /b 0\r\n)\r\nif "%~1"=="status" echo Authenticated& exit /b 0\r\nexit /b 0\r\n',
         );
       } else {
         writeFileSync(
@@ -1215,7 +1107,7 @@ test('detectAgents keeps Cursor Agent available when auth is missing', async () 
       assert.match(detected?.authMessage ?? '', /cursor-agent login/);
       assert.deepEqual(
         detected?.models.map((model) => model.id),
-        ['default', 'auto', 'sonnet-4', 'sonnet-4-thinking', 'gpt-5'],
+        ['default', 'auto'],
       );
     });
   } finally {

@@ -166,7 +166,7 @@ export async function fetchAgents(options?: { throwOnError?: boolean }): Promise
       return [];
     }
     const json = (await resp.json()) as { agents: AgentInfo[] };
-    return json.agents ?? [];
+    return (json.agents ?? []).filter((agent) => agent.id !== 'amr');
   } catch (err) {
     if (options?.throwOnError) throw err;
     return [];
@@ -233,6 +233,7 @@ export async function fetchAgentsStream(args: {
     if (eventName === 'agent' && data) {
       try {
         const agent = JSON.parse(data) as AgentInfo;
+        if (agent.id === 'amr') return;
         collected.push(agent);
         onAgent(agent);
       } catch {

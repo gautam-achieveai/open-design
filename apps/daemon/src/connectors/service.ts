@@ -116,6 +116,11 @@ export class ConnectorServiceError extends Error {
   }
 }
 
+/** A caller's authority changed before a connector provider was dispatched. */
+export class ConnectorDispatchDeniedError extends Error {
+  constructor() { super('connector project authority denied'); }
+}
+
 export interface ConnectorConnectionStatus {
   status: ConnectorStatus;
   accountLabel?: string;
@@ -467,6 +472,8 @@ export interface ConnectorExecutionContext {
   runId?: string;
   purpose?: 'agent_preview' | 'artifact_refresh';
   signal?: AbortSignal;
+  /** Trusted in-process check; invoked synchronously immediately before provider dispatch. */
+  authorizeBeforeDispatch?: () => boolean;
 }
 
 export const CONNECTOR_MAX_OUTPUT_BYTES = 256 * 1024;
@@ -809,6 +816,7 @@ export class ConnectorService {
       });
     }
 
+    if (context.authorizeBeforeDispatch && context.authorizeBeforeDispatch() !== true) throw new ConnectorDispatchDeniedError();
     this.enforceRunLimits(context);
 
     let providerOutput: BoundedJsonObject;

@@ -110,11 +110,14 @@ describe('OPEND-2590 · 重放的历史不再走一遍流式', () => {
     letStreamSettle();
     const afterReplay = commits();
 
-    // agent 此刻正在产出的字:每一块自己提交一次,流式不能被这次修改关掉。
+    // Live arrivals slower than the 30fps paint budget must remain progressive.
+    let expected = HISTORY_TEXT;
     for (const live of ['新', '内', '容']) {
       buffer.appendContent(live);
       runFrame();
-      vi.advanceTimersByTime(8);
+      vi.advanceTimersByTime(50);
+      expected += live;
+      expect(content()).toBe(expected);
     }
     expect(commits() - afterReplay).toBe(3);
     expect(content()).toBe(`${HISTORY_TEXT}新内容`);
@@ -140,10 +143,13 @@ describe('OPEND-2590 · 重放的历史不再走一遍流式', () => {
   it('非重放的普通直播完全不受影响', () => {
     const { buffer, commits, content } = makeBuffer(false);
 
+    let expected = '';
     for (const live of ['一', '二', '三']) {
       buffer.appendContent(live);
       runFrame();
-      vi.advanceTimersByTime(8);
+      vi.advanceTimersByTime(50);
+      expected += live;
+      expect(content()).toBe(expected);
     }
     expect(commits()).toBe(3);
     expect(content()).toBe('一二三');

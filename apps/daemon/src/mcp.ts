@@ -39,17 +39,26 @@ import {
 import { randomUUID } from 'node:crypto';
 
 import { postCreateArtifactRequest } from './artifacts/create.js';
+import { artifactBundlePayload, buildArtifactBundle, extractRelativeRefs,
+  ArtifactBundleBudgetExceededError as BudgetExceededError,
+  DEFAULT_ARTIFACT_BUNDLE_MAX_BYTES as DEFAULT_MAX_BYTES,
+  type ArtifactBundleFile as ProjectFileBundleEntry, type ArtifactBundleInclude } from './services/artifact-bundle.js';
+import { projectAgentCatalog } from './services/agent-catalog-projection.js';
+import { projectPluginCatalog } from './services/plugin-catalog.js';
 import { resolveMcpWorkspaceContext } from './mcp-workspace-context.js';
 import {
   createLocalMcpBriefStore as createBriefStore,
   localMcpBriefResponseCopy,
+  localeFromMcpToolMetadata,
   type LocalMcpBriefStore,
 } from './mcp-brief.js';
 import {
   OPEN_DESIGN_BRIEF_APP_HTML,
   OPEN_DESIGN_BRIEF_APP_VERSION,
+  OPEN_DESIGN_BRIEF_APP_RESOURCE,
+  briefAppResourceDefinition,
 } from './mcp-apps/brief-resource.js';
-import { DEFAULT_AMR_RECHARGE_URL } from './integrations/vela-errors.js';
+import { enrichRunToolResult } from './services/run-tool-result.js';
 import {
   type ExternalPluginContext,
   logicalPluginRequestDigest,
@@ -67,11 +76,10 @@ const SERVER_NAME = 'open-design';
 const SERVER_VERSION = '0.2.0';
 const DEFAULT_MCP_STDIO_IDLE_EXIT_MS = 30 * 60 * 1000;
 const MAX_MCP_STDIO_IDLE_EXIT_MS = 24 * 60 * 60 * 1000;
-export const OPEN_DESIGN_BRIEF_APP_RESOURCE =
-  'ui://open-design/artifact-card-v8.html';
+export { OPEN_DESIGN_BRIEF_APP_RESOURCE } from './mcp-apps/brief-resource.js';
 
 export const MCP_SERVER_INSTRUCTIONS = [
-  'Use only these product names in user-facing replies: OpenDesign Cloud and Local Codex.',
+  'Use the configured local agent names in user-facing replies.',
   'Tool names, runtime ids, endpoints, and correlation values are machine protocol. Never repeat them as product copy.',
 ].join('\n');
 
@@ -92,7 +100,6 @@ interface ActiveContext { active?: boolean; projectId?: string; projectName?: st
 type ResolvedProject = { id: string; name: string; source: 'uuid' | 'id' | 'exact' | 'slug' | 'substring' };
 interface ProjectListCache { baseUrl: string; t: number; list: ProjectSummary[] }
 interface McpArgs extends JsonObject { project?: unknown; entry?: unknown; include?: unknown; maxBytes?: unknown; path?: unknown; offset?: unknown; limit?: unknown; since?: unknown; query?: unknown; pattern?: unknown; max?: unknown; name?: unknown; content?: unknown; encoding?: unknown; artifactManifest?: unknown; confirm?: unknown; prompt?: unknown; plugin?: unknown; inputs?: unknown; agent?: unknown; model?: unknown; serviceTier?: unknown; apiKey?: unknown; requestId?: unknown; resume?: unknown; runId?: unknown; id?: unknown; designSystem?: unknown; skill?: unknown; skills?: string[]; includeUnavailable?: unknown; artifactType?: unknown; projectTitle?: unknown; locale?: unknown; knownAnswers?: unknown; skip?: unknown; briefDraftId?: unknown; nonce?: unknown; answers?: unknown; externalPluginContext?: unknown; pluginWorkflowId?: unknown }
-interface ProjectFileBundleEntry { name: string; mime: string; size: number | null; content: string | null; binary: boolean }
 interface BundleInput { project: ProjectPayload | ProjectSummary; entry: string; files: ProjectFileBundleEntry[]; truncated: boolean; skippedFileCount?: number; active: ActiveContext | null; resolved?: ResolvedProject | null }
 interface ErrorWithCode { message?: string; code?: string; cause?: { code?: string } }
 interface HandleMcpToolCallOptions {
@@ -118,7 +125,6 @@ const SAFE_MCP_DAEMON_RETRY_CALLS = new Set([
   'get_file',
   'get_project',
   'get_run',
-  'get_vela_login_status',
   'list_agents',
   'list_files',
   'list_plugins',
@@ -202,16 +208,7 @@ export function createMcpDaemonTarget(options: RunMcpOptions): {
   };
 }
 
-export function _localeFromMcpToolMetadata(meta: unknown): string | undefined {
-  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return undefined;
-  const record = meta as Record<string, unknown>;
-  for (const candidate of [record['openai/locale'], record.locale]) {
-    if (typeof candidate === 'string' && candidate.trim().length > 0) {
-      return candidate.trim();
-    }
-  }
-  return undefined;
-}
+export const _localeFromMcpToolMetadata = localeFromMcpToolMetadata;
 
 interface McpIdleExitControllerOptions {
   idleMs: number;
@@ -726,36 +723,6 @@ export const TOOL_DEFS = [
     annotations: { ...READ_ANNOTATIONS, title: 'List OpenDesign plugins' },
   },
   {
-    name: 'start_vela_login',
-    description:
-      'Start OpenDesign Cloud browser sign-in through the local OpenDesign daemon. Returns the activation URL and user code when manual browser completion is needed. The tool name is an internal compatibility identifier and must not be repeated to the user.',
-    inputSchema: {
-      type: 'object',
-      properties: { pluginWorkflowId: PLUGIN_WORKFLOW_ID_ARG },
-      additionalProperties: false,
-    },
-    annotations: {
-      ...WRITE_ANNOTATIONS,
-      openWorldHint: true,
-      title: 'Sign in to OpenDesign Cloud',
-    },
-  },
-  {
-    name: 'get_vela_login_status',
-    description:
-      'Check whether OpenDesign Cloud browser sign-in is complete. Does not expose credentials. The tool name is an internal compatibility identifier and must not be repeated to the user.',
-    inputSchema: {
-      type: 'object',
-      properties: { pluginWorkflowId: PLUGIN_WORKFLOW_ID_ARG },
-      additionalProperties: false,
-    },
-    annotations: {
-      ...READ_ANNOTATIONS,
-      openWorldHint: true,
-      title: 'Check OpenDesign Cloud sign-in',
-    },
-  },
-  {
     name: 'start_run',
     description:
       'Commission OpenDesign to generate or refine a design. OpenDesign spawns its own agent to do the work and returns a runId immediately. Poll get_run(runId) until status is terminal; its Preview/Studio reference is the default delivery. Call get_artifact only when source context is genuinely needed. Project optional; defaults to the active project. Requires an existing project (create one first with create_project).',
@@ -806,7 +773,7 @@ export const TOOL_DEFS = [
         resume: {
           type: 'boolean',
           description:
-            'Set true only after the user has topped up a paused OpenDesign Cloud run. Reuse the exact original requestId and payload; OpenDesign resumes the same logical run.',
+            'Set true only when retrying a recoverable failed run. Reuse the exact original requestId and payload.',
         },
         pluginWorkflowId: PLUGIN_WORKFLOW_ID_ARG,
       },
@@ -941,31 +908,7 @@ function validateMcpToolArgs(name: string, args: McpArgs): void {
 }
 
 export function localMcpResourceDefinitions() {
-  return [
-    {
-      uri: OPEN_DESIGN_BRIEF_APP_RESOURCE,
-      name: 'OpenDesign brief',
-      title: 'Choose the artifact direction',
-      description:
-        'Interactive local OpenDesign brief card shared by OpenDesign Cloud and Local Codex modes.',
-      mimeType: 'text/html;profile=mcp-app',
-      _meta: {
-        ui: {
-          prefersBorder: true,
-          csp: {
-            connectDomains: [],
-            resourceDomains: [],
-          },
-        },
-        'ui/prefersBorder': true,
-        'ui/csp': {
-          connectDomains: [],
-          resourceDomains: [],
-        },
-        'openai/widgetPrefersBorder': true,
-      },
-    },
-  ];
+  return [briefAppResourceDefinition()];
 }
 
 export function createLocalMcpBriefStore() {
@@ -1520,9 +1463,7 @@ function mcpFailureFacts(
   const failureStage =
     name === 'collect_brief' || name === 'confirm_brief'
       ? 'brief'
-      : name.includes('vela_login')
-        ? 'auth'
-        : name.includes('project')
+      : name.includes('project')
           ? 'project'
         : name === 'start_run'
           ? 'run_accept'
@@ -1540,9 +1481,7 @@ function mcpFailureFacts(
         ? 'open_design_daemon'
         : errorCode === 'DELIVERABLE_MISSING'
           ? 'artifact_store'
-          : message.includes('VELA_') || message.includes('AMR_')
-            ? 'vela_api'
-            : 'open_design_daemon';
+          : 'open_design_daemon';
   return {
     error_code: errorCode,
     failure_stage: failureStage,
@@ -1949,14 +1888,10 @@ async function runMcpStdioImplementation(options: RunMcpOptions): Promise<void> 
         'read/edit files), commission a run - you do not run skills yourself:',
         ' - collect_brief first for a new artifact unless the user explicitly',
         '    asks to skip questions. Let the user complete the rendered card;',
-        '    confirm_brief returns the readable brief to reuse with OpenDesign',
-        '    Cloud or Local Codex. Never print or ask the user to copy',
+        '    confirm_brief returns the readable brief to reuse with a local agent.',
+        '    Never print or ask the user to copy',
         '    briefDraftId, nonce, or any other internal correlation value.',
         ' - list_skills / list_plugins to see what you can ask OD to make.',
-        ' - for OpenDesign Cloud, call the Cloud login-status tool first.',
-        '    If signed out, call the Cloud sign-in tool once, show its activation',
-        '    URL/code when present, and poll login status until loggedIn:true.',
-        '    The tool and runtime ids are internal protocol; never show them.',
         ' - list_agents when you need to pass start_run.agent — do not',
         '    guess "claude" / "codex" / "opencode"; only agents in the',
         '    returned list will actually spawn on this machine.',
@@ -2130,12 +2065,6 @@ function containsMcpCredentialField(value: unknown, depth = 0): boolean {
     MCP_CREDENTIAL_FIELD_PATTERN.test(key)
     || containsMcpCredentialField(entry, depth + 1),
   );
-}
-
-function publicVelaLoginStatus(status: unknown): unknown {
-  if (!status || typeof status !== 'object' || Array.isArray(status)) return status;
-  const { configPath: _configPath, ...publicStatus } = status as JsonObject;
-  return publicStatus;
 }
 
 // Tools that address projects or runs are workspace-scoped after 0.18.0:
@@ -2346,25 +2275,6 @@ async function handleMcpToolCall(
         return ok(await listPlugins(baseUrl));
       case 'list_agents':
         return ok(await listAgents(baseUrl, args.includeUnavailable === true));
-      case 'start_vela_login': {
-        const started = await postJson<JsonObject>(
-          `${baseUrl}/api/integrations/vela/login`,
-          options.pluginAttribution
-            ? { pluginWorkflowId: options.pluginAttribution.pluginWorkflowId }
-            : {},
-          options.analyticsHeaders,
-        );
-        const status = publicVelaLoginStatus(
-          await getJson<JsonObject>(`${baseUrl}/api/integrations/vela/status`),
-        );
-        return ok({ started, status });
-      }
-      case 'get_vela_login_status':
-        return ok(
-          publicVelaLoginStatus(
-            await getJson<JsonObject>(`${baseUrl}/api/integrations/vela/status`),
-          ),
-        );
       case 'start_run':
         return await startRun(baseUrl, args, options, headers);
       case 'get_run':
@@ -2546,20 +2456,7 @@ async function createProject(
 // `manifest.description` / `manifest.od.kind`.
 async function listPlugins(baseUrl: string): Promise<JsonObject> {
   const raw = await getJson<{ plugins?: JsonObject[] }>(`${baseUrl}/api/plugins`);
-  const plugins = (raw?.plugins ?? []).map((p) => {
-    const manifest = (p?.manifest as JsonObject | undefined) ?? {};
-    const od = (manifest.od as JsonObject | undefined) ?? {};
-    const result: JsonObject = {
-      id: p?.id,
-      title: manifest.title ?? p?.title ?? p?.id,
-    };
-    if (typeof manifest.description === 'string') result.description = manifest.description;
-    const kind = od.taskKind ?? od.kind;
-    if (typeof kind === 'string') result.kind = kind;
-    if (Array.isArray(manifest.tags)) result.tags = manifest.tags;
-    return result;
-  });
-  return { plugins };
+  return { plugins: projectPluginCatalog(raw?.plugins ?? []) };
 }
 
 // Flatten daemon's agent definition into the few fields an external
@@ -2572,27 +2469,7 @@ async function listPlugins(baseUrl: string): Promise<JsonObject> {
 // (e.g. opencode) that expose 100+ models.
 async function listAgents(baseUrl: string, includeUnavailable: boolean): Promise<JsonObject> {
   const raw = await getJson<{ agents?: JsonObject[] }>(`${baseUrl}/api/agents`);
-  const all = raw?.agents ?? [];
-  const filtered = includeUnavailable
-    ? all
-    : all.filter((a) => a?.available === true);
-  const MAX_MODELS = 10;
-  const agents = filtered.map((a) => {
-    const models = Array.isArray(a?.models) ? (a.models as unknown[]) : [];
-    const out: JsonObject = {
-      id: a?.id,
-      name: a?.name,
-      models: models.slice(0, MAX_MODELS),
-      modelsCount: models.length,
-    };
-    if (typeof a?.version === 'string' && a.version.length > 0) out.version = a.version;
-    if (includeUnavailable) {
-      out.available = Boolean(a?.available);
-      if (typeof a?.installUrl === 'string') out.installUrl = a.installUrl;
-    }
-    return out;
-  });
-  return { agents };
+  return projectAgentCatalog(raw?.agents ?? [], includeUnavailable);
 }
 
 // Derive a valid project id ([A-Za-z0-9._-], <=128) from a display name,
@@ -2742,28 +2619,7 @@ async function getRun(
     headers,
   );
   if (status.status !== 'succeeded' || typeof status.projectId !== 'string' || !status.projectId) {
-    // Non-terminal (or terminal-but-failed) status. Surface
-    // eventsLogPath with a tail hint so the outer agent can watch live
-    // progress in its own shell instead of cancelling because polling
-    // shows nothing changing.
-    const webBase = await getWebBaseUrl(baseUrl);
-    const studioUrl = buildStudioUrl(webBase, status.projectId, status.conversationId, null);
-    const enriched: JsonObject = { ...status };
-    if (studioUrl) enriched.studioUrl = studioUrl;
-    if (status.failureAction === 'recharge') {
-      enriched.rechargeUrl = DEFAULT_AMR_RECHARGE_URL;
-      enriched.hint =
-        'OpenDesign Cloud paused this logical run because the account balance is insufficient. Preserve the brief and project, show rechargeUrl to the user, and do not switch modes. After the user confirms the top-up, call start_run once with the exact original payload, the same requestId, and resume:true; OpenDesign Cloud will resume the existing run and billing operation. Do not expose internal runtime or tool identifiers.';
-    }
-    if (typeof status.eventsLogPath === 'string' && status.eventsLogPath.length > 0) {
-      if (status.failureAction !== 'recharge') {
-        enriched.hint = 'Run still in flight. Tail eventsLogPath in your own shell (e.g. `tail -n 50 -f "' + status.eventsLogPath + '"`) to see live text_delta / tool_use events from the inner agent — that is your in-flight progress signal. Keep polling get_run every 30–60s; do not cancel because file mtimes look static, that is the agent thinking between writes.';
-      }
-      if (studioUrl) {
-        enriched.hint += ` While the run is in flight, studioUrl can be used as an optional workspace progress link — render it as \`[Watch progress in OpenDesign studio](${studioUrl})\` if you choose to show it. This URL is valid for the current OpenDesign runtime; call get_run again after OpenDesign restarts.`;
-      }
-    }
-    return ok(enriched);
+    return ok(enrichRunToolResult(status, { daemonBaseUrl: baseUrl, webBaseUrl: await getWebBaseUrl(baseUrl) }));
   }
   const hasAuthoritativeDeliverable =
     typeof status.deliverableValid === 'boolean'
@@ -2788,26 +2644,8 @@ async function getRun(
     fetchRunAgentMessage(baseUrl, String(status.id ?? args.runId), headers),
     getWebBaseUrl(baseUrl),
   ]);
-  const previewUrl = entryFile
-    ? rawPreviewUrl(baseUrl, status.projectId, entryFile)
-    : null;
-  const studioUrl = buildStudioUrl(webBase, status.projectId, status.conversationId, entryFile);
-  const enriched: JsonObject = { ...status };
-  if (previewUrl) enriched.previewUrl = previewUrl;
-  if (entryFile) enriched.entryFile = entryFile;
-  if (previewUrl && entryFile) {
-    enriched.artifactRef = { projectId: status.projectId, entryFile };
-    enriched.previewUrlLifetime = 'current_daemon_session';
-  }
-  if (agentMessage) enriched.agentMessage = agentMessage;
-  if (studioUrl) {
-    enriched.studioUrl = studioUrl;
-    enriched.studioUrlLifetime = 'current_daemon_session';
-  }
-  enriched.hint = previewUrl
-    ? `Run finished. artifactRef is the durable project/file identity. previewUrl and studioUrl are browser links for the current OpenDesign runtime only; if either stops working after OpenDesign restarts, call get_run again with this runId to obtain current links. Render previewUrl as a clickable link now. agentMessage carries the inner agent's explanation; show it alongside the link. Call get_artifact({ project: "${status.projectId}" }) when you need the source files — always pass project explicitly; omitting it falls back to the active project, which may differ. eventsLogPath, when present, holds the full inner-agent event log for forensics.`
-    : 'Run finished but produced no files. The inner agent\'s output is in agentMessage — relay it to the user verbatim. Most often this is a clarifying question (e.g. a <question-form>) you should answer by calling start_run again with a more specific prompt or a chosen plugin. When studioUrl is present, show it as a clickable markdown link (`[Open OpenDesign studio](STUDIO_URL)`) so the user can navigate to the OD page that shows the chat history — never render it as inline code. eventsLogPath, when present, holds the full event log if you need to inspect what happened.';
-  return ok(enriched);
+  return ok(enrichRunToolResult(status, { daemonBaseUrl: baseUrl, webBaseUrl: webBase,
+    agentMessage, legacyEntryFile: entryFile }));
 }
 
 // Reassemble the inner agent's textual output from the SSE event log.
@@ -3243,21 +3081,6 @@ function formatActiveEchoLine(active: ActiveContext, resolvedPath: string): stri
 }
 
 const VALID_INCLUDE_MODES = new Set(['auto', 'all', 'shallow']);
-const DEFAULT_MAX_BYTES = 1_500_000;
-const MAX_FILES = 200;
-
-// Tracks total textual content bytes accumulated; binary stubs don't
-// count (their content is null). Once we cross the cap the caller
-// stops fetching and stamps `truncated: true` on the bundle.
-function totalTextBytes(files: ProjectFileBundleEntry[]): number {
-  let n = 0;
-  for (const f of files) {
-    if (!f.binary && typeof f.content === 'string') {
-      n += Buffer.byteLength(f.content, 'utf8');
-    }
-  }
-  return n;
-}
 
 async function getArtifact(
   baseUrl: string,
@@ -3297,98 +3120,24 @@ async function getArtifact(
     );
   }
 
-  if (include === 'shallow') {
-    let file;
-    try {
-      file = await fetchProjectFile(baseUrl, id, entry, undefined, headers);
-    } catch (err) {
-      return errorResult(errorMessage(err));
-    }
-    return okBundle({ project, entry, files: [file], truncated: false, skippedFileCount: 0, active, resolved });
-  }
-
-  if (include === 'all') {
-    const meta = await getJson<{ files?: Array<{ name: string }> }>(
-      `${baseUrl}/api/projects/${encodeURIComponent(id)}/files`,
-      headers,
-    );
-    const allFiles = Array.isArray(meta?.files) ? meta.files : [];
-    const fetched: ProjectFileBundleEntry[] = [];
-    let truncated = false;
-    let skippedFileCount = 0;
-    for (const f of allFiles) {
-      if (fetched.length >= MAX_FILES || totalTextBytes(fetched) >= maxBytes) {
-        truncated = true;
-        break;
-      }
-      try {
-        const remaining = maxBytes - totalTextBytes(fetched);
-        fetched.push(await fetchProjectFile(baseUrl, id, f.name, remaining, headers));
-      } catch (err) {
-        if (err instanceof BudgetExceededError) truncated = true;
-        else skippedFileCount += 1;
-        // Skip files that fail to fetch; keep going.
-      }
-    }
-    return okBundle({ project, entry, files: fetched, truncated, skippedFileCount, active, resolved });
-  }
-
-  // Auto mode: BFS from entry. The entry's own fetch must succeed - 
-  // a 404 there almost always means the agent typo'd `entry:`, and
-  // returning an empty bundle would hide that.
-  let entryFile;
   try {
-    entryFile = await fetchProjectFile(baseUrl, id, entry, undefined, headers);
+    const bundle = await buildArtifactBundle({ entry, include: include as ArtifactBundleInclude, maxBytes,
+      readFile: (name, remaining) => fetchProjectFile(baseUrl, id, name, remaining, headers),
+      listFiles: async () => {
+        const meta = await getJson<{ files?: Array<{ name: string }> }>(
+          `${baseUrl}/api/projects/${encodeURIComponent(id)}/files`, headers);
+        return Array.isArray(meta?.files) ? meta.files : [];
+      } });
+    return okBundle({ project, entry, ...bundle, active, resolved });
   } catch (err) {
     return errorResult(errorMessage(err));
   }
-  const MAX_DEPTH = 3;
-  const visited = new Set([entry]);
-  const fetched = [entryFile];
-  let truncated = false;
-  let skippedFileCount = 0;
-  let frontier: string[] = [];
-  if (isTextualMime(entryFile.mime)) {
-    frontier = extractRelativeRefs(entryFile.content || '', entry, entryFile.mime).filter(
-      (r) => !visited.has(r),
-    );
-  }
-  outer: for (let depth = 1; depth < MAX_DEPTH && frontier.length > 0; depth++) {
-    const next: string[] = [];
-    for (const refPath of frontier) {
-      if (visited.has(refPath)) continue;
-      visited.add(refPath);
-      if (fetched.length >= MAX_FILES || totalTextBytes(fetched) >= maxBytes) {
-        truncated = true;
-        break outer;
-      }
-      let file;
-      try {
-        const remaining = maxBytes - totalTextBytes(fetched);
-        file = await fetchProjectFile(baseUrl, id, refPath, remaining, headers);
-      } catch (err) {
-        if (err instanceof BudgetExceededError) truncated = true;
-        else skippedFileCount += 1;
-        continue;
-      }
-      fetched.push(file);
-      if (!isTextualMime(file.mime)) continue;
-      const refs = extractRelativeRefs(file.content || '', refPath, file.mime);
-      for (const ref of refs) {
-        if (!visited.has(ref)) next.push(ref);
-      }
-    }
-    frontier = next;
-  }
-  return okBundle({ project, entry, files: fetched, truncated, skippedFileCount, active, resolved });
 }
 
 // Thrown by fetchProjectFile when the server-advertised content-length exceeds
 // the remaining byte budget. Distinguished from generic fetch errors (404,
 // network) so callers can set truncated: true without treating it as a hard
 // failure of the whole bundle.
-class BudgetExceededError extends Error {}
-
 async function fetchProjectFile(
   baseUrl: string,
   projectId: string,
@@ -3427,127 +3176,9 @@ async function fetchProjectFile(
   return { name: relPath, mime, size: size ?? contentBytes, content, binary: false };
 }
 
-// Patterns common to HTML and CSS (also fine to run on plain markdown).
-const HTML_REF_PATTERNS = [
-  /<script\b[^>]*\bsrc=["']([^"']+)["']/gi,
-  /<link\b[^>]*\bhref=["']([^"']+)["']/gi,
-  /<img\b[^>]*\bsrc=["']([^"']+)["']/gi,
-  /<source\b[^>]*\bsrc=["']([^"']+)["']/gi,
-  /<video\b[^>]*\bsrc=["']([^"']+)["']/gi,
-  /<audio\b[^>]*\bsrc=["']([^"']+)["']/gi,
-  /<iframe\b[^>]*\bsrc=["']([^"']+)["']/gi,
-];
-
-const CSS_REF_PATTERNS = [
-  /\burl\(\s*["']?([^"')]+)["']?\s*\)/gi,
-  /@import\s+(?:url\()?\s*["']([^"')]+)["']/gi,
-];
-
-// JS/TS only - running these on prose creates false positives on words
-// like "imported from 'X'".
-const JS_REF_PATTERNS = [
-  /\bimport\s+[^'"]*?['"]([^'"]+)['"]/g,
-  /\bfrom\s+['"]([^'"]+)['"]/g,
-  /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g,
-  /\brequire\(\s*['"]([^'"]+)['"]\s*\)/g,
-];
-
-// `srcset` can list multiple comma-separated candidates.
-const SRCSET_PATTERN = /\bsrcset=["']([^"']+)["']/gi;
-
-function isJsLike(mime: string | undefined, fromPath: string): boolean {
-  if (mime && /javascript|typescript/i.test(mime)) return true;
-  return /\.(?:m?jsx?|tsx?|cjs)$/i.test(fromPath);
-}
-
-function isCssLike(mime: string | undefined, fromPath: string): boolean {
-  if (mime && /^text\/css\b/i.test(mime)) return true;
-  return /\.css$/i.test(fromPath);
-}
-
-function isHtmlLike(mime: string | undefined, fromPath: string): boolean {
-  if (mime && /^text\/html\b/i.test(mime)) return true;
-  return /\.html?$/i.test(fromPath);
-}
-
-function extractRelativeRefs(text: string, fromPath: string, fromMime: string): string[] {
-  if (!text) return [];
-  const refs = new Set<string>();
-  const runPatterns: RegExp[] = [];
-  if (isHtmlLike(fromMime, fromPath)) {
-    runPatterns.push(...HTML_REF_PATTERNS, ...CSS_REF_PATTERNS);
-  }
-  if (isCssLike(fromMime, fromPath)) {
-    runPatterns.push(...CSS_REF_PATTERNS);
-  }
-  if (isJsLike(fromMime, fromPath)) {
-    runPatterns.push(...JS_REF_PATTERNS);
-  }
-  // Fallback for unknown textual files: only the safest pattern,
-  // url() in case it's a CSS-in-something we don't recognize.
-  if (runPatterns.length === 0) {
-    runPatterns.push(...CSS_REF_PATTERNS);
-  }
-
-  const candidates: string[] = [];
-  for (const re of runPatterns) {
-    for (const m of text.matchAll(re)) {
-      const ref = (m[1] || '').trim();
-      if (ref) candidates.push(ref);
-    }
-  }
-  // Pull every candidate URL out of any srcset attributes in HTML.
-  if (isHtmlLike(fromMime, fromPath)) {
-    for (const m of text.matchAll(SRCSET_PATTERN)) {
-      const list = m[1] || '';
-      for (const part of list.split(',')) {
-        const url = part.trim().split(/\s+/)[0];
-        if (url) candidates.push(url);
-      }
-    }
-  }
-
-  for (const raw of candidates) {
-    if (/^(?:https?:|\/\/|data:|mailto:|tel:|#)/i.test(raw)) continue;
-    const dir = fromPath.includes('/')
-      ? fromPath.slice(0, fromPath.lastIndexOf('/') + 1)
-      : '';
-    const resolved = raw.startsWith('/') ? raw.slice(1) : dir + raw;
-    const stripped = resolved.replace(/[?#].*$/, '');
-    const segs = stripped.split('/').filter(Boolean);
-    const out: string[] = [];
-    let escaped = false;
-    for (const s of segs) {
-      if (s === '.') continue;
-      if (s === '..') {
-        if (out.length === 0) { escaped = true; break; }
-        out.pop();
-        continue;
-      }
-      out.push(s);
-    }
-    if (escaped || out.length === 0) continue;
-    refs.add(out.join('/'));
-  }
-  return [...refs];
-}
-
 function okBundle(bundle: BundleInput) {
-  const payload = {
-    entryFile: bundle.entry,
-    projectId: bundle.project?.id,
-    projectName: bundle.project?.name,
-    truncated: bundle.truncated === true,
-    skippedFileCount: bundle.skippedFileCount ?? 0,
-    files: bundle.files.map((f) => ({
-      name: f.name,
-      mime: f.mime,
-      size: f.size,
-      binary: f.binary === true,
-      content: f.binary ? null : f.content,
-    })),
-    manifest: bundle.project?.metadata ?? null,
-  };
+  const payload = artifactBundlePayload(bundle.project, bundle.entry,
+    { files: bundle.files, truncated: bundle.truncated === true, skippedFileCount: bundle.skippedFileCount ?? 0 });
   return ok(withActiveEcho(payload, bundle.active, bundle.resolved));
 }
 

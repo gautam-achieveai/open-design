@@ -22,6 +22,7 @@ import {
   type ArtifactTextSuppressor,
 } from '../../artifacts/text-suppression.js';
 import { redactSecrets } from '../../redact.js';
+import { createExactTokenStreamRedactor } from '../../runtimes/exact-token-redaction.js';
 import { createJsonLineStream } from '../core/index.js';
 import type { JsonRpcId, JsonObject, TimerHandle, AcpChildProcess } from './types.js';
 import {
@@ -71,7 +72,7 @@ import {
   currentModelFromSessionResult,
   modelSelectionErrorIsRecoverable,
 } from './models.js';
-import { buildAcpSessionNewParams, buildPromptBlocks, type AcpMcpServerInput } from './session-params.js';
+import { buildAcpSessionNewParams, buildPromptBlocks, selectAcpOwnMcpTransport, type AcpMcpServerInput, type AcpOwnMcpServers } from './session-params.js';
 import { withholdStdioMcpServersForBuild } from './stdio-mcp.js';
 import { createVelaChildEvidenceConsumer } from '../../runtimes/vela-child-evidence.js';
 import { withAcpEmissionProvenance, type AcpEmissionMeta } from './emission-provenance.js';
@@ -124,6 +125,11 @@ export interface AttachAcpSessionOptions {
   /** Frozen non-image/image resources delivered as ACP resource_link blocks. */
   resourcePaths?: string[];
   mcpServers?: AcpMcpServerInput[];
+  /** Private run transport candidates, kept distinct from external servers. */
+  ownMcpServers?: AcpOwnMcpServers;
+  /** Ephemeral exact-token guard input; never included in emitted payloads. */
+  runToolToken?: string;
+  onUnsafeOutput?: () => void;
   // Passed through to buildAcpSessionNewParams — see AcpSessionOptions.
   envFormat?: 'array' | 'map';
   // First version of this agent that rejects stdio MCP servers on `session/new`
@@ -201,6 +207,9 @@ export function attachAcpSession({
   imagePaths = [],
   resourcePaths = [],
   mcpServers,
+  ownMcpServers,
+  runToolToken,
+  onUnsafeOutput,
   envFormat = 'array',
   stdioMcpRemovedInVersion,
   send,
@@ -275,6 +284,7 @@ export function attachAcpSession({
   let artifactSuppressionDiagnosticCount = 0;
   let velaChildRejectionDiagnosticCount = 0;
   let acpStderrTail = '';
+  const acpStderrTokenGuard = runToolToken ? createExactTokenStreamRedactor([runToolToken]) : null;
   let currentStage = 'initialize';
   let finished = false;
   let fatal = false;
@@ -626,6 +636,18 @@ export function attachAcpSession({
             },
     );
     if (!terminalOwnedByCaller && !child.killed) child.kill('SIGTERM');
+  };
+
+  const failUnsafeOutput = () => {
+    try { onUnsafeOutput?.(); } catch { /* Never copy a callback exception. */ }
+    fail('Agent output could not be safely processed.', { retryable: false });
+  };
+  const safeIdentity = (value: unknown): boolean => {
+    if (runToolToken && typeof value === 'string' && value.includes(runToolToken)) {
+      failUnsafeOutput();
+      return false;
+    }
+    return true;
   };
 
   const writeRpc = (id: JsonRpcId, method: string, params: unknown, timeoutLabel: string) => {
@@ -982,6 +1004,7 @@ export function attachAcpSession({
   const replyPermission = (raw: JsonObject) => {
     const params = asObject(raw.params);
     const optionId = choosePermissionOutcome(params?.options);
+    if (!safeIdentity(optionId)) return;
     if (!optionId || !isJsonRpcId(raw.id)) {
       fail(`unhandled ACP permission request: ${JSON.stringify(raw)}`);
       return;
@@ -1018,12 +1041,17 @@ export function attachAcpSession({
     resetStageTimer('response');
     const obj = asObject(raw);
     if (!obj) return;
+    const params = asObject(obj.params);
+    const result = asObject(obj.result);
+    const update = asObject(params?.update);
+    // Validate routing identities before using or retaining them. Raw protocol
+    // values remain unchanged when accepted; presentation redaction is later.
+    if (![obj.id, params?.sessionId, result?.sessionId, result?.openCodeSessionId,
+      update?.toolCallId, update?.parentToolCallId].every(safeIdentity)) return;
     // First well-formed ACP JSON-RPC message = CLI ready (#3408 §4). Caller
     // dedupes, so re-notifying on later messages is harmless.
     onCliReady?.();
     const error = asObject(obj.error);
-    const params = asObject(obj.params);
-    const result = asObject(obj.result);
     const rpcErr = rpcErrorMessage(obj);
     if (rpcErr) {
       // After response completion, any late-arriving errors from the agent
@@ -1080,7 +1108,6 @@ export function attachAcpSession({
       replyPermission(obj);
       return;
     }
-    const update = asObject(params?.update);
     if (obj.method === 'session/update' && update) {
       if (modelUnavailableErrorCode) {
         const promotedPayload = promotedAmrRetryStatusPayload(update);
@@ -1347,25 +1374,18 @@ export function attachAcpSession({
         });
       }
       expectedId = nextId;
-      if (resumeSessionId) {
-        // Resume the prior upstream session instead of creating a fresh one.
-        writeRpc(
-          nextId,
-          'session/load',
-          { sessionId: resumeSessionId, cwd: effectiveCwd },
-          'session/load',
-        );
-      } else {
-        // The build that just answered `initialize` is the one about to parse
-        // `session/new`, so the version it reports for itself is the authority
-        // on which MCP transports this payload may carry. Preferred over any
-        // earlier `--version` probe, which can be stale by the time a run
-        // starts (upgrade between probe and run, PATH shim, detection refresh).
+      {
+        // The agent that answered `initialize` receives these servers for both
+        // a new session and a loaded session. Use its capabilities and build.
         const agentInfo = (result as { agentInfo?: { version?: unknown } }).agentInfo;
         const reportedVersion =
           typeof agentInfo?.version === 'string' ? agentInfo.version : null;
-        const sessionMcp = mcpServers
-          ? withholdStdioMcpServersForBuild(mcpServers, {
+        const capabilities = asObject(asObject(result.agentCapabilities)?.mcpCapabilities);
+        let candidates: AcpMcpServerInput[];
+        try { candidates = selectAcpOwnMcpTransport(mcpServers ?? [], ownMcpServers, capabilities?.http === true); }
+        catch { fail('OpenDesign MCP configuration could not be prepared.', { retryable: false }); return; }
+        const sessionMcp = mcpServers || ownMcpServers
+          ? withholdStdioMcpServersForBuild(candidates, {
               reportedVersion,
               removedInVersion: stdioMcpRemovedInVersion,
             })
@@ -1374,25 +1394,34 @@ export function attachAcpSession({
           // Daemon-log only: the transcript is user-facing and localized, and a
           // withheld MCP server is an operator-diagnostic detail, not something
           // the user can act on mid-turn.
-          console.warn(
-            `[acp] agent build ${reportedVersion ?? 'unknown'} does not accept stdio MCP servers; withheld ${sessionMcp.withheldNames.join(', ')}`,
-          );
+          console.warn(runToolToken
+            ? `[acp] withheld ${sessionMcp.withheldNames.length} unsupported stdio MCP server(s)`
+            : `[acp] agent build ${reportedVersion ?? 'unknown'} does not accept stdio MCP servers; withheld ${sessionMcp.withheldNames.join(', ')}`);
         }
-        writeRpc(
-          nextId,
-          'session/new',
-          buildAcpSessionNewParams(
-            effectiveCwd,
-            sessionMcp ? { mcpServers: sessionMcp.servers, envFormat } : { envFormat },
-          ),
-          'session/new',
+        const supportedServers = sessionMcp?.servers.filter((server) => {
+          if (server.type === 'http') return capabilities?.http === true;
+          if (server.type === 'sse') return capabilities?.sse === true;
+          return true;
+        });
+        const withheldRemoteCount = (sessionMcp?.servers.length ?? 0) - (supportedServers?.length ?? 0);
+        if (withheldRemoteCount > 0) {
+          // Do not log descriptors: remote entries may contain credentials.
+          console.warn(`[acp] withheld ${withheldRemoteCount} remote MCP server(s) not supported by this agent`);
+        }
+        const sessionParams = buildAcpSessionNewParams(
+          effectiveCwd,
+          supportedServers ? { mcpServers: supportedServers, envFormat } : { envFormat },
         );
+        const method = resumeSessionId ? 'session/load' : 'session/new';
+        writeRpc(nextId, method, resumeSessionId ? { sessionId: resumeSessionId, ...sessionParams } : sessionParams, method);
       }
       nextId += 1;
       return;
     }
     if (expectedId === 2) {
-      sessionId = typeof result.sessionId === 'string' ? result.sessionId : null;
+      // ACP session/load may return an empty result; the request already names
+      // the session. New sessions still require an agent-issued sessionId.
+      sessionId = typeof result.sessionId === 'string' ? result.sessionId : (resumeSessionId ?? null);
       // The durable handle for resuming this session on the next turn.
       durableSessionId =
         typeof result.openCodeSessionId === 'string' ? result.openCodeSessionId : null;
@@ -1404,8 +1433,10 @@ export function attachAcpSession({
       // session/new acknowledged with a session id = handshake done (#3408 §4).
       if (sessionId) onSessionInit?.();
       const modelConfig = findModelConfigOption(result.configOptions);
+      const resultModel = currentModelFromSessionResult(result);
+      if (![modelConfig?.configId, resultModel].every(safeIdentity)) return;
       modelConfigId = modelConfig?.configId ?? null;
-      activeModel = currentModelFromSessionResult(result);
+      activeModel = resultModel;
       if (sessionId && activeModel) {
         send('agent', { type: 'status', label: 'model', model: activeModel });
       }
@@ -1473,7 +1504,9 @@ export function attachAcpSession({
       return;
     }
     if (sessionId && model && model !== 'default' && obj.id === expectedId) {
-      activeModel = currentModelFromSessionResult(result) ?? model;
+      const resultModel = currentModelFromSessionResult(result) ?? model;
+      if (!safeIdentity(resultModel)) return;
+      activeModel = resultModel;
       send('agent', { type: 'status', label: 'model', model: activeModel });
       sendPrompt();
     }
@@ -1483,7 +1516,10 @@ export function attachAcpSession({
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', (chunk: string) => {
     if (finished) return;
-    acpStderrTail = `${acpStderrTail}${String(chunk)}`.slice(
+    let safeChunk: string;
+    try { safeChunk = acpStderrTokenGuard ? acpStderrTokenGuard.push(String(chunk)) : String(chunk); }
+    catch { failUnsafeOutput(); return; }
+    acpStderrTail = `${acpStderrTail}${safeChunk}`.slice(
       -AMR_STDERR_RETRY_TAIL_LIMIT,
     );
     if (!modelUnavailableErrorCode) return;
@@ -1492,6 +1528,10 @@ export function attachAcpSession({
   });
   child.on('close', (code, signal) => {
     clearStageTimer();
+    if (acpStderrTokenGuard && !finished) {
+      try { acpStderrTail = `${acpStderrTail}${acpStderrTokenGuard.maskPending()}`.slice(-AMR_STDERR_RETRY_TAIL_LIMIT); }
+      catch { failUnsafeOutput(); }
+    }
     parser.flush();
     if (!finished && !aborted && !fatal) {
       const stderrTail = redactSecrets(
@@ -1519,7 +1559,7 @@ export function attachAcpSession({
   child.on('error', (err: Error) => fail(err.message));
   stdin.on('error', (err: Error) => fail(`stdin error: ${err.message}`));
 
-  writeRpc(1, 'initialize', {
+  if (safeIdentity(resumeSessionId)) writeRpc(1, 'initialize', {
     protocolVersion: ACP_PROTOCOL_VERSION,
     clientCapabilities: { terminal: false },
     clientInfo: { name: clientName, version: clientVersion },

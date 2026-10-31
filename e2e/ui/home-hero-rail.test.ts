@@ -1744,130 +1744,39 @@ test('[P1] home hero example presets update the composer input for prototype and
   await expect(input).toHaveText('Create a live Notion dashboard artifact.');
 });
 
-test('[P1] live dashboard preset sends the active workspace name to plugin apply', async ({ page }) => {
-  const personalWorkspace = {
-    workspaceId: 'ws-personal',
-    workspaceName: 'Personal Workspace',
-    workspaceType: 'personal',
-    workspaceMemberId: 'wm-personal',
-    role: 'owner',
-    memberStatus: 'active',
-    lifecycleState: 'active',
-  } as const;
-  const teamWorkspace = {
-    workspaceId: 'ws-qa',
-    workspaceName: 'QA Team',
-    workspaceType: 'team',
-    workspaceMemberId: 'wm-qa',
-    role: 'member',
-    memberStatus: 'active',
-    lifecycleState: 'active',
-  } as const;
-  const workspaceContext = (
-    selected: typeof personalWorkspace | typeof teamWorkspace,
-    includeWorkspaceName = false,
-  ) => ({
-    workspaceId: selected.workspaceId,
-    workspaceType: selected.workspaceType,
-    workspaceMemberId: selected.workspaceMemberId,
-    role: selected.role,
-    memberStatus: 'active' as const,
-    lifecycleState: 'active' as const,
-    billingState: 'active' as const,
-    planId: selected.workspaceType === 'team' ? 'team' : null,
-    providerMode: 'platform_credits' as const,
-    seatSummary: {
-      seatLimit: 10,
-      usedSeats: 1,
-      availableSeats: 9,
-      isSeatFull: false,
+test('[P1] local dashboard preset preserves its template inputs without workspace switching', async ({ page }) => {
+  // A template-owned default remains authoritative when no Cloud context exists.
+  const plugins = HOME_PLUGINS.map(plugin => plugin.id !== 'example-live-dashboard' ? plugin : {
+    ...plugin,
+    manifest: {
+      ...plugin.manifest,
+      od: {
+        ...plugin.manifest.od,
+        inputs: plugin.manifest.od.inputs?.map(field => field.name === 'workspace_name'
+          ? { ...field, default: 'QA Team' }
+          : field),
+      },
     },
-    permissions: {
-      canInviteMembers: false,
-      canManageMembers: false,
-      canManageBilling: false,
-      canManageAutoRecharge: false,
-      canShareProjects: true,
-      canWriteSyncedFiles: true,
-      canViewWorkspaceSettings: true,
-      canManageSharedResources: false,
-    },
-    ...(includeWorkspaceName ? { workspaceName: selected.workspaceName } : {}),
   });
-  await page.route('**/api/workspace/directory', async (route) => {
-    await route.fulfill({
-      json: {
-        items: [personalWorkspace, teamWorkspace],
-        activeWorkspaceId: null,
-      },
-    });
+  await page.route('**/api/plugins', route => route.fulfill({ json: { plugins } }));
+  const workspaceMutations: string[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/workspace/active') workspaceMutations.push(request.method());
   });
-  await page.route('**/api/workspace/context', async (route) => {
-    const workspaceId = route.request().headers()['x-od-workspace-id'];
-    const selected = workspaceId === teamWorkspace.workspaceId
-      ? teamWorkspace
-      : personalWorkspace;
-    await route.fulfill({
-      json: {
-        context: workspaceContext(selected),
-      },
-    });
-  });
-  await page.route('**/api/workspace/active', async (route) => {
-    if (route.request().method() !== 'PUT') {
-      await route.fallback();
-      return;
-    }
-    const body = route.request().postDataJSON() as {
-      workspaceId?: unknown;
-      workspaceMemberId?: unknown;
-    };
-    const selected = [personalWorkspace, teamWorkspace].find(
-      (item) =>
-        item.workspaceId === body.workspaceId
-        && item.workspaceMemberId === body.workspaceMemberId,
-    );
-    if (!selected) {
-      await route.fulfill({ status: 400, json: { error: 'exact_workspace_scope_required' } });
-      return;
-    }
-    await route.fulfill({
-      json: {
-        activeWorkspaceId: selected.workspaceId,
-        context: workspaceContext(selected, true),
-      },
-    });
-  });
-
   await gotoEntryHome(page);
-  await page.getByTestId('entry-rail-collapse').click();
-  await expect(page.getByTestId('workspace-switcher')).toContainText('Personal Workspace');
-
+  await expect(page.getByTestId('workspace-switcher')).toHaveCount(0);
   await pickHomeTemplate(page, 'live-artifact');
+  const applyRequestPromise = page.waitForRequest(request =>
+    request.method() === 'POST' && request.url().includes('/api/plugins/example-live-dashboard/apply'));
   await usePreset(page, 'example-live-dashboard');
   await expect(page.getByTestId('home-hero-submit')).toBeEnabled();
-
-  // The preset is already bound to Personal. Switching the request-local tab
-  // context must replace that context-owned input and invalidate the old apply
-  // snapshot before Send — no account-level active Workspace participates.
-  await page.getByTestId('workspace-switcher').click();
-  await page.getByRole('menuitem', { name: 'QA Team' }).click();
-  await expect(page.getByTestId('workspace-switcher')).toContainText('QA Team');
-
-  const applyRequestPromise = page.waitForRequest((request) =>
-    request.method() === 'POST'
-      && request.url().includes('/api/plugins/example-live-dashboard/apply'),
-  );
   await page.getByTestId('home-hero-submit').click();
-
   const applyRequest = await applyRequestPromise;
-  const body = applyRequest.postDataJSON() as {
-    inputs?: Record<string, unknown>;
-  };
-  expect(body.inputs).toMatchObject({
+  expect(applyRequest.postDataJSON()).toMatchObject({ inputs: {
     workspace_name: 'QA Team',
     page_title: 'Team Dashboard',
-  });
+  } });
+  expect(workspaceMutations).toEqual([]);
 });
 
 test('[P1] home hero example preset card has no hover overlay and applies the template directly', async ({ page }) => {

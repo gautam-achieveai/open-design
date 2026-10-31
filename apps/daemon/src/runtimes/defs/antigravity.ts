@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 
 import { DEFAULT_MODEL_OPTION } from './shared.js';
 import { agentCapabilities } from '../capabilities.js';
-import type { RuntimeAgentDef } from '../types.js';
+import type { RuntimeAgentDef, RuntimeModelOption } from '../types.js';
 
 const ANTIGRAVITY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 
@@ -37,10 +37,37 @@ const ANTIGRAVITY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
 // `availableModels` cache miss + empty print-mode output, which surfaces
 // to the user as a generic "empty response" error.
 //
-// The 8 model labels mirror what `Switch Model` in agy's TUI lists for
-// consumer-tier accounts as of 2026-05-28. The set is small and stable
-// enough to ship statically until upstream adds a programmatic
-// `agy models` subcommand (also tracked under issue #35).
+const ANTIGRAVITY_MODEL_SLUG_RE = /^[a-z0-9][a-z0-9._-]*$/i;
+const ANTIGRAVITY_MODEL_LABEL_RE = /^(?:Gemini|Claude|GPT-OSS)\s+\S(?:.*\S)?$/i;
+
+/**
+ * Parse `agy models` without turning headers, auth errors, or progress prose
+ * into selectable models. Current output is `<slug>\t<display label>`; older
+ * builds emitted display labels, and stable-slug-only output is also accepted.
+ * The settings-based spawn path expects the display label when one is present.
+ */
+export function parseAntigravityModels(stdout: string): RuntimeModelOption[] | null {
+  const out: RuntimeModelOption[] = [DEFAULT_MODEL_OPTION];
+  const seen = new Set<string>([DEFAULT_MODEL_OPTION.id]);
+  for (const rawLine of String(stdout || '').split('\n')) {
+    const line = rawLine.trim().replace(/\s+\(current\)$/i, '');
+    if (!line) continue;
+    const columns = line.split('\t').map((column) => column.trim()).filter(Boolean);
+    const slug = columns.length > 1 && ANTIGRAVITY_MODEL_SLUG_RE.test(columns[0] ?? '')
+      ? columns[0]!
+      : '';
+    const label = columns.length > 1 ? columns.slice(1).join(' ').trim() : line;
+    const id = slug && ANTIGRAVITY_MODEL_LABEL_RE.test(label) ? label : line;
+    const valid = slug
+      ? ANTIGRAVITY_MODEL_LABEL_RE.test(label)
+      : ANTIGRAVITY_MODEL_SLUG_RE.test(id) || ANTIGRAVITY_MODEL_LABEL_RE.test(id);
+    if (!valid || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label: label || id });
+  }
+  return out.length > 1 ? out : null;
+}
+
 const ANTIGRAVITY_SETTINGS_PATH = join(
   homedir(),
   '.gemini',
@@ -178,20 +205,13 @@ export const antigravityAgentDef = {
   capabilityFlags: {
     [ANTIGRAVITY_SKIP_PERMISSIONS_FLAG]: 'skipPermissions',
   },
-  fallbackModels: [
-    DEFAULT_MODEL_OPTION,
-    { id: 'Gemini 3.1 Pro (High)', label: 'Gemini 3.1 Pro (High)' },
-    { id: 'Gemini 3.1 Pro (Low)', label: 'Gemini 3.1 Pro (Low)' },
-    { id: 'Gemini 3.5 Flash (High)', label: 'Gemini 3.5 Flash (High)' },
-    { id: 'Gemini 3.5 Flash (Medium)', label: 'Gemini 3.5 Flash (Medium)' },
-    { id: 'Gemini 3.5 Flash (Low)', label: 'Gemini 3.5 Flash (Low)' },
-    {
-      id: 'Claude Sonnet 4.6 (Thinking)',
-      label: 'Claude Sonnet 4.6 (Thinking)',
-    },
-    { id: 'Claude Opus 4.6 (Thinking)', label: 'Claude Opus 4.6 (Thinking)' },
-    { id: 'GPT-OSS 120B (Medium)', label: 'GPT-OSS 120B (Medium)' },
-  ],
+  // Available models depend on the signed-in account and CLI release.
+  listModels: {
+    args: ['models'],
+    timeoutMs: 15_000,
+    parse: parseAntigravityModels,
+  },
+  fallbackModels: [DEFAULT_MODEL_OPTION],
   supportsCustomModel: false,
   // We deliberately do NOT opt into `resumesSessionViaCli` / agy's `-c`
   // resume flag on follow-up turns. Tested both shapes; `-c` activates

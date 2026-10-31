@@ -107,6 +107,12 @@ describe('codex transport switch', () => {
   });
 
   describe('withCodexTransport', () => {
+    it('advertises the private MCP carrier only for the app-server variant', () => {
+      expect(withCodexTransport(codexAgentDef, 'app-server').externalMcpInjection).toBe('codex-thread-config');
+      expect(withCodexTransport(codexAgentDef, 'exec-json').externalMcpInjection).toBeUndefined();
+      expect(codexAgentDef).not.toHaveProperty('externalMcpInjection');
+    });
+
     it('returns the identical def object when the transport is exec-json', () => {
       expect(withCodexTransport(codexAgentDef, 'exec-json')).toBe(codexAgentDef);
     });
@@ -156,12 +162,25 @@ describe('codex transport switch', () => {
     });
 
     it('reproduces --sandbox network access and --add-dir as config overrides', () => {
-      const overridden = withCodexTransport(codexAgentDef, 'app-server');
-      const args = overridden.buildArgs('p', [], ['/extra/one', '/extra/two'], {}, { cwd: '/w' });
-      expect(args).toContain('sandbox_workspace_write.network_access=true');
-      expect(args).toContain(
-        'sandbox_workspace_write.writable_roots=["/extra/one","/extra/two"]',
-      );
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+      const sandbox = process.env.OD_CODEX_SANDBOX, wsl = process.env.WSL_DISTRO_NAME;
+      try {
+        // This case exercises workspace-write; Windows deliberately uses a
+        // different sandbox. Isolate the policy inputs instead of depending on CI.
+        Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' });
+        delete process.env.OD_CODEX_SANDBOX;
+        delete process.env.WSL_DISTRO_NAME;
+        const overridden = withCodexTransport(codexAgentDef, 'app-server');
+        const args = overridden.buildArgs('p', [], ['/extra/one', '/extra/two'], {}, { cwd: '/w' });
+        expect(args).toContain('sandbox_workspace_write.network_access=true');
+        expect(args).toContain(
+          'sandbox_workspace_write.writable_roots=["/extra/one","/extra/two"]',
+        );
+      } finally {
+        Object.defineProperty(process, 'platform', platform);
+        if (sandbox === undefined) delete process.env.OD_CODEX_SANDBOX; else process.env.OD_CODEX_SANDBOX = sandbox;
+        if (wsl === undefined) delete process.env.WSL_DISTRO_NAME; else process.env.WSL_DISTRO_NAME = wsl;
+      }
     });
 
     it('omits the writable-roots override when no extra dirs were granted', () => {

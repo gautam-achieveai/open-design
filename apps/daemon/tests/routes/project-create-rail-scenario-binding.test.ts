@@ -31,6 +31,8 @@ type RailSurface = {
   metadata: Record<string, unknown>;
   /** The plugin the card applies, and the one a pick under it forwards. */
   scenarioPluginId: string;
+  /** Scenario-owned initial mode; omitted entries keep Home's Design default. */
+  conversationMode?: 'design' | 'build';
   /** The chip's `action.inputs`, which ride along in both shapes. */
   pluginInputs?: Record<string, unknown>;
   /** Claimed by the three cards that own an OD Next route. */
@@ -42,6 +44,7 @@ const CREATE_RAIL_SURFACES: RailSurface[] = [
     chipId: 'active-ui-development',
     metadata: { kind: 'other', intent: 'active-ui-development' },
     scenarioPluginId: 'od-active-ui-development',
+    conversationMode: 'build',
   },
   {
     chipId: 'prototype',
@@ -171,6 +174,7 @@ async function createProject(
 function automaticDefaultBody(surface: RailSurface): Record<string, unknown> {
   return {
     metadata: surface.metadata,
+    ...(surface.conversationMode ? { conversationMode: surface.conversationMode } : {}),
     ...(surface.pluginInputs ? { pluginInputs: surface.pluginInputs } : {}),
     ...(surface.automaticStrategyTaskProfile
       ? { automaticStrategyTaskProfile: surface.automaticStrategyTaskProfile }
@@ -182,6 +186,7 @@ function automaticDefaultBody(surface: RailSurface): Record<string, unknown> {
 function forwardedPluginBody(surface: RailSurface): Record<string, unknown> {
   return {
     metadata: surface.metadata,
+    ...(surface.conversationMode ? { conversationMode: surface.conversationMode } : {}),
     pluginId: surface.scenarioPluginId,
     ...(surface.pluginInputs ? { pluginInputs: surface.pluginInputs } : {}),
   };

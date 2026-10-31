@@ -7,6 +7,7 @@ import {
   DEFAULT_IMAGE_MODEL,
   DEFAULT_VIDEO_MODEL,
   IMAGE_MODELS,
+  isRetiredMediaModel,
   MEDIA_ASPECTS,
   type MediaModel,
   VIDEO_LENGTHS_SEC,
@@ -95,7 +96,9 @@ export function normalizeHomeMediaInputs(
       aspect: ratio,
       template: validTemplateId(surface, stringValue(raw.template), promptTemplates),
       designSystem: stringValue(raw.designSystem) || 'the active project design system',
-      model: validOption(stringValue(raw.model), imageModels.map((m) => m.id), DEFAULT_IMAGE_MODEL),
+      model: isRetiredMediaModel(stringValue(raw.model))
+        ? stringValue(raw.model)
+        : validOption(stringValue(raw.model), imageModels.map((m) => m.id), DEFAULT_IMAGE_MODEL),
       ratio,
       resolution: validOption(stringValue(raw.resolution), MEDIA_RESOLUTIONS, DEFAULT_MEDIA_RESOLUTION),
     };
@@ -109,7 +112,7 @@ export function normalizeHomeMediaInputs(
       aspect: ratio,
       template: validTemplateId(surface, stringValue(raw.template), promptTemplates),
       designSystem: stringValue(raw.designSystem) || 'the active project design system',
-      model: validOption(
+      model: isRetiredMediaModel(stringValue(raw.model)) ? stringValue(raw.model) : validOption(
         stringValue(raw.model),
         VIDEO_MODELS.filter((m) => m.id !== 'hyperframes-html').map((m) => m.id),
         DEFAULT_VIDEO_MODEL === 'hyperframes-html'

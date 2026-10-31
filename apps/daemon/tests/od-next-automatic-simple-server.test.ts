@@ -305,7 +305,7 @@ console.log('aider 0.86.0');
     await chmod(sentinel, 0o755);
     // A controlled host candidate, not the developer's real CLI. Fixture
     // isolation must fence both PATH discovery and inherited explicit overrides.
-    process.env.PATH = [hostBinDir, '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(path.delimiter);
+    process.env.PATH = [hostBinDir, ...fixtureSystemPath()].join(path.delimiter);
     process.env.OD_AGENT_HOME = hostHome;
     process.env.AIDER_BIN = sentinel;
     try {
@@ -2936,7 +2936,7 @@ process.exit(127);
         expect(collected.input).toMatchObject({ codexHome: binDir,
           parentSessionId: history.parentId, taskExecutionId: fixture.taskExecutionId,
           runId, taskRunIndex: mapping.taskRunIndex, stage: mapping.inputStage });
-        expect.soft(collected.result.availability).toBe('complete');
+        expect.soft(collected.result.availability, JSON.stringify(collected.result.diagnostics)).toBe('complete');
         expect.soft(collected.result.knownChildCount).toBe(1);
         expect.soft(collected.result.observations.filter(row => row.kind === 'child_agent' && row.status === 'completed')).toHaveLength(1);
         if (mode === 'cancel') {
@@ -3188,6 +3188,7 @@ input.on('line', line => {
   const frame = JSON.parse(line);
   record(frame.method, frame.params?.threadId);
   if (frame.method === 'initialize') send({ id: frame.id, result: { userAgent: 'codex/0.147.0' } });
+  else if (frame.method === 'config/read') send({ id: frame.id, result: { config: {} } });
   else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: parentId, historyMode: 'paginated', path: parentPath } } });
   else if (frame.method === 'turn/start') {
     const now = Date.now();
@@ -3225,6 +3226,7 @@ input.on('line', line => {
 });
 `, 'utf8');
   await chmod(bin, 0o755);
+  await writeFixtureCommand(bin);
   return { parentId, framesPath, parentPath, childPath, expectedChildPath, expectedParentPath, archivedParentPath: path.join(archive, parentName) };
 }
 
@@ -3371,6 +3373,13 @@ function publicRunRequest(
   };
 }
 
+async function writeFixtureCommand(script: string): Promise<string> {
+  if (process.platform !== 'win32') return script;
+  const command = `${script}.cmd`;
+  await writeFile(command, `@"${process.execPath}" "${script}" %*\r\n`, 'utf8');
+  return command;
+}
+
 async function writePublicRolloutCodex(
   dir: string,
   label: string,
@@ -3407,7 +3416,7 @@ process.stdin.on('end', () => {
 });
 `, 'utf8');
   await chmod(bin, 0o755);
-  return { bin, logPath };
+  return { bin: await writeFixtureCommand(bin), logPath };
 }
 
 async function runOdCli(args: string[]): Promise<{ stdout: string; stderr: string }> {
@@ -3442,6 +3451,13 @@ async function readDurableRunState(runId: string): Promise<Record<string, unknow
  * executables are outside this test's discovery scope. Explicit *_BIN paths
  * can bypass PATH, so the fixture also removes inherited executable overrides.
  */
+function fixtureSystemPath(): string[] {
+  if (process.platform !== 'win32') return ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  if (!systemRoot) throw new Error('Windows fixture requires SystemRoot');
+  return [path.join(systemRoot, 'System32'), path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0')];
+}
+
 async function isolateAgentDetection(): Promise<void> {
   fixtureDetectionIsolation ??= (async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'od-next-agent-detection-'));
@@ -3461,7 +3477,7 @@ async function isolateAgentDetection(): Promise<void> {
   })();
   const isolation = await fixtureDetectionIsolation;
   process.env.OD_AGENT_HOME = isolation.home;
-  process.env.PATH = [isolation.bin, '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(path.delimiter);
+  process.env.PATH = [isolation.bin, ...fixtureSystemPath()].join(path.delimiter);
   for (const key of fixtureAgentBinEnvKeys) delete process.env[key];
 }
 
@@ -3852,7 +3868,7 @@ process.stdin.on('error', finish);
 setTimeout(finish, 1500);
 `, 'utf8');
   await chmod(bin, 0o755);
-  return { bin, logPath };
+  return { bin: await writeFixtureCommand(bin), logPath };
 }
 
 async function writeStrategyClaude(
@@ -3954,7 +3970,7 @@ process.stdin.on('error', finish);
 setTimeout(finish, 1500);
 `, 'utf8');
   await chmod(bin, 0o755);
-  return { bin, logPath };
+  return { bin: await writeFixtureCommand(bin), logPath };
 }
 
 async function readClaudeChildRuntimeFacts(

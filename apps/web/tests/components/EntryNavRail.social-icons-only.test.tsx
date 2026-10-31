@@ -10,13 +10,13 @@ import { act, cleanup, render, screen, within } from '@testing-library/react';
 import type { WorkspaceCollabContext } from '@open-design/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { EntryNavRail, resetWorkspaceDirectoryCache } from '../../src/components/EntryNavRail';
+import { EntryNavRail } from '../../src/components/EntryNavRail';
 import { WORKSPACE_CHROME_ACCOUNT_ACTIONS_ID } from '../../src/components/workspaceChromeActions';
 import { resetProjectRunStatusStore } from '../../src/hooks/useProjectRunStatuses';
 import { I18nProvider } from '../../src/i18n';
 
 const SOCIAL_LINKS = [
-  { href: 'https://discord.gg/mHAjSMV6gz', label: 'Join our Discord for free credits' },
+  { href: 'https://discord.gg/mHAjSMV6gz', label: 'Join the OpenDesign Discord' },
   { href: 'https://x.com/OpenDesignHQ', label: 'Follow @OpenDesignHQ for updates' },
   { href: 'mailto:support@open-design.ai', label: 'Questions? Email our team' },
 ];
@@ -60,10 +60,7 @@ function renderRail(context: WorkspaceCollabContext | null) {
         onViewChange={() => {}}
         onNewProject={() => {}}
         open
-        context={context}
-        billing={null}
-        footerNotice={context ? undefined : <div data-testid="local-sign-in-card">Sign in</div>}
-      />
+        context={context}      />
     </I18nProvider>,
   );
 }
@@ -72,7 +69,6 @@ let chromeActionsHost: HTMLDivElement;
 
 beforeEach(() => {
   localStorage.clear();
-  resetWorkspaceDirectoryCache();
   resetProjectRunStatusStore();
   stubFetch();
   const chrome = document.createElement('header');
@@ -85,7 +81,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  resetWorkspaceDirectoryCache();
   resetProjectRunStatusStore();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -118,10 +113,10 @@ function expectIconOnlySocialRow(row: HTMLElement) {
 }
 
 describe('OPEND-3180 — icon-only social links at the rail foot', () => {
-  it('signed in: the account dock shows Discord / X / mail as icons with tooltips', async () => {
+  it('a retained Team context still uses the local social dock', async () => {
     renderRail(teamContext());
     await act(async () => {});
-    const dock = screen.getByTestId('entry-nav-account').closest('.entry-nav-rail__account-dock') as HTMLElement;
+    const dock = screen.getByTestId('entry-nav-local-account-dock');
     expect(dock).not.toBeNull();
     expectIconOnlySocialRow(within(dock).getByTestId('entry-nav-rail-social'));
   });

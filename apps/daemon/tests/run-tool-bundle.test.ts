@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { codexAgentDef, withCodexTransport } from '../src/runtimes/defs/codex.js';
+import { kimiAgentDef } from '../src/runtimes/defs/kimi.js';
 
 import {
   normalizeRunToolBundleForRun,
@@ -9,6 +11,17 @@ import {
 } from '../src/run-tool-bundle.js';
 
 describe('run-scoped tool bundles', () => {
+  it('admits remote bundles only through the selected native carrier', () => {
+    for (const transport of ['http', 'sse'] as const) {
+      const bundle = normalizeRunToolBundleForRun({ mcpServers: [{ id: 'synthetic', transport, url: 'http://127.0.0.1:1/mcp' }] });
+      expect(validateRunToolBundleForAgent(bundle, kimiAgentDef)).toEqual({ ok: true });
+    }
+    const bundle = normalizeRunToolBundleForRun({ mcpServers: [{ id: 'synthetic', transport: 'http', url: 'http://127.0.0.1:1/mcp' }] });
+    expect(validateRunToolBundleForAgent(bundle, withCodexTransport(codexAgentDef, 'app-server'))).toEqual({ ok: true });
+    expect(validateRunToolBundleForAgent(bundle, withCodexTransport(codexAgentDef, 'exec-json')).ok).toBe(false);
+    expect(parseRunToolBundleForRequest({ mcpServers: [{ id: 'synthetic.external', transport: 'http', url: 'http://127.0.0.1:1/mcp' }] }).ok).toBe(false);
+  });
+
   it('sanitizes MCP servers onto the run and redacts spawn-only details in summaries', () => {
     const bundle = normalizeRunToolBundleForRun({
       mcpServers: [

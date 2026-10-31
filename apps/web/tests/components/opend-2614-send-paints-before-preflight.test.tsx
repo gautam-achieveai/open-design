@@ -44,7 +44,6 @@ import { ProjectView } from '../../src/components/ProjectView';
 import type { ProjectWorkspaceScopeState } from '../../src/collab/useProjectWorkspaceScope';
 import { resetWorkspaceContextCache } from '../../src/collab/useWorkspaceContext';
 import { streamViaDaemon } from '../../src/providers/daemon';
-import { checkAmrBalanceGate } from '../../src/runtime/amr-balance-gate';
 import {
   createConversation,
   listConversations,
@@ -155,23 +154,9 @@ vi.mock('../../src/providers/daemon', () => ({
   canUpgradeVelaPlan: vi.fn().mockReturnValue(false),
 }));
 
-vi.mock('../../src/runtime/amr-balance-gate', async () => {
-  const actual = await vi.importActual<typeof import('../../src/runtime/amr-balance-gate')>(
-    '../../src/runtime/amr-balance-gate',
-  );
-  return { ...actual, checkAmrBalanceGate: vi.fn().mockResolvedValue({ kind: 'allow' }) };
-});
-
 vi.mock('../../src/providers/project-events', () => ({
   useProjectFileEvents: vi.fn(),
 }));
-
-vi.mock('../../src/runtime/amr-low-balance-plan', async () => {
-  const actual = await vi.importActual<
-    typeof import('../../src/runtime/amr-low-balance-plan')
-  >('../../src/runtime/amr-low-balance-plan');
-  return { ...actual, resolveAmrPlan: vi.fn().mockResolvedValue('pro') };
-});
 
 vi.mock('../../src/runtime/brands', async () => {
   const actual = await vi.importActual<typeof import('../../src/runtime/brands')>(
@@ -276,7 +261,6 @@ vi.mock('../../src/components/ChatPane', async (importOriginal) => ({
 }));
 
 const mockedStreamViaDaemon = vi.mocked(streamViaDaemon);
-const mockedCheckAmrBalanceGate = vi.mocked(checkAmrBalanceGate);
 const mockedListConversations = vi.mocked(listConversations);
 const mockedCreateConversation = vi.mocked(createConversation);
 const mockedListMessages = vi.mocked(listMessages);
@@ -292,7 +276,7 @@ const config: AppConfig = {
   apiKey: '',
   baseUrl: '',
   model: 'deepseek-v4-flash',
-  agentId: 'amr',
+  agentId: 'claude',
   skillId: null,
   designSystemId: null,
 };
@@ -338,7 +322,7 @@ function renderProjectView(overrides: Partial<ComponentProps<typeof ProjectView>
       project={project()}
       routeFileName={null}
       config={config}
-      agents={[{ id: 'amr', name: 'amr', available: true }] as unknown as AgentInfo[]}
+      agents={[{ id: 'claude', name: 'Claude', available: true }] as unknown as AgentInfo[]}
       skills={[] as SkillSummary[]}
       designTemplates={[] as SkillSummary[]}
       designSystems={[] as DesignSystemSummary[]}
@@ -388,7 +372,6 @@ describe('OPEND-2614 发送后先上屏,再等预检', () => {
     mockedFetchProjectFiles.mockResolvedValue([]);
     mockedFetchBrands.mockResolvedValue([]);
     mockedStreamViaDaemon.mockResolvedValue(undefined);
-    mockedCheckAmrBalanceGate.mockResolvedValue({ kind: 'allow' });
     workspaceScopeMocks.projectScope = { loading: true, scope: null };
     workspaceScopeMocks.ambientContext = CALLER_CONTEXT;
     workspaceScopeMocks.billingResponse = null;
@@ -404,105 +387,26 @@ describe('OPEND-2614 发送后先上屏,再等预检', () => {
     resetWorkspaceContextCache();
   });
 
-  /**
-   * 夹具自检:这条路真的走预检。
-   *
-   * 没有这一条,下面那条「预检还没回来时消息就在屏幕上」在**预检压根没被调用**
-   * 的情况下也是绿的 —— 那时它证明的是「没有预检」,不是「先画后等」。
-   */
-  it('夹具自检:AMR 这一发确实要过 OpenDesign Cloud 预检', async () => {
+
+  it('paints the user turn while the local runtime is pending, with no Cloud preflight', async () => {
+    mockedStreamViaDaemon.mockReturnValue(new Promise(() => {}));
     renderProjectView();
     await clickSendWhenReady();
-    await waitFor(() => expect(mockedCheckAmrBalanceGate).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalledOnce());
+    expect(transcript()).toContain(`user:${PROMPT}`);
+    expect(screen.getByTestId('streaming').textContent).toBe('yes');
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => /vela|wallet|billing/.test(String(url)))).toBe(false);
   });
 
-  it('预检还在飞的时候,用户消息已经上屏并进入进行中', async () => {
-    // 现实里这就是那 1–2 秒:两条 HTTP 往返,其中一条强制向上游取新读数。
-    mockedCheckAmrBalanceGate.mockReturnValue(new Promise(() => {}) as never);
-
+  it('stops a pending local run while retaining the sent history', async () => {
+    let signal: AbortSignal | undefined;
+    mockedStreamViaDaemon.mockImplementation(options => {signal=options.signal;return new Promise(() => {});});
     renderProjectView();
     await clickSendWhenReady();
-
-    await waitFor(() => expect(mockedCheckAmrBalanceGate).toHaveBeenCalledTimes(1));
-    // 预检**永不落定**。此刻屏幕上必须已经有这条消息和进行中态。
-    await waitFor(() => expect(transcript()).toContain(`user:${PROMPT}`));
-    expect(screen.getByTestId('streaming').textContent).toBe('yes');
-  });
-
-  /**
-   * 上屏提前带来的**新状态**:预检那一两秒里,〔停止〕第一次可以在建出 run
-   * 之前按下去。按了就必须真的不跑 —— 否则用户叫停之后 run 还是起来了。
-   */
-  it('预检还在飞时用户按了停止:预检回来也不许再建 run', async () => {
-    let settle: (value: unknown) => void = () => {};
-    mockedCheckAmrBalanceGate.mockReturnValue(
-      new Promise((resolve) => {
-        settle = resolve;
-      }) as never,
-    );
-
-    renderProjectView();
-    await clickSendWhenReady();
-    await waitFor(() => expect(transcript()).toContain(`user:${PROMPT}`));
-    expect(screen.getByTestId('streaming').textContent).toBe('yes');
-
+    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByTestId('stop'));
     await waitFor(() => expect(screen.getByTestId('streaming').textContent).toBe('no'));
-
-    settle({ kind: 'allow' });
-    await waitFor(() => expect(mockedCheckAmrBalanceGate).toHaveBeenCalledTimes(1));
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(mockedStreamViaDaemon).not.toHaveBeenCalled();
-    // 停止是把这一轮收成终态,不是把它撤销 —— 用户说过的话留在屏幕上。
+    expect(signal?.aborted).toBe(true);
     expect(transcript()).toContain(`user:${PROMPT}`);
-  });
-
-  /**
-   * 反向对照:先画不等于「拦不住了」。
-   *
-   * 预检判定拦截时,这一轮仍然不许留在流水里假装在跑 —— 它被原样收回,
-   * 由余额卡/弹窗解释原因(那四种分支由 `ProjectView.amr-balance-branches`
-   * 钉死,这里只钉「画出来的那一轮被收回去了」)。
-   *
-   * ⚠️ **收回之后它不再落进发送队列**(OPEND-2719)。队列的语义是「等一等就能
-   * 跑」,而余额耗尽等不出来:消息会一直躺在那儿,用户看到的就是单里说的
-   * 「没有触发额度不足提示,而是把消息加入待发送队列」。正文改由输入框接回
-   * (`handleComposerSend` 的 `restore-draft`),那一半钉在
-   * `ProjectView.retry-gating.test.tsx`。这里只把「不再入队」钉住。
-   */
-  it('预检回来说拦截:画出去的那一轮要收回,而且不落进发送队列', async () => {
-    let settle: (value: unknown) => void = () => {};
-    mockedCheckAmrBalanceGate.mockReturnValue(
-      new Promise((resolve) => {
-        settle = resolve;
-      }) as never,
-    );
-
-    renderProjectView();
-    await clickSendWhenReady();
-    await waitFor(() => expect(transcript()).toContain(`user:${PROMPT}`));
-
-    settle({
-      kind: 'hard',
-      reason: 'insufficient',
-      snapshot: {
-        status: 'available',
-        profile: 'prod',
-        user: { plan: 'pro' },
-        balanceUsd: '0',
-        updatedAt: null,
-        fetchedAt: new Date().toISOString(),
-        stale: false,
-        source: 'vela_api',
-      },
-    });
-
-    await waitFor(() => expect(transcript()).not.toContain(`user:${PROMPT}`));
-    expect(screen.getByTestId('queued').textContent).not.toContain(PROMPT);
-    expect(screen.getByTestId('streaming').textContent).toBe('no');
-    expect(mockedStreamViaDaemon).not.toHaveBeenCalled();
   });
 });

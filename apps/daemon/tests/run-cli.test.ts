@@ -379,6 +379,32 @@ describe('od run CLI', () => {
     }
   });
 
+  // Integration: an actual CLI child must survive its native HTTP shutdown.
+  it('closes every open event stream before exiting a three-run watch chain', async () => {
+    const paths: string[] = [];
+    const server = http.createServer((req, res) => {
+      paths.push(req.url ?? '');
+      const next = req.url === '/api/runs/run-1/events' ? 'run-2'
+        : req.url === '/api/runs/run-2/events' ? 'run-3' : undefined;
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`event: end\ndata: ${JSON.stringify({ strategyTask: { terminal: !next, activeRunId: next } })}\n\n`);
+      // Keep HTTP open: the end event, rather than HTTP EOF, advances a Run.
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing fixture port');
+    try {
+      const result = await runCli(['run', 'watch', 'run-1', '--daemon-url', `http://127.0.0.1:${address.port}`]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stderr).not.toContain('UV_HANDLE_CLOSING');
+      expect(paths).toEqual(['/api/runs/run-1/events', '/api/runs/run-2/events', '/api/runs/run-3/events']);
+      expect(result.stdout.trim().split('\n').map(line => JSON.parse(line).event)).toEqual(['end', 'end', 'end']);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   it('uses an explicit task continuation handle and follows every projected active Run', async () => {
     stub = await startRunStubServer(true);
     tempDir = await mkdtemp(join(tmpdir(), 'od-run-task-chain-'));

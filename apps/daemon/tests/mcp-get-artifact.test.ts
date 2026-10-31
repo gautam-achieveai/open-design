@@ -136,6 +136,17 @@ describe('getArtifact maxBytes cap', () => {
 });
 
 describe('getArtifact UTF-8 byte accounting and partial reads', () => {
+  it.each(['auto', 'shallow'])('enforces maxBytes on the required entry in %s mode', async (include) => {
+    const r = await startServer(makeDaemonApp({ fileContent: 'x'.repeat(2000), contentType: 'text/html' }));
+    try {
+      const result = await getArtifact(r.baseUrl, PROJECT_ID, 'index.html', include, 64);
+      expect(result.isError).toBe(true);
+      expect(firstText(result.content)).toMatch(/exceeds remaining budget/);
+    } finally {
+      await new Promise<void>((resolve) => r.server.close(() => resolve()));
+    }
+  });
+
   it('counts UTF-8 bytes rather than JavaScript string length', async () => {
     const r = await startServer(makeDaemonApp({
       files: [{ name: 'first.css' }, { name: 'second.css' }],

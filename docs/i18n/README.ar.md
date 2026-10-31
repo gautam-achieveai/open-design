@@ -1,8 +1,9 @@
 <div dir="rtl">
 
+> **Fork notice:** Vela/OpenDesign Cloud accounts, managed models and team sync are unavailable. Local agents and separately configured providers remain. See the [current README](../../README.md). Dated roadmap entries below describe upstream history.
+
 <h1 align="center">OpenDesign: أول مساحة عمل تعاونية لوكلاء التصميم</h1>
 
-> ✨ **[نقدّم OpenDesign Go](https://open-design.ai/pricing/)**. تبدأ خطة Go Plan من 8 دولارات في الشهر الأول، مع رصيد شهري لأكثر من 10 نماذج، منها GPT-6.1 Sol وGPT-6 Luna وDeepSeek V4.1 Flash وGLM-5.3 Flash-X وMiMo V2.6 Flash. تشمل جميع الخطط الفردية الوصول إلى واجهة API لاستخدامها مع Codex وClaude Code وDSH وOpenCode وغيرها.
 >
 > 🧩 **[أصبح DeepSeek Harness مدعومًا الآن.](https://open-design.ai/zh/agents/deepseek-harness-design/)** صِل Agent Harness الرسمي `dsh` من DeepSeek بـ OpenDesign كبيئة تشغيل أصلية، مع التفكير المنظم واستدعاءات الأدوات واكتشاف النماذج والإلغاء واستئناف الجلسات. تبقى الملفات الناتجة ضمن سير عمل OpenDesign للمعاينة الحية والتسليم.
 
@@ -13,7 +14,6 @@
 <p align="center">
   <a href="https://open-design.ai/">الموقع</a> ·
   <a href="https://open-design.ai/">التنزيل</a> ·
-  <a href="https://open-design.ai/cloud/">OpenDesign Cloud</a> ·
   <a href="https://discord.gg/mHAjSMV6gz">Discord</a> ·
   <a href="https://x.com/OpenDesignHQ">تابع ‎@OpenDesignHQ</a>
 </p>
@@ -31,7 +31,7 @@
 
 ## ما هو OpenDesign
 
-OpenDesign **مساحة عمل تعاونية لوكلاء التصميم**. ابدأ بوصف موجز، ثم استخدم وكيل البرمجة الذي تعرفه أو OpenDesign Cloud لإنشاء نموذج أولي متوافق مع نظام التصميم لديك. شاركه مع فريقك، واجمع الملاحظات، ودع الوكيل يحسّنه داخل المشروع نفسه.
+OpenDesign **مساحة عمل تعاونية لوكلاء التصميم**. ابدأ بوصف موجز، ثم استخدم وكيل البرمجة الذي تعرفه لإنشاء نموذج أولي متوافق مع نظام التصميم لديك. شاركه مع فريقك، واجمع الملاحظات، ودع الوكيل يحسّنه داخل المشروع نفسه.
 
 سير العمل هذا مفتوح وقابل للتوسعة. وبصفته **بديلاً مفتوح المصدر لـ Claude Design**، يتوفر OpenDesign بترخيص Apache 2.0، ويتيح للفرق فحص المهارات وقوالب التصميم وأنظمة التصميم والإضافات وتكييفها مع طريقة عملها.
 
@@ -119,7 +119,6 @@ OpenDesign **مساحة عمل تعاونية لوكلاء التصميم**. ا�
 `od mcp install <agent> --print` لمعاينة تجريبية دون تنفيذ · `--uninstall` للإزالة · القائمة الكاملة عبر `od mcp install --help`.
 
 <p align="center">
-  <img src="https://repo-assets.open-design.ai/resources/images/coding-agents.png" alt="The 25 coding-agent CLIs OpenDesign supports — Claude Code · Codex · OpenCode · Hermes · Antigravity · Vela · Grok Build · Kimi · Cursor Agent · Qwen · Qoder · GitHub Copilot · Pi · Kiro · Kilo · Mistral Vibe · DeepSeek · Reasonix · Aider · Amp · CodeBuddy · Mimo · AtomCode · Devin · Trae" width="100%" />
 </p>
 
 **لا توجد واجهة CLI مثبَّتة؟** يمنحك وكيل BYOK على `POST /api/proxy/{anthropic,openai,azure,google,ollama,senseaudio}/stream` الحلقة نفسها (دون إنشاء عملية) — الصق `baseUrl` + `apiKey` + `model`، مع دعم OpenAI وAnthropic وAzure OpenAI وGoogle Gemini وOllama وLM Studio وvLLM، أو أي نقطة نهاية متوافقة مع OpenAI. تمنع حماية SSRF لكل هدف عناوين IP الداخلية / link-local / CGNAT عند حافة الـ daemon.

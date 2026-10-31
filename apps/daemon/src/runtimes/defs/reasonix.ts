@@ -68,8 +68,8 @@ export const reasonixAgentDef = {
     },
     fallbackModels: [
       DEFAULT_MODEL_OPTION,
+      { id: 'deepseek-flash', label: 'deepseek-flash (V4.1 Flash)' },
       { id: 'deepseek-v4-pro', label: 'deepseek-v4-pro' },
-      { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash' },
     ],
     installUrl: 'https://github.com/esengine/DeepSeek-Reasonix',
     docsUrl: 'https://esengine.github.io/DeepSeek-Reasonix/',

@@ -15,6 +15,72 @@ afterEach(() => {
 });
 
 describe('run-scoped tool tokens', () => {
+  it('allows the implemented browser actions on a default run grant', () => {
+    const registry = new ToolTokenRegistry();
+    const grant = registry.mint({ runId: 'run-browser', projectId: 'project-a' });
+    for (const operation of ['browser/scroll', 'browser/viewport', 'browser/style', 'browser/evaluate', 'browser/devtools']) {
+      expect(registry.validate(grant.token, { endpoint: '/mcp', operation })).toMatchObject({ ok: true });
+    }
+    expect(registry.validate(grant.token, { endpoint: '/mcp', operation: 'project/files:list' })).toMatchObject({ ok: true });
+    expect(registry.validate(grant.token, { endpoint: '/mcp', operation: 'catalog/agents:list' })).toMatchObject({ ok: true });
+    expect(registry.validate(grant.token, { endpoint: '/mcp', operation: 'context/active:read' })).toMatchObject({ ok: true });
+    expect(registry.validate(grant.token, { endpoint: '/mcp', operation: 'browser/unimplemented' })).toMatchObject({ ok: false });
+    registry.clear();
+  });
+
+  it('notifies subscribers when tokens are revoked, including timer expiry', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const registry = new ToolTokenRegistry();
+    const notified = vi.fn();
+    const unsubscribe = registry.onTokenRevoked(notified);
+    const first = registry.mint({ runId: 'run-first', projectId: 'project-a', ttlMs: 10 });
+    const second = registry.mint({ runId: 'run-second', projectId: 'project-a', ttlMs: 20 });
+
+    expect(registry.revokeToken(first.token)).toBe(true);
+    expect(registry.revokeToken(first.token)).toBe(false);
+    vi.advanceTimersByTime(20);
+    expect(registry.validate(second.token).ok).toBe(false);
+    expect(notified.mock.calls).toEqual([['run-first'], ['run-second']]);
+    unsubscribe();
+    registry.clear();
+  });
+
+  it('isolates subscriber errors, supports unsubscribe, and keeps clear silent', () => {
+    const registry = new ToolTokenRegistry();
+    const notified = vi.fn();
+    const unsubscribeThrowing = registry.onTokenRevoked(() => { throw new Error('listener failed'); });
+    const unsubscribe = registry.onTokenRevoked(notified);
+    registry.mint({ runId: 'run-a', projectId: 'project-a' });
+    registry.mint({ runId: 'run-a', projectId: 'project-a' });
+    expect(registry.revokeRun('run-a', 'child_exit')).toBe(2);
+    expect(notified.mock.calls).toEqual([['run-a'], ['run-a']]);
+    unsubscribeThrowing();
+    registry.mint({ runId: 'run-cleared', projectId: 'project-a' });
+    registry.clear();
+    expect(notified).toHaveBeenCalledTimes(2);
+    const later = registry.mint({ runId: 'run-later', projectId: 'project-a' });
+    expect(registry.revokeToken(later.token)).toBe(true);
+    expect(notified).toHaveBeenLastCalledWith('run-later');
+    unsubscribe();
+    unsubscribe();
+    const last = registry.mint({ runId: 'run-last', projectId: 'project-a' });
+    expect(registry.revokeToken(last.token)).toBe(true);
+    expect(notified).toHaveBeenCalledTimes(3);
+  });
+
+  it('notifies when validation or refresh detects an expired token', () => {
+    const registry = new ToolTokenRegistry();
+    const notified = vi.fn();
+    registry.onTokenRevoked(notified);
+    const first = registry.mint({ runId: 'run-validate', projectId: 'project-a', ttlMs: 10, nowMs: 1_000 });
+    const second = registry.mint({ runId: 'run-refresh', projectId: 'project-a', ttlMs: 10, nowMs: 1_000 });
+    expect(registry.validate(first.token, { nowMs: 1_010 })).toMatchObject({ ok: false, code: 'TOOL_TOKEN_EXPIRED' });
+    expect(registry.refreshToken(second.token, { nowMs: 1_010 })).toBeNull();
+    expect(notified.mock.calls).toEqual([['run-validate'], ['run-refresh']]);
+    registry.clear();
+  });
+
   it('keeps chat tokens alive beyond the runtime inactivity window', () => {
     const thirtyMinutes = 30 * 60 * 1000;
 

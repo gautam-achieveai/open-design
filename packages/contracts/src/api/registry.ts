@@ -147,6 +147,7 @@ export interface AgentInfo {
    */
   externalMcpInjection?:
     | 'claude-mcp-json'
+    | 'codex-thread-config'
     | 'acp-merge'
     | 'opencode-env-content'
     | 'mimo-env-content';

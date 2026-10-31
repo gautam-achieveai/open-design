@@ -47,8 +47,16 @@ export const copilotAgentDef = {
     // Settings.
     fallbackModels: [
       DEFAULT_MODEL_OPTION,
-      { id: 'claude-sonnet-4.6', label: 'Claude Sonnet 4.6' },
-      { id: 'gpt-5.2', label: 'GPT-5.2' },
+      { id: 'auto', label: 'Auto' },
+      { id: 'claude-sonnet-5.5', label: 'Claude Sonnet 5.5' },
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol' },
+      { id: 'gpt-6-astra', label: 'GPT-6 Astra' },
+      { id: 'gpt-6-luna', label: 'GPT-6 Luna' },
+      { id: 'claude-opus-5.5', label: 'Claude Opus 5.5' },
+      { id: 'claude-haiku-5.5', label: 'Claude Haiku 5.5' },
+      { id: 'claude-haiku-4.5', label: 'Claude Haiku 4.5' },
+      { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+      { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
     ],
     buildArgs: (_prompt, _imagePaths, extraAllowedDirs = [], options = {}) => {
       const args = [

@@ -239,7 +239,6 @@ namespace="${TOOLS_PACK_NAMESPACE:-release-beta}"
 sign_mode="${MAC_SIGN_MODE:-sign-only}"
 target="${MAC_BUILD_TARGET:-dmg}"
 compression="${MAC_COMPRESSION:-normal}"
-require_vela_cli="${REQUIRE_VELA_CLI:-true}"
 
 case "$sign_mode" in
   no | sign-only | notarize) ;;
@@ -249,13 +248,6 @@ case "$sign_mode" in
     ;;
 esac
 
-case "$require_vela_cli" in
-  true | false) ;;
-  *)
-    echo "unsupported REQUIRE_VELA_CLI: $require_vela_cli" >&2
-    exit 1
-    ;;
-esac
 
 require_command node
 ensure_pnpm
@@ -296,9 +288,6 @@ build_args=(
   --to "$target"
   --json
 )
-if [ "$require_vela_cli" = "true" ]; then
-  build_args+=(--require-vela-cli)
-fi
 if [ "$sign_mode" != "no" ]; then
   build_args+=(--signed)
 fi

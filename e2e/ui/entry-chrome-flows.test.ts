@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@/playwright/suite';
 import { ensureRailOpen, openNewProjectModal } from '@/playwright/rail';
 import { settingsSurface } from '@/playwright/amr';
@@ -9,10 +10,6 @@ import {
   openHomeTemplates,
   pickHomeTemplate,
 } from '@/playwright/home-hero';
-import type {
-  WorkspaceCollabContext,
-  WorkspaceDirectoryItem,
-} from '@open-design/contracts';
 import type { Page, Request } from '@playwright/test';
 import {
   applyStandardMocks,
@@ -57,25 +54,6 @@ const DESIGN_SYSTEMS = [
     swatches: ['#111827', '#38bdf8'],
   },
 ] as const;
-const TAB_PERSONAL_WORKSPACE = {
-  workspaceId: 'ws-tab-personal',
-  workspaceName: 'Personal workspace',
-  workspaceType: 'personal',
-  workspaceMemberId: 'wm-tab-personal',
-  role: 'owner',
-  memberStatus: 'active',
-  lifecycleState: 'active',
-} satisfies WorkspaceDirectoryItem;
-const TAB_TEAM_WORKSPACE = {
-  workspaceId: 'ws-tab-team',
-  workspaceName: 'Team Atlas',
-  workspaceType: 'team',
-  workspaceMemberId: 'wm-tab-team',
-  role: 'owner',
-  memberStatus: 'active',
-  lifecycleState: 'active',
-} satisfies WorkspaceDirectoryItem;
-
 test.describe.configure({ timeout: T.xlong });
 
 test.beforeEach(async ({ page }) => {
@@ -184,105 +162,33 @@ test('[P1] cold Home defers Automations reads until the route becomes active', a
   }
 });
 
-test('[P0] @critical workspace selection remains isolated across two browser tabs', async ({ page, context }) => {
-  const server = { activeWorkspaceId: TAB_PERSONAL_WORKSPACE.workspaceId };
-  const requestsA: WorkspaceContextRequestWitness[] = [];
-  const requestsB: WorkspaceContextRequestWitness[] = [];
-  await routeTabWorkspaceApi(page, server, requestsA);
-
+test('[P0] @critical stale workspace selections cannot restore Cloud authority in either browser tab', async ({ page, context }) => {
   const pageB = await context.newPage();
+  const requests: Array<{ workspace: string | undefined; member: string | undefined }> = [];
+  const cloudRequests: string[] = [];
   try {
     await applyStandardMocks(pageB);
-    await routeTabWorkspaceApi(pageB, server, requestsB);
-
-    await Promise.all([gotoEntryHome(page), gotoEntryHome(pageB)]);
-    await Promise.all([ensureRailOpen(page), ensureRailOpen(pageB)]);
-
-    await expect(page.getByTestId('workspace-switcher')).toContainText(
-      TAB_PERSONAL_WORKSPACE.workspaceName,
-    );
-    await expect(pageB.getByTestId('workspace-switcher')).toContainText(
-      TAB_PERSONAL_WORKSPACE.workspaceName,
-    );
-    expect(await readTabWorkspaceSelection(page)).toEqual({
-      workspaceId: TAB_PERSONAL_WORKSPACE.workspaceId,
-      workspaceMemberId: TAB_PERSONAL_WORKSPACE.workspaceMemberId,
-    });
-    expect(await readTabWorkspaceSelection(pageB)).toEqual({
-      workspaceId: TAB_PERSONAL_WORKSPACE.workspaceId,
-      workspaceMemberId: TAB_PERSONAL_WORKSPACE.workspaceMemberId,
-    });
-
-    await page.getByTestId('workspace-switcher').click();
-    await page.getByRole('menuitem', { name: TAB_TEAM_WORKSPACE.workspaceName }).click();
-    await expect(page.getByTestId('workspace-switcher')).toContainText(
-      TAB_TEAM_WORKSPACE.workspaceName,
-    );
-
-    // The compatibility endpoint's echo changed to Team, but that server-side
-    // value is not browser authority. Tab B keeps its own session selection.
-    expect(server.activeWorkspaceId).toBe(TAB_TEAM_WORKSPACE.workspaceId);
-    expect(await readTabWorkspaceSelection(page)).toEqual({
-      workspaceId: TAB_TEAM_WORKSPACE.workspaceId,
-      workspaceMemberId: TAB_TEAM_WORKSPACE.workspaceMemberId,
-    });
-    expect(await readTabWorkspaceSelection(pageB)).toEqual({
-      workspaceId: TAB_PERSONAL_WORKSPACE.workspaceId,
-      workspaceMemberId: TAB_PERSONAL_WORKSPACE.workspaceMemberId,
-    });
-    await expect(pageB.getByTestId('workspace-switcher')).toContainText(
-      TAB_PERSONAL_WORKSPACE.workspaceName,
-    );
-
-    // An ambient Personal read may already be in flight when the switch click
-    // begins. The switch response retires that request before it can commit,
-    // but the mock records requests at dispatch time. Start the post-switch
-    // witness after the Team selection is visibly and durably adopted so only
-    // reads issued under the new identity are judged below.
-    const requestsABeforeSwitch = requestsA.length;
-
-    // Exercise both ambient revalidation edges with the two tabs active at the
-    // same time. The poll retries only an idempotent browser event until the
-    // one-second GET coalescing window expires; there is no fixed sleep.
-    await refreshTabsInterleaved(
-      { page, eventName: 'focus', requests: requestsA },
-      { page: pageB, eventName: 'pageshow', requests: requestsB },
-    );
-    await refreshTabsInterleaved(
-      { page, eventName: 'pageshow', requests: requestsA },
-      { page: pageB, eventName: 'focus', requests: requestsB },
-    );
-
-    const teamReads = requestsA.slice(requestsABeforeSwitch);
-    expect(teamReads.length).toBeGreaterThanOrEqual(2);
-    for (const request of teamReads) {
-      expect(request).toEqual({
-        workspaceId: TAB_TEAM_WORKSPACE.workspaceId,
-        workspaceMemberId: TAB_TEAM_WORKSPACE.workspaceMemberId,
+    for (const [index, client] of [page, pageB].entries()) {
+      await client.addInitScript(selection => {
+        sessionStorage.setItem('od.workspaceSelection.v1', JSON.stringify(selection));
+      }, { workspaceId: 'retired-team-' + index, workspaceMemberId: 'retired-member-' + index });
+      client.on('request', request => {
+        const path = new URL(request.url()).pathname;
+        if (/^\/api\/(?:integrations\/vela|amr|workspaces|workspace\/(?:invite|billing|resources|projects|members|events|active)|touchpoints\/(?:test|production)-runtime)(?:\/|$)/.test(path)) cloudRequests.push(path);
+        if (path === '/api/projects' && request.method() === 'GET') {
+          const headers = request.headers();
+          requests.push({ workspace: headers['x-od-workspace-id'], member: headers['x-od-workspace-member-id'] });
+        }
       });
+      await gotoEntryHome(client);
+      await expect(client.getByTestId('workspace-switcher')).toHaveCount(0);
+      await client.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await client.reload({ waitUntil: 'domcontentloaded' });
+      await expect(client.getByTestId('home-hero-input')).toBeVisible();
     }
-    expect(requestsB.length).toBeGreaterThanOrEqual(3);
-    for (const request of requestsB) {
-      expect(request).toEqual({
-        workspaceId: TAB_PERSONAL_WORKSPACE.workspaceId,
-        workspaceMemberId: TAB_PERSONAL_WORKSPACE.workspaceMemberId,
-      });
-    }
-
-    expect(await readTabWorkspaceSelection(page)).toEqual({
-      workspaceId: TAB_TEAM_WORKSPACE.workspaceId,
-      workspaceMemberId: TAB_TEAM_WORKSPACE.workspaceMemberId,
-    });
-    expect(await readTabWorkspaceSelection(pageB)).toEqual({
-      workspaceId: TAB_PERSONAL_WORKSPACE.workspaceId,
-      workspaceMemberId: TAB_PERSONAL_WORKSPACE.workspaceMemberId,
-    });
-    await expect(page.getByTestId('workspace-switcher')).toContainText(
-      TAB_TEAM_WORKSPACE.workspaceName,
-    );
-    await expect(pageB.getByTestId('workspace-switcher')).toContainText(
-      TAB_PERSONAL_WORKSPACE.workspaceName,
-    );
+    expect(requests.length).toBeGreaterThanOrEqual(2);
+    expect(requests.every(request => request.workspace === undefined && request.member === undefined)).toBe(true);
+    expect(cloudRequests).toEqual([]);
   } finally {
     await pageB.close();
   }
@@ -1195,8 +1101,18 @@ test('[P0] @critical home composer delegates the picked prototype scenario to da
   expect(body.metadata?.kind).toBe('prototype');
 });
 
-test('[P0] @critical home working directory creates the project with linked dirs instead of importing files', async ({ page }) => {
+test('[P0] @critical home working directory hands the selected source folder to the new project', async ({ page }, testInfo) => {
   const workingDir = '/Users/mac/Projects/Dashboard-UI-Liquid-Glass';
+  const handoffs: Array<{ path: string; body: unknown }> = [];
+  await page.route('**/api/projects/*/working-dir', async route => {
+    if (route.request().method() !== 'POST') {
+      await route.fallback();
+      return;
+    }
+    handoffs.push({ path: new URL(route.request().url()).pathname, body: route.request().postDataJSON() });
+    await route.fulfill({ json: { ok: true } });
+  });
+  await routeSuccessfulRuns(page, { runId: 'home-source-folder-handoff' });
   await page.route('**/api/recent-dirs', async (route) => {
     await route.fulfill({ json: { dirs: [workingDir] } });
   });
@@ -1237,12 +1153,17 @@ test('[P0] @critical home working directory creates the project with linked dirs
   };
   expect(body.pendingPrompt).toBe('Create a premium dashboard for operations review.');
   expect(body.conversationMode).toBe('design');
-  expect(body.metadata?.linkedDirs).toEqual([workingDir]);
+  await writeFile(testInfo.outputPath('working-directory-create-payload.json'), JSON.stringify(body, null, 2));
+  expect(body.metadata?.linkedDirs).toBeUndefined();
   expect(body.metadata?.baseDir).toBeUndefined();
-  expect(body.metadata?.userWorkingDir).toBeUndefined();
+  expect(body.metadata?.userWorkingDir).toBe(workingDir);
+  await expect.poll(() => handoffs.length).toBe(1);
+  expect(handoffs[0]?.body).toEqual({ baseDir: workingDir });
+  expect(handoffs[0]?.path).toMatch(/^\/api\/projects\/[^/]+\/working-dir$/);
+  await writeFile(testInfo.outputPath('working-directory-handoff.json'), JSON.stringify(handoffs, null, 2));
 });
 
-test('[P0] @critical clearing the home working directory removes linked dirs from project creation', async ({ page }) => {
+test('[P0] @critical clearing the home working directory removes the selected source folder from project creation', async ({ page }) => {
   const workingDir = '/Users/mac/Projects/Dashboard-UI-Liquid-Glass';
   await page.route('**/api/recent-dirs', async (route) => {
     await route.fulfill({ json: { dirs: [workingDir] } });
@@ -1489,184 +1410,6 @@ test('[P1] rail can be collapsed again on coarse-pointer / non-hover devices', a
   await toggle.click();
   await expect(page.locator('.entry')).not.toHaveClass(/entry--rail-open/);
 });
-
-interface WorkspaceContextRequestWitness {
-  workspaceId: string | null;
-  workspaceMemberId: string | null;
-}
-
-interface TabWorkspaceMockState {
-  activeWorkspaceId: string;
-}
-
-function tabWorkspaceContext(item: WorkspaceDirectoryItem): WorkspaceCollabContext {
-  return {
-    ...item,
-    billingState: item.workspaceType === 'team' ? 'active' : 'free',
-    planId: item.workspaceType === 'team' ? 'team_basic' : null,
-    providerMode: 'platform_credits',
-    seatSummary: {
-      seatLimit: item.workspaceType === 'team' ? 5 : 1,
-      usedSeats: 1,
-      availableSeats: item.workspaceType === 'team' ? 4 : 0,
-      isSeatFull: item.workspaceType !== 'team',
-    },
-    permissions: {
-      canManageMembers: true,
-      canManageBilling: true,
-      canInviteMembers: true,
-      canManageAutoRecharge: true,
-      canShareProjects: true,
-      canWriteSyncedFiles: true,
-      canViewWorkspaceSettings: true,
-      canManageSharedResources: true,
-    },
-    ...(item.workspaceType === 'team'
-      ? {
-          teamId: 'team-tab-atlas',
-          teamName: item.workspaceName,
-          workspaceSettingsUrl: 'https://example.invalid/team-tab-atlas',
-        }
-      : {}),
-  };
-}
-
-async function routeTabWorkspaceApi(
-  page: Page,
-  state: TabWorkspaceMockState,
-  contextRequests: WorkspaceContextRequestWitness[],
-): Promise<void> {
-  const directory = [TAB_PERSONAL_WORKSPACE, TAB_TEAM_WORKSPACE];
-
-  await page.route('**/api/workspace/directory', async (route) => {
-    if (route.request().method() !== 'GET') {
-      await route.fallback();
-      return;
-    }
-    await route.fulfill({
-      json: {
-        items: directory,
-        activeWorkspaceId: state.activeWorkspaceId,
-      },
-    });
-  });
-
-  await page.route('**/api/workspace/context', async (route) => {
-    if (route.request().method() !== 'GET') {
-      await route.fallback();
-      return;
-    }
-    const headers = route.request().headers();
-    const witness = {
-      workspaceId: headers['x-od-workspace-id'] ?? null,
-      workspaceMemberId: headers['x-od-workspace-member-id'] ?? null,
-    };
-    contextRequests.push(witness);
-    const selected = directory.find(
-      (item) =>
-        item.workspaceId === witness.workspaceId
-        && item.workspaceMemberId === witness.workspaceMemberId,
-    );
-    if (!selected) {
-      await route.fulfill({
-        status: 400,
-        json: { error: 'exact_workspace_scope_required' },
-      });
-      return;
-    }
-    await route.fulfill({ json: { context: tabWorkspaceContext(selected) } });
-  });
-
-  await page.route('**/api/workspace/active', async (route) => {
-    if (route.request().method() !== 'PUT') {
-      await route.fallback();
-      return;
-    }
-    const body = route.request().postDataJSON() as {
-      workspaceId?: unknown;
-      workspaceMemberId?: unknown;
-    };
-    const selected = directory.find(
-      (item) =>
-        item.workspaceId === body.workspaceId
-        && item.workspaceMemberId === body.workspaceMemberId,
-    );
-    if (!selected) {
-      await route.fulfill({
-        status: 400,
-        json: { error: 'exact_workspace_scope_required' },
-      });
-      return;
-    }
-    state.activeWorkspaceId = selected.workspaceId;
-    await route.fulfill({
-      json: {
-        activeWorkspaceId: selected.workspaceId,
-        context: tabWorkspaceContext(selected),
-      },
-    });
-  });
-}
-
-async function readTabWorkspaceSelection(page: Page): Promise<WorkspaceContextRequestWitness> {
-  return page.evaluate(() => {
-    const raw = JSON.parse(
-      window.sessionStorage.getItem('od.workspaceSelection.v1') ?? 'null',
-    ) as {
-      workspaceId?: unknown;
-      workspaceMemberId?: unknown;
-    } | null;
-    return {
-      workspaceId: typeof raw?.workspaceId === 'string' ? raw.workspaceId : null,
-      workspaceMemberId:
-        typeof raw?.workspaceMemberId === 'string' ? raw.workspaceMemberId : null,
-    };
-  });
-}
-
-async function refreshTabsInterleaved(
-  first: {
-    page: Page;
-    eventName: 'focus' | 'pageshow';
-    requests: WorkspaceContextRequestWitness[];
-  },
-  second: {
-    page: Page;
-    eventName: 'focus' | 'pageshow';
-    requests: WorkspaceContextRequestWitness[];
-  },
-): Promise<void> {
-  const firstCount = first.requests.length;
-  const secondCount = second.requests.length;
-  await expect
-    .poll(
-      async () => {
-        await Promise.all([
-          dispatchAmbientWorkspaceEvent(first.page, first.eventName),
-          dispatchAmbientWorkspaceEvent(second.page, second.eventName),
-        ]);
-        return {
-          first: first.requests.length > firstCount,
-          second: second.requests.length > secondCount,
-        };
-      },
-      { timeout: T.medium },
-    )
-    .toEqual({ first: true, second: true });
-}
-
-async function dispatchAmbientWorkspaceEvent(
-  page: Page,
-  eventName: 'focus' | 'pageshow',
-): Promise<void> {
-  await page.evaluate((name) => {
-    window.dispatchEvent(
-      name === 'pageshow'
-        ? new PageTransitionEvent('pageshow', { persisted: false })
-        : new Event('focus'),
-    );
-  }, eventName);
-}
 
 async function gotoEntryHome(page: Page) {
   await page.goto('/', { waitUntil: 'domcontentloaded' });

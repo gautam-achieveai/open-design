@@ -60,6 +60,22 @@ export interface BrowserCommandBrokerOptions {
   cleanupIntervalMs?: number;
 }
 
+/** Internal approval identity. Lease and page URL must never appear here. */
+export interface BrowserApprovalTarget {
+  projectId: string;
+  tabId: string;
+  leaseDigest: string;
+  urlDigest: string;
+}
+
+/** Trusted in-process adapter, normally the approval store's keyed digester. */
+export type BrowserApprovalFingerprinter<T extends BrowserApprovalTarget> = (
+  projectId: string,
+  tabId: string,
+  leaseId: string,
+  url: string,
+) => T;
+
 export function createBrowserCommandBroker(options: BrowserCommandBrokerOptions = {}) {
   const now = options.now ?? Date.now;
   const randomId = options.randomId ?? randomUUID;
@@ -332,30 +348,13 @@ export function createBrowserCommandBroker(options: BrowserCommandBrokerOptions 
     });
   }
 
-  async function execute(
-    projectId: string,
-    tabId: string | undefined,
+  function enqueueCommand(
+    tab: BrowserTabRecord,
     request: BrowserOperationRequest,
     timeoutMs = defaultCommandTimeoutMs,
     signal?: AbortSignal,
   ): Promise<{ commandId: string; tab: BrowserTabIdentity; result: BrowserOperationResult }> {
-    sweep();
-    if (signal?.aborted) {
-      throw new BrowserBrokerError(
-        'BROWSER_COMMAND_CANCELED',
-        'browser command canceled before dispatch',
-        499,
-      );
-    }
-    const selectedTabId = tabId || activeTabs.get(projectId);
-    if (!selectedTabId) {
-      throw new BrowserBrokerError(
-        'BROWSER_TAB_NOT_FOUND',
-        'no active browser tab is registered for this project',
-        404,
-      );
-    }
-    const tab = requireTab(projectId, selectedTabId);
+    const { projectId, tabId } = tab;
     const createdAt = now();
     const boundedTimeout = Math.min(Math.max(timeoutMs, 1), MAX_COMMAND_TIMEOUT_MS);
     const command: BrowserCommand = {
@@ -370,7 +369,7 @@ export function createBrowserCommandBroker(options: BrowserCommandBrokerOptions 
       createdAt,
       expiresAt: createdAt + boundedTimeout,
     };
-    const result = await new Promise<BrowserOperationResult>((resolve, reject) => {
+    const result = new Promise<BrowserOperationResult>((resolve, reject) => {
       const pending: PendingCommand = {
         command,
         claimedByLeaseId: null,
@@ -396,13 +395,114 @@ export function createBrowserCommandBroker(options: BrowserCommandBrokerOptions 
         signal.addEventListener('abort', pending.abortListener, { once: true });
       }
       commands.set(command.commandId, pending);
-      const key = keyFor(projectId, selectedTabId);
+      const key = keyFor(projectId, tabId);
       const queue = queuedByTab.get(key) ?? [];
       queue.push(command.commandId);
       queuedByTab.set(key, queue);
-      notifyCommandWaiter(projectId, selectedTabId);
+      notifyCommandWaiter(projectId, tabId);
     });
-    return { commandId: command.commandId, tab: command.tab, result };
+    return result.then((value) => ({ commandId: command.commandId, tab: command.tab, result: value }));
+  }
+
+  function resolveTarget(projectId: string, tabId?: string): BrowserTabRecord {
+    sweep();
+    const selectedTabId = tabId || activeTabs.get(projectId);
+    if (!selectedTabId) {
+      throw new BrowserBrokerError('BROWSER_TAB_NOT_FOUND', 'no active browser tab is registered for this project', 404);
+    }
+    return requireTab(projectId, selectedTabId);
+  }
+
+  function assertNotAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      throw new BrowserBrokerError('BROWSER_COMMAND_CANCELED', 'browser command canceled before dispatch', 499);
+    }
+  }
+
+  async function execute(
+    projectId: string,
+    tabId: string | undefined,
+    request: BrowserOperationRequest,
+    timeoutMs = defaultCommandTimeoutMs,
+    signal?: AbortSignal,
+  ): Promise<{ commandId: string; tab: BrowserTabIdentity; result: BrowserOperationResult }> {
+    sweep();
+    assertNotAborted(signal);
+    const tab = resolveTarget(projectId, tabId);
+    return await enqueueCommand(tab, request, timeoutMs, signal);
+  }
+
+  /** Capture a fixed target through a trusted keyed digester; only digests escape. */
+  function captureApprovalTarget<T extends BrowserApprovalTarget>(
+    projectId: string,
+    tabId: string | undefined,
+    fingerprint: BrowserApprovalFingerprinter<T>,
+  ): T {
+    const tab = resolveTarget(projectId, tabId);
+    const leaseId = tab.leaseId;
+    const url = tab.url;
+    const target = fingerprint(tab.projectId, tab.tabId, leaseId, url);
+    if (!target || target.projectId !== tab.projectId || target.tabId !== tab.tabId
+      || typeof target.leaseDigest !== 'string' || typeof target.urlDigest !== 'string'
+      || tabs.get(keyFor(projectId, tab.tabId)) !== tab || tab.leaseId !== leaseId || tab.url !== url
+      || now() >= tab.leaseExpiresAt) {
+      throw new BrowserBrokerError('BAD_REQUEST', 'invalid browser target fingerprint', 400);
+    }
+    return target;
+  }
+
+  function isApprovalTargetCurrent<T extends BrowserApprovalTarget>(
+    target: T,
+    fingerprint: BrowserApprovalFingerprinter<T>,
+  ): boolean {
+    sweep();
+    const tab = tabs.get(keyFor(target.projectId, target.tabId));
+    if (!tab) return false;
+    const leaseId = tab.leaseId;
+    const url = tab.url;
+    const current = fingerprint(tab.projectId, tab.tabId, leaseId, url);
+    return !!current && current.projectId === target.projectId && current.tabId === target.tabId
+      && current.leaseDigest === target.leaseDigest && current.urlDigest === target.urlDigest
+      && tabs.get(keyFor(target.projectId, target.tabId)) === tab
+      && tab.leaseId === leaseId && tab.url === url && now() < tab.leaseExpiresAt;
+  }
+
+  /**
+   * Check target, expiry and authorization and insert the command without an
+   * await. A callback failure after consuming an approval must remain consumed.
+   */
+  function enqueueIfCurrent<T extends BrowserApprovalTarget>(input: {
+    target: T;
+    fingerprint: BrowserApprovalFingerprinter<T>;
+    authorizeAndConsume: () => undefined;
+    request: BrowserOperationRequest;
+    expiresAtMs: number;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  }): { result: Promise<{ commandId: string; tab: BrowserTabIdentity; result: BrowserOperationResult }> } {
+    const check = () => {
+      assertNotAborted(input.signal);
+      if (!Number.isFinite(input.expiresAtMs) || now() >= input.expiresAtMs) {
+        throw new BrowserBrokerError('FORBIDDEN', 'browser approval has expired', 403);
+      }
+      if (!isApprovalTargetCurrent(input.target, input.fingerprint)) {
+        throw new BrowserBrokerError('BROWSER_LEASE_CONFLICT', 'browser target changed before dispatch', 409);
+      }
+    };
+    check();
+    const returned: unknown = input.authorizeAndConsume();
+    if (returned !== undefined) {
+      if (returned && typeof (returned as { then?: unknown }).then === 'function') {
+        void Promise.resolve(returned).catch(() => {});
+      }
+      throw new BrowserBrokerError('FORBIDDEN', 'browser approval validation must be synchronous', 403);
+    }
+    // A trusted callback can still synchronously change the target or clock.
+    // Recheck after it and never enqueue if it did; consumption is not undone.
+    check();
+    const tab = tabs.get(keyFor(input.target.projectId, input.target.tabId));
+    if (!tab) throw new BrowserBrokerError('BROWSER_TAB_NOT_FOUND', 'browser tab is not registered', 404);
+    return { result: enqueueCommand(tab, input.request, input.timeoutMs, input.signal) };
   }
 
   function submitResult(
@@ -478,6 +578,9 @@ export function createBrowserCommandBroker(options: BrowserCommandBrokerOptions 
     selectActiveTab,
     nextCommand,
     execute,
+    captureApprovalTarget,
+    isApprovalTargetCurrent,
+    enqueueIfCurrent,
     submitResult,
     sweep,
     shutdown,

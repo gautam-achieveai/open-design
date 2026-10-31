@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 
 import { cloudFeaturesGate, offeredAgents } from '../src/cloud-features.js';
 
-describe('OpenDesign Cloud switch', () => {
+describe('retired OpenDesign Cloud surfaces', () => {
   let server: http.Server | null = null;
   afterEach(() => new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve())));
 
@@ -25,28 +25,26 @@ describe('OpenDesign Cloud switch', () => {
     ['GET', '/api/amr/models'],
     ['POST', '/api/workspace/invite'],
     ['GET', '/api/workspace/billing?scope=account'],
-  ])('refuses %s %s while cloud is off (the default)', async (method, route) => {
+  ])('refuses %s %s after Cloud retirement', async (method, route) => {
     const { status, body } = await call(undefined, method, route);
-    expect(status).toBe(403);
+    expect(status).toBe(410);
     expect(body.error.code).toBe('CLOUD_FEATURES_DISABLED');
   });
 
-  it('lets cloud calls through once the user turns cloud on', async () => {
-    expect((await call(true, 'POST', '/api/integrations/vela/login')).body).toEqual({ reached: true });
+  it('does not restore Cloud when old config has the feature enabled', async () => {
+    expect((await call(true, 'POST', '/api/integrations/vela/login')).status).toBe(410);
   });
 
   it.each([
     ['GET', '/api/workspace/context'],
-    ['GET', '/api/workspace/projects'],
-    ['GET', '/api/integrations/vela/status'],
     ['GET', '/api/agents'],
   ])('leaves local routes alone: %s %s', async (method, route) => {
     expect((await call(false, method, route)).body).toEqual({ reached: true });
   });
 
-  it('offers the cloud runtime only when cloud is on', () => {
+  it('never offers the retired runtime', () => {
     const agents = [{ id: 'amr' }, { id: 'claude' }];
     expect(offeredAgents(agents, {}).map((agent) => agent.id)).toEqual(['claude']);
-    expect(offeredAgents(agents, { cloudFeatures: true }).map((agent) => agent.id)).toEqual(['amr', 'claude']);
+    expect(offeredAgents(agents, { cloudFeatures: true }).map((agent) => agent.id)).toEqual(['claude']);
   });
 });

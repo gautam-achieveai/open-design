@@ -116,9 +116,10 @@ function syntheticEntry(
 }
 
 describe('OD Next runtime capability gate', () => {
-  it('binds initial path descriptors to existing runtime definitions without changing detection', () => {
+  it('binds supported descriptors while keeping the historical Cloud tuple non-runnable', () => {
     for (const descriptor of OD_NEXT_RUNTIME_PATH_DESCRIPTORS) {
-      expect(getAgentDef(descriptor.agentId)?.id).toBe(descriptor.agentId);
+      if (descriptor.agentId === 'amr') expect(getAgentDef(descriptor.agentId)).toBeNull();
+      else expect(getAgentDef(descriptor.agentId)?.id).toBe(descriptor.agentId);
     }
   });
 

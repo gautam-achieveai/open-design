@@ -76,6 +76,12 @@ export interface CodexAppServerSessionOptions {
   /** The daemon validated this resume handle against its captured session record. */
   resumeSessionOwned?: boolean;
   imagePaths?: string[];
+  /** Private additive per-thread MCP overrides; contains env references, not the run bearer. */
+  runMcpConfig?: Record<string, unknown>;
+  /** An accepted explicit run bundle must be delivered or fail before execution. */
+  requireRunMcpConfig?: boolean;
+  runToolToken?: string;
+  onUnsafeOutput?: () => void;
   clientVersion?: string;
   onAgentEvent: (event: JsonObject) => void;
   onCliReady?: () => void;
@@ -181,6 +187,7 @@ export function attachCodexAppServerSession(
   let archiveTimer: ReturnType<typeof setTimeout> | undefined;
   const ownsThread = !resumeSessionId || opts.resumeSessionOwned === true;
   let patchStreaming = false;
+  let activeRunMcpConfig: Record<string, unknown> | undefined;
 
   function write(frame: JsonObject, onWritten?: () => void): void {
     const stdin = child.stdin;
@@ -237,6 +244,17 @@ export function attachCodexAppServerSession(
     onAgentEvent({ type: 'error', message });
   }
 
+  function safeIdentities(...values: unknown[]): boolean {
+    if (!opts.runToolToken || !values.flat().some(value => typeof value === 'string' && value.includes(opts.runToolToken!))) return true;
+    if (aborted || fatalReported) { shutdown(); return false; }
+    fatalReported = true;
+    try { opts.onUnsafeOutput?.(); } catch { /* Never expose callback exceptions. */ }
+    try { onAgentEvent({ type: 'error', message: 'Agent output could not be safely processed.' }); }
+    catch { /* The unsafe-output latch must remain nonthrowing. */ }
+    finally { shutdown(); }
+    return false;
+  }
+
   function startTurn(): void {
     if (!threadId || promptSent) return;
     promptSent = true;
@@ -270,11 +288,12 @@ export function attachCodexAppServerSession(
   }
 
   function openThread(): void {
+    const config = { ...activeRunMcpConfig, ...(patchStreaming ? { 'features.apply_patch_streaming_events': true } : {}) };
     const shared: JsonObject = {
       cwd,
       sandbox: sandboxMode,
       approvalPolicy: APPROVAL_POLICY_NEVER,
-      ...(patchStreaming ? { config: { 'features.apply_patch_streaming_events': true } } : {}),
+      ...(Object.keys(config).length ? { config } : {}),
     };
     const onThread = (result: JsonObject) => {
       const thread = isRecord(result.thread) ? result.thread : null;
@@ -336,6 +355,43 @@ export function attachCodexAppServerSession(
     request('thread/start', supportsPaginatedHistory ? { ...shared, historyMode: 'paginated' } : shared, onThread);
   }
 
+  function unavailableRunMcpConfig(): void {
+    if (opts.requireRunMcpConfig) {
+      reportFatal('Codex cannot deliver the requested run tool bundle. Update Codex or use a supported local daemon connection before retrying.');
+      shutdown(); return;
+    }
+    onAgentEvent({ type: 'diagnostic', name: 'codex_mcp_config_unavailable',
+      message: 'Using native CLI configuration because MCP overrides are unavailable.' });
+    openThread();
+  }
+
+  function prepareRunMcpAndOpenThread(): void {
+    if (!opts.runMcpConfig) {
+      if (opts.requireRunMcpConfig) unavailableRunMcpConfig(); else openThread();
+      return;
+    }
+    request('config/read', { includeLayers: false }, result => {
+      const config = isRecord(result.config) ? result.config : {};
+      const servers = isRecord(config.mcp_servers) ? config.mcp_servers : {};
+      for (const key of Object.keys(opts.runMcpConfig!)) {
+        if (!key.startsWith('mcp_servers.')) continue;
+        const name = key.slice('mcp_servers.'.length);
+        if (!Object.hasOwn(servers, name)) continue;
+        reportFatal(name === 'open-design-run' ? 'OpenDesign MCP server name is reserved.'
+          : 'External MCP server name already exists in native Codex configuration. Rename it in OpenDesign settings before retrying.');
+        shutdown(); return;
+      }
+      // Preserve native external entries in their existing layer. config/read
+      // includes nullable fields that cannot be roundtripped as TOML overrides.
+      activeRunMcpConfig = opts.runMcpConfig;
+      openThread();
+    }, undefined, error => {
+      // Older app-server builds keep the existing CLI/config fallback.
+      if (isRecord(error) && error.code === -32601) { unavailableRunMcpConfig(); return; }
+      reportFatal('OpenDesign MCP configuration could not be prepared.'); shutdown();
+    });
+  }
+
   /** Emit the thread id on the session-capture channel, at most once. */
   function reportSessionHandle(id: string): void {
     if (handleReported || !id) return;
@@ -346,6 +402,15 @@ export function attachCodexAppServerSession(
   function handleFrame(frame: JsonObject): void {
     // Preserve archive replies after a terminal event, but never reopen a canceled turn.
     if (turnEnded || childClosed) return;
+    const params = isRecord(frame.params) ? frame.params : {};
+    const result = isRecord(frame.result) ? frame.result : {};
+    const thread = isRecord(params.thread) ? params.thread : {};
+    const resultThread = isRecord(result.thread) ? result.thread : {};
+    const turn = isRecord(params.turn) ? params.turn : {};
+    const item = isRecord(params.item) ? params.item : {};
+    if (!safeIdentities(frame.id, frame.method, params.threadId, params.turnId, params.itemId, params.sessionId,
+      thread.id, thread.sessionId, thread.path, resultThread.id, resultThread.sessionId, resultThread.path,
+      turn.id, item.id, item.callId, item.call_id, item.senderThreadId, item.receiverThreadIds)) return;
     if ((aborted || fatalReported) && !terminalReceived && frame.method !== 'turn/completed') return;
     if (!cliReadySeen) {
       cliReadySeen = true;
@@ -453,7 +518,7 @@ export function attachCodexAppServerSession(
     pending.clear();
   });
 
-  request(
+  if (safeIdentities(resumeSessionId)) request(
     'initialize',
     {
       clientInfo: {
@@ -473,7 +538,7 @@ export function attachCodexAppServerSession(
       protectsLegacyHistory = opts.manageThreadVisibility === true && capabilities.legacy;
       patchStreaming = supportsPatchStreaming(result.userAgent);
       notify('initialized', {});
-      openThread();
+      prepareRunMcpAndOpenThread();
     },
   );
 

@@ -84,11 +84,7 @@ function renderLocalRail(overrides: Partial<Parameters<typeof EntryNavRail>[0]> 
         onViewChange={onViewChange}
         onNewProject={() => {}}
         open
-        context={null}
-        billing={null}
-        onOpenSettings={onOpenSettings}
-        footerNotice={<div data-testid="local-sign-in-card">Sign in</div>}
-        recentProjects={Array.from({ length: 5 }, (_, index) =>
+        context={null}        onOpenSettings={onOpenSettings}        recentProjects={Array.from({ length: 5 }, (_, index) =>
           project(`p${index + 1}`, 1_000 - index))}
         onOpenRecentProject={onOpen}
         onRenameRecentProject={onRename}
@@ -172,23 +168,14 @@ describe('EntryNavRail local (signed-out) shell', () => {
     expect(screen.queryByTestId('entry-nav-all-projects')).toBeNull();
   });
 
-  it('docks the message centre beside a local identity row at the rail foot, like the cloud shell', async () => {
+  it('keeps local settings and social links without Cloud messaging or sign-in', () => {
     renderLocalRail();
     const dock = document.querySelector('.entry-nav-rail__account-dock') as HTMLElement | null;
     expect(dock).not.toBeNull();
-    const bell = within(dock!).getByTestId('entry-nav-message-center');
-    expect(bell.classList.contains('entry-nav-rail__account-bell')).toBe(true);
-    expect(bell.getAttribute('aria-haspopup')).toBe('dialog');
-    // Not a plain rail destination any more.
-    expect(bell.classList.contains('entry-nav-rail__btn')).toBe(false);
-    expect(document.querySelector('.entry-nav-rail__group [data-testid="entry-nav-message-center"]')).toBeNull();
-    // The social links ride the dock, above the identity row, as they do signed in.
+    expect(screen.queryByTestId('entry-nav-message-center')).toBeNull();
     expect(within(dock!).getByTestId('entry-nav-rail-social')).toBeTruthy();
-    // The sign-in card keeps its slot in the footer.
-    expect(screen.getByTestId('local-sign-in-card')).toBeTruthy();
-    fireEvent.click(bell);
-    await waitFor(() => expect(screen.getByTestId('message-center-dialog')).toBeTruthy());
-    expect(bell.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.queryByTestId('local-sign-in-card')).toBeNull();
+    expect(screen.queryByTestId('workspace-switcher')).toBeNull();
   });
 
   it('opens Settings from the local identity row', () => {

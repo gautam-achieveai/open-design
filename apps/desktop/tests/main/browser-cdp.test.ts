@@ -106,6 +106,78 @@ class FakeGuest extends EventEmitter {
 }
 
 describe("Design Browser CDP controller", () => {
+  it("denies capture CPU changes by default even with renderer approved=true", async () => {
+    const guest = new FakeGuest();
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
+    await controller.attachGuest(guest as unknown as WebContents);
+    controller.registerTarget({ projectId: "project", tabId: "tab", webContentsId: guest.id, url: guest.getURL() });
+    try {
+      expect(await controller.execute({ tabId: "tab", operation: { kind: "devtools", action: "capture-throttle", approved: true,
+        params: { nativeApprovalId: "forged", reportId: "report", cpu: 2 } } })).toMatchObject({ ok: false, reason: expect.stringContaining("native confirmation") });
+      expect(guest.debugger.commands.some((command) => command.method === "Emulation.setCPUThrottlingRate")).toBe(false);
+    } finally { controller.close(); }
+  });
+
+  it("invalidates a native CPU grant when the same guest navigates away and back", async () => {
+    const guest = new FakeGuest();
+    guest.debugger.evaluateResult = { result: { value: { visible: true, timeOriginMs: 100, observerAvailable: true, shifts: [], loaf: [], animations: [] } } };
+    let confirmedGeneration: unknown;
+    let probing = true;
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session, (request) => {
+      const generation = (request as unknown as { navigationGeneration?: number }).navigationGeneration;
+      if (probing) { confirmedGeneration = generation; return false; }
+      return generation === confirmedGeneration;
+    });
+    await controller.attachGuest(guest as unknown as WebContents);
+    controller.registerTarget({ projectId: "project", tabId: "tab", webContentsId: guest.id, url: guest.getURL() });
+    try {
+      const started = await controller.execute({ tabId: "tab", operation: { kind: "devtools", action: "render-start", params: {} } });
+      const reportId = ((started as { value: { result: { reportId: string } } }).value.result).reportId;
+      const request = { tabId: "tab", operation: { kind: "devtools", action: "capture-throttle", approved: true, params: { nativeApprovalId: "approval", reportId, cpu: 4 } } };
+      expect(await controller.execute(request)).toMatchObject({ ok: false });
+      probing = false;
+      guest.emit("did-start-navigation", {}, "https://example.com/other", false, true);
+      guest.emit("did-start-navigation", {}, guest.getURL(), false, true);
+      expect(await controller.execute(request)).toMatchObject({ ok: false, reason: expect.stringContaining("native confirmation") });
+      expect(guest.debugger.commands.some((command) => command.method === "Emulation.setCPUThrottlingRate")).toBe(false);
+    } finally { controller.close(); }
+  });
+
+  it.each(["host-hidden", "observer-lost"])("reports %s without confusing host visibility and missing observer evidence", async (cause) => {
+    const guest = new FakeGuest();
+    guest.debugger.evaluateResult = { result: { value: { visible: true, timeOriginMs: 100, observerAvailable: true, inputSupported: true, inputs: [], shifts: [], loaf: [], animations: [] } } };
+    guest.debugger.responses["Profiler.stop"] = { profile: { startTime: 0, nodes: [], samples: [], timeDeltas: [] } };
+    const originalSend = guest.debugger.sendCommand;
+    guest.debugger.sendCommand = vi.fn(async (method, params) => {
+      const result = await originalSend(method, params);
+      if (method === "Tracing.end") guest.debugger.emit("message", {}, "Tracing.tracingComplete", {});
+      return result;
+    });
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
+    await controller.attachGuest(guest as unknown as WebContents);
+    const registration = { projectId: "p1", tabId: "tab-1", url: guest.getURL(), webContentsId: guest.id };
+    const run = (action: string) => controller.execute({ tabId: "tab-1", operation: { kind: "devtools", action, params: {} } });
+    try {
+      controller.registerTarget({ ...registration, active: true });
+      expect((await run("render-start")).ok).toBe(true);
+      guest.debugger.emit("message", {}, "Tracing.dataCollected", { value: [
+        { name: "thread_name", ph: "M", pid: 1, tid: 1, args: { name: "CrRendererMain" } },
+        { name: "RunTask", ph: "X", pid: 1, tid: 1, ts: 1_000, dur: 5_000 },
+      ] });
+      if (cause === "host-hidden") {
+        controller.registerTarget({ ...registration, active: false });
+        controller.registerTarget({ ...registration, active: true });
+      } else {
+        guest.debugger.evaluateResult = { result: { value: { observerAvailable: false, shifts: [], loaf: [], animations: [] } } };
+      }
+      expect(await run("render-stop")).toMatchObject({ ok: true, value: { result: { performanceReport: {
+        completeness: "partial", coverage: { reasons: cause === "host-hidden"
+          ? expect.arrayContaining(["target-hidden"])
+          : expect.not.arrayContaining(["target-hidden"]) },
+      } } } });
+    } finally { controller.close(); }
+  });
+
   it("executes fresh approved commands on the registered guest without another approval step", async () => {
     const guest = new FakeGuest();
     const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
@@ -288,6 +360,125 @@ describe("Design Browser CDP controller", () => {
       operation: "navigate",
       value: { url: "https://example.com/next" },
     });
+  });
+
+  it("redacts OAuth callback query values from captured network URLs and redirect headers", async () => {
+    const guest = new FakeGuest();
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
+    await controller.attachGuest(guest as unknown as WebContents);
+    controller.registerTarget({ projectId: "p1", tabId: "tab-1", url: guest.getURL(), webContentsId: guest.id });
+
+    const callback = "https://example.com/callback?code=synthetic_code&state=synthetic_state&view=compact&postcode=123";
+    guest.debugger.emit("message", {}, "Network.requestWillBeSent", {
+      requestId: "oauth-callback",
+      request: { headers: { Referer: callback }, method: "GET", url: callback },
+      timestamp: 1,
+      type: "Document",
+    });
+    guest.debugger.emit("message", {}, "Network.responseReceived", {
+      requestId: "oauth-callback",
+      response: { headers: { Location: callback }, status: 302, statusText: "Found" },
+    });
+
+    const result = await controller.execute({ tabId: "tab-1", operation: { kind: "network", requestId: "oauth-callback" } });
+    const safeCallback = "https://example.com/callback?code=%5Bredacted%5D&state=%5Bredacted%5D&view=compact&postcode=123";
+    expect(result).toMatchObject({
+      ok: true,
+      value: { requests: [{ url: safeCallback, requestHeaders: { Referer: safeCallback }, responseHeaders: { Location: safeCallback } }] },
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("synthetic_code");
+    expect(serialized).not.toContain("synthetic_state");
+    expect(serialized).toContain("view=compact");
+    expect(serialized).toContain("postcode=123");
+    controller.close();
+  });
+
+  it("redacts callback values in relative URLs and fragments without changing other fields", () => {
+    expect(redactBrowserUrl("/callback?Code=synthetic_code&STATE=synthetic_state&view=compact"))
+      .toBe("/callback?Code=[redacted]&STATE=[redacted]&view=compact");
+    expect(redactBrowserUrl("https://example.com/#code=synthetic_code&state=synthetic_state&view=compact"))
+      .toBe("https://example.com/#code=[redacted]&state=[redacted]&view=compact");
+    expect(redactBrowserUrl("https://example.com/#%63ode=synthetic_code&%73tate=synthetic_state&view=compact"))
+      .toBe("https://example.com/#%63ode=[redacted]&%73tate=[redacted]&view=compact");
+    expect(redactBrowserUrl("https://example.com/#access_token=synthetic_access&%74oken=synthetic_token&state=synthetic_state&view=compact"))
+      .toBe("https://example.com/#access_token=[redacted]&%74oken=[redacted]&state=[redacted]&view=compact");
+  });
+
+  it("redacts OAuth values in captured plain and malformed JSON bodies", async () => {
+    const guest = new FakeGuest();
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
+    await controller.attachGuest(guest as unknown as WebContents);
+    controller.registerTarget({ projectId: "p1", tabId: "tab-1", url: guest.getURL(), webContentsId: guest.id });
+    guest.debugger.responses["Network.getResponseBody"] = {
+      body: '{"code":"synthetic_code","state":"synthetic_state","view":"compact"',
+      base64Encoded: false,
+    };
+    guest.debugger.emit("message", {}, "Network.requestWillBeSent", {
+      requestId: "oauth-plain",
+      request: {
+        headers: { "Content-Type": "text/plain" },
+        method: "POST",
+        postData: "code=synthetic_code&state=synthetic_state&view=compact",
+        url: "https://example.com/token",
+      },
+      type: "Fetch",
+    });
+    guest.debugger.emit("message", {}, "Network.responseReceived", {
+      requestId: "oauth-plain",
+      response: { headers: { "Content-Type": "application/json" }, status: 200 },
+    });
+    guest.debugger.emit("message", {}, "Network.loadingFinished", { requestId: "oauth-plain" });
+    await Promise.resolve();
+
+    const result = await controller.execute({ tabId: "tab-1", operation: { kind: "network", requestId: "oauth-plain" } });
+    expect(result).toMatchObject({
+      ok: true,
+      value: { requests: [{
+        requestBody: "code=[redacted]&state=[redacted]&view=compact",
+        responseBody: '{"code":"[redacted]","state":"[redacted]","view":"compact"',
+      }] },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/synthetic_(?:code|state)/);
+    controller.close();
+  });
+
+  it("redacts OAuth values from captured form requests and JSON responses", async () => {
+    const guest = new FakeGuest();
+    const controller = createDesignBrowserCdpController(guest.session as unknown as Session);
+    await controller.attachGuest(guest as unknown as WebContents);
+    controller.registerTarget({ projectId: "p1", tabId: "tab-1", url: guest.getURL(), webContentsId: guest.id });
+    guest.debugger.responses["Network.getResponseBody"] = {
+      body: '{"code":"synthetic_code","nested":{"state":"synthetic_state"},"view":"compact","postcode":"123"}',
+      base64Encoded: false,
+    };
+    guest.debugger.emit("message", {}, "Network.requestWillBeSent", {
+      requestId: "oauth-token",
+      request: {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        method: "POST",
+        postData: "code=synthetic_code&state=synthetic_state&view=compact&postcode=123",
+        url: "https://example.com/token",
+      },
+      type: "Fetch",
+    });
+    guest.debugger.emit("message", {}, "Network.responseReceived", {
+      requestId: "oauth-token",
+      response: { headers: { "Content-Type": "application/json" }, status: 200 },
+    });
+    guest.debugger.emit("message", {}, "Network.loadingFinished", { requestId: "oauth-token" });
+    await Promise.resolve();
+
+    const result = await controller.execute({ tabId: "tab-1", operation: { kind: "network", requestId: "oauth-token" } });
+    expect(result).toMatchObject({
+      ok: true,
+      value: { requests: [{
+        requestBody: "code=%5Bredacted%5D&state=%5Bredacted%5D&view=compact&postcode=123",
+        responseBody: '{"code":"[redacted]","nested":{"state":"[redacted]"},"view":"compact","postcode":"123"}',
+      }] },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/synthetic_(?:code|state)/);
+    controller.close();
   });
 
   it("retains redacted network evidence and failure details", async () => {

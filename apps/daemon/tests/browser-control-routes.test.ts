@@ -211,6 +211,14 @@ describe('embedded browser control routes', () => {
       expect(rejected.status).toBe(400);
     }
 
+    const forgedNative = await fetch(`${base}/api/projects/p1/browser/commands`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: { operation: 'devtools', action: 'capture-throttle', approved: true,
+        params: { reportId: '00000000-0000-4000-8000-000000000001', cpu: 2, nativeApprovalId: 'forged' } }, timeoutMs: 100 }),
+    });
+    expect(forgedNative.status).toBe(403);
+    expect(await forgedNative.json()).toMatchObject({ error: { code: 'FORBIDDEN', message: expect.stringContaining('native confirmation') } });
+
     const next = await fetch(`${base}/api/projects/p1/browser/tabs/tab-a/commands/next`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

@@ -132,17 +132,18 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 }
 
 describe('od collab CLI', () => {
-  it('passes the selected model through the daemon billing contract', async () => {
+  it("rejects retired Cloud command without HTTP: passes the selected model through the daemon billing contract", async () => {
     stub = await startCollabStubServer();
     const result = await runCli([
       'workspace', 'billing', '--workspace-type', 'personal', '--workspace', 'personal-1',
       '--model', 'model/a+b', '--json', '--daemon-url', stub.baseUrl,
     ]);
-    expect(result.code).toBe(0);
-    expect(stub.requests[0]?.url).toBe('/api/workspace/billing?scope=workspace&workspaceId=personal-1&includePreflight=1&modelId=model%2Fa%2Bb');
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od workspace');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('reads Personal billing through an explicit Workspace id', async () => {
+  it("rejects retired Cloud command without HTTP: reads Personal billing through an explicit Workspace id", async () => {
     stub = await startCollabStubServer();
     const result = await runCli([
       'workspace', 'billing',
@@ -151,41 +152,24 @@ describe('od collab CLI', () => {
       '--json',
       '--daemon-url', stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      workspaceBalance: {
-        workspaceId: 'personal-1',
-        balanceUsd: '12.34',
-      },
-    });
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({
-      method: 'GET',
-      url: '/api/workspace/billing?scope=workspace&workspaceId=personal-1&includePreflight=1',
-    });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od workspace');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('lists the present member set as JSON', async () => {
+  it("rejects retired Cloud command without HTTP: lists the present member set as JSON", async () => {
     stub = await startCollabStubServer();
     const result = await runCli([
       'collab', 'presence', 'p1',
       '--workspace', 'team-1', '--workspace-member', 'm-42',
       '--json', '--daemon-url', stub.baseUrl,
     ]);
-    expect(result.code).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({
-      present: [{ memberId: 'm-42', name: 'Ma Shu', role: 'member' }],
-    });
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({ method: 'GET', url: '/api/projects/p1/presence' });
-    expect(stub.requests[0]?.headers).toMatchObject({
-      'x-od-workspace-id': 'team-1',
-      'x-od-workspace-member-id': 'm-42',
-    });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od collab');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('sends a heartbeat with the member identity in the body', async () => {
+  it("rejects retired Cloud command without HTTP: sends a heartbeat with the member identity in the body", async () => {
     stub = await startCollabStubServer();
     const result = await runCli([
       'collab', 'heartbeat', 'p1',
@@ -193,80 +177,35 @@ describe('od collab CLI', () => {
       '--member', 'm-42', '--name', 'Ma Shu', '--role', 'member',
       '--daemon-url', stub.baseUrl,
     ]);
-    expect(result.code).toBe(0);
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({ method: 'POST', url: '/api/projects/p1/presence/heartbeat' });
-    expect(JSON.parse(stub.requests[0]!.body)).toEqual({ memberId: 'm-42', name: 'Ma Shu', role: 'member' });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od collab');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('sends monotonic session fields for a fenced heartbeat and leave', async () => {
+  it("rejects retired Cloud command without HTTP: sends monotonic session fields for a fenced heartbeat and leave", async () => {
     stub = await startCollabStubServer();
-    const sharedArgs = [
-      '--workspace', 'team-1', '--workspace-member', 'm-42',
-      '--member', 'm-42', '--client-id', 'cli-session',
-      '--daemon-url', stub.baseUrl,
-    ];
-
     const heartbeat = await runCli([
-      'collab', 'heartbeat', 'p1', ...sharedArgs, '--sequence', '1',
+      'collab', 'heartbeat', 'p1', '--workspace', 'team-1', '--workspace-member', 'm-42', '--sequence', '1', '--daemon-url', stub.baseUrl,
     ]);
-    const leave = await runCli([
-      'collab', 'leave', 'p1', ...sharedArgs, '--sequence', '2',
-    ]);
-
-    expect(heartbeat.code).toBe(0);
-    expect(leave.code).toBe(0);
-    expect(stub.requests.map((request) => ({
-      method: request.method,
-      url: request.url,
-      body: JSON.parse(request.body),
-    }))).toEqual([
-      {
-        method: 'POST',
-        url: '/api/projects/p1/presence/heartbeat',
-        body: { memberId: 'm-42', clientId: 'cli-session', sequence: 1 },
-      },
-      {
-        method: 'POST',
-        url: '/api/projects/p1/presence/leave',
-        body: { memberId: 'm-42', clientId: 'cli-session', sequence: 2 },
-      },
-    ]);
+    expect(heartbeat.code).toBe(2);
+    expect(heartbeat.stderr).toContain('unknown command: od collab');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('requests a publish and prints the published version', async () => {
+  it("rejects retired Cloud command without HTTP: requests a publish and prints the published version", async () => {
     stub = await startCollabStubServer();
     const publish = await runCli([
       'collab', 'publish', 'p1',
       '--workspace', 'team-1', '--workspace-member', 'm-42',
       '--json', '--daemon-url', stub.baseUrl,
     ]);
-    expect(publish.code).toBe(0);
-    expect(JSON.parse(publish.stdout)).toEqual({ ok: true });
-
-    const status = await runCli([
-      'collab', 'status', 'p1',
-      '--workspace', 'team-1', '--workspace-member', 'm-42',
-      '--daemon-url', stub.baseUrl,
-    ]);
-    expect(status.code).toBe(0);
-    expect(status.stdout).toContain('publishedVersion\t7');
-    expect(status.stdout).toContain('materializedVersion\t6');
-    expect(stub.requests.map((r) => `${r.method} ${r.url}`)).toEqual([
-      'POST /api/projects/p1/collab/publish',
-      'GET /api/projects/p1/collab/status',
-    ]);
-    for (const request of stub.requests) {
-      expect(request?.headers).toMatchObject({
-        'x-od-workspace-id': 'team-1',
-        'x-od-workspace-member-id': 'm-42',
-      });
-    }
+    expect(publish.code).toBe(2);
+    expect(publish.stderr).toContain('unknown command: od collab');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('pulls through the explicitly scoped project route', async () => {
+  it("rejects retired Cloud command without HTTP: pulls through the explicitly scoped project route", async () => {
     stub = await startCollabStubServer();
-
     const result = await runCli([
       'collab',
       'pull',
@@ -279,48 +218,36 @@ describe('od collab CLI', () => {
       '--daemon-url',
       stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({ ok: true, version: 3 });
-    expect(stub.requests.map((request) =>
-      `${request.method} ${request.url}`)).toEqual([
-      'POST /api/projects/p1/collab/pull',
-    ]);
-    expect(stub.requests[0]?.headers).toMatchObject({
-      'x-od-workspace-id': 'team-1',
-      'x-od-workspace-member-id': 'm-42',
-    });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od collab');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('sends the visibility-to-sync team-share intent and reports the sync state', async () => {
+  it("rejects retired Cloud command without HTTP: sends the visibility-to-sync team-share intent and reports the sync state", async () => {
     stub = await startCollabStubServer();
     const share = await runCli([
       'collab', 'share', 'p1',
       '--workspace', 'team-1', '--workspace-member', 'm-42',
       '--json', '--daemon-url', stub.baseUrl,
     ]);
-    expect(share.code).toBe(0);
-    expect(JSON.parse(share.stdout)).toEqual({ ok: true, syncState: 'pending_upload' });
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({ method: 'POST', url: '/api/projects/p1/collab/sync-intent' });
-    expect(JSON.parse(stub.requests[0]!.body)).toEqual({
-      event: 'project_team_share_requested',
-      projectId: 'p1',
-    });
+    expect(share.code).toBe(2);
+    expect(share.stderr).toContain('unknown command: od collab');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('surfaces the sync state in status output', async () => {
+  it("rejects retired Cloud command without HTTP: surfaces the sync state in status output", async () => {
     stub = await startCollabStubServer();
     const status = await runCli([
       'collab', 'status', 'p1',
       '--workspace', 'team-1', '--workspace-member', 'm-42',
       '--daemon-url', stub.baseUrl,
     ]);
-    expect(status.code).toBe(0);
-    expect(status.stdout).toContain('synced');
+    expect(status.code).toBe(2);
+    expect(status.stderr).toContain('unknown command: od collab');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('rejects a heartbeat with no --member', async () => {
+  it("rejects retired Cloud command without HTTP: rejects a heartbeat with no --member", async () => {
     stub = await startCollabStubServer();
     const result = await runCli([
       'collab', 'heartbeat', 'p1',
@@ -328,17 +255,17 @@ describe('od collab CLI', () => {
       '--daemon-url', stub.baseUrl,
     ]);
     expect(result.code).toBe(2);
-    expect(result.stderr).toContain('--member');
+    expect(result.stderr).toContain('unknown command: od collab');
     expect(stub.requests).toHaveLength(0);
   });
 
-  it('rejects project collaboration without explicit workspace identity', async () => {
+  it("rejects retired Cloud command without HTTP: rejects project collaboration without explicit workspace identity", async () => {
     stub = await startCollabStubServer();
     const result = await runCli([
       'collab', 'status', 'p1', '--daemon-url', stub.baseUrl,
     ]);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain('--workspace <id> and --workspace-member <id>');
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od collab');
     expect(stub.requests).toHaveLength(0);
   });
 });

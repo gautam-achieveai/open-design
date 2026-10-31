@@ -1,6 +1,7 @@
 <h1 align="center">OpenDesign: перший спільний робочий простір із дизайн-агентами</h1>
 
-> ✨ **[Представляємо OpenDesign Go](https://open-design.ai/pricing/)**. Go Plan коштує від 8 доларів у перший місяць і містить щомісячні кредити для понад 10 моделей, зокрема GPT-6.1 Sol, GPT-6 Luna, DeepSeek V4.1 Flash, GLM-5.3 Flash-X і MiMo V2.6 Flash. Усі особисті тарифи містять доступ до API для Codex, Claude Code, DSH, OpenCode та інших інструментів.
+> **Fork notice:** Vela/OpenDesign Cloud accounts, managed models and team sync are unavailable. Local agents and separately configured providers remain. See the [current README](../../README.md). Dated roadmap entries below describe upstream history.
+
 >
 > 🧩 **[DeepSeek Harness тепер підтримується.](https://open-design.ai/zh/agents/deepseek-harness-design/)** Підключіть офіційний Agent Harness `dsh` від DeepSeek до OpenDesign як нативне середовище виконання зі структурованим мисленням, викликами інструментів, пошуком моделей, скасуванням і відновленням сесії. Створені файли залишаються в робочому процесі OpenDesign для живого попереднього перегляду й передачі результату.
 
@@ -11,7 +12,6 @@
 <p align="center">
   <a href="https://open-design.ai/">Вебсайт</a> ·
   <a href="https://open-design.ai/">Завантажити</a> ·
-  <a href="https://open-design.ai/cloud/">OpenDesign Cloud</a> ·
   <a href="https://discord.gg/mHAjSMV6gz">Discord</a> ·
   <a href="https://x.com/OpenDesignHQ">Стежити за @OpenDesignHQ</a>
 </p>
@@ -29,7 +29,7 @@
 
 ## Що таке OpenDesign
 
-OpenDesign — **спільний робочий простір із дизайн-агентами**. Почніть з опису завдання та скористайтеся звичним агентом для розробки або OpenDesign Cloud, щоб створити прототип відповідно до вашої дизайн-системи. Поділіться ним із командою, зберіть відгуки й попросіть агента вдосконалити результат у тому самому проєкті.
+OpenDesign — **спільний робочий простір із дизайн-агентами**. Почніть з опису завдання та скористайтеся звичним агентом для розробки, щоб створити прототип відповідно до вашої дизайн-системи. Поділіться ним із командою, зберіть відгуки й попросіть агента вдосконалити результат у тому самому проєкті.
 
 Цей процес відкритий і розширюваний. Як **відкрита альтернатива Claude Design**, OpenDesign поширюється за ліцензією Apache 2.0: команди можуть вивчати й адаптувати навички, шаблони, дизайн-системи та плагіни до своїх процесів.
 
@@ -117,7 +117,6 @@ OpenDesign — **спільний робочий простір із дизай�
 `od mcp install <agent> --print` для попереднього перегляду без застосування · `--uninstall` для видалення · повний список через `od mcp install --help`.
 
 <p align="center">
-  <img src="https://repo-assets.open-design.ai/resources/images/coding-agents.png" alt="The 25 coding-agent CLIs OpenDesign supports — Claude Code · Codex · OpenCode · Hermes · Antigravity · Vela · Grok Build · Kimi · Cursor Agent · Qwen · Qoder · GitHub Copilot · Pi · Kiro · Kilo · Mistral Vibe · DeepSeek · Reasonix · Aider · Amp · CodeBuddy · Mimo · AtomCode · Devin · Trae" width="100%" />
 </p>
 
 **Не встановлено жодного CLI?** Проксі BYOK на `POST /api/proxy/{anthropic,openai,azure,google,ollama,senseaudio}/stream` дає вам той самий цикл (без породження процесу) — вставте `baseUrl` + `apiKey` + `model`, з підтримкою OpenAI, Anthropic, Azure OpenAI, Google Gemini, Ollama, LM Studio, vLLM або будь-якої OpenAI-сумісної кінцевої точки. Захист від SSRF для кожної цілі блокує внутрішні IP / link-local / CGNAT на межі демона.

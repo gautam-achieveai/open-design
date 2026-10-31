@@ -1,13 +1,6 @@
 // @vitest-environment jsdom
 //
-// The floating avatar + credits cluster must survive opening a project.
-//
-// The entry refresh moved the account module (avatar chip + credits pill)
-// into a top-right chrome cluster owned by EntryNavRail — which unmounts with
-// EntryShell the moment a project tab opens. Product: the avatar and credits
-// stay visible on the project view too, in the same top-right spot. App.tsx
-// therefore mounts `WorkspaceTopRightAccountCluster` with the route-owned
-// Workspace authority whenever `route.kind === 'project'`.
+// Project authority and local updater chrome remain stable without account UI.
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useEffect } from 'react';
@@ -41,7 +34,6 @@ import {
   resetWorkspaceBillingCache,
   resetWorkspaceContextCache,
 } from '../../src/collab/useWorkspaceContext';
-import { resetWorkspaceDirectoryCache } from '../../src/components/EntryNavRail';
 
 const PROJECT_ROUTE: Route = {
   kind: 'project' as const,
@@ -290,11 +282,10 @@ function stubFetchByUrl() {
   );
 }
 
-describe('project route — floating account cluster', () => {
+describe('project route authority without account UI', () => {
   beforeEach(() => {
     resetWorkspaceContextCache();
     resetWorkspaceBillingCache();
-    resetWorkspaceDirectoryCache();
     useRouteMock.mockReturnValue(PROJECT_ROUTE);
     vi.mocked(daemonIsLive).mockResolvedValue(true);
     vi.mocked(fetchAgents).mockResolvedValue([]);
@@ -325,38 +316,9 @@ describe('project route — floating account cluster', () => {
     vi.clearAllMocks();
     resetWorkspaceContextCache();
     resetWorkspaceBillingCache();
-    resetWorkspaceDirectoryCache();
   });
 
-  it('keeps the credits pill — but not the account menu — mounted on an open project', async () => {
-    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
-    render(<App />);
 
-    // The credits pill rides the shared chrome portal; it appears once the
-    // workspace context read resolves.
-    const credits = await screen.findByTestId('entry-top-right-credits');
-    expect(credits.closest('.entry-top-right-cluster')).not.toBeNull();
-
-    // The account module now lives at the bottom of the entry rail, and this
-    // route has no rail — so it is deliberately absent rather than relocated.
-    expect(screen.queryByTestId('entry-nav-account')).toBeNull();
-
-    // Balance still comes from THIS route's workspace, not the shell's. Since
-    // design PR #8364 the pill carries only the plan wordmark, so the amount is
-    // read off the billing card the pill opens on hover.
-    fireEvent.pointerOver(credits.closest('.entry-top-right-credits-anchor') as HTMLElement);
-    const creditsCard = await waitFor(() => {
-      const el = document.querySelector('.entry-nav-rail__menu-credits');
-      if (!el) throw new Error('credits card not open');
-      return el;
-    });
-    expect(creditsCard.textContent).toContain('$12.34');
-    expect(creditsCard.textContent).not.toContain('98.76');
-
-    fireEvent.click(screen.getByTestId('entry-top-right-credits'));
-    expect(open).toHaveBeenCalledOnce();
-    expect(open.mock.calls[0]?.[0]).toContain('/dashboard?workspaceId=ws-project');
-  });
 
   it.each([
     ['signed out', false],

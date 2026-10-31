@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { inferLegacyManifest, validateArtifactManifestInput } from './manifest.js';
+import type { ProjectFileMutationHooks } from '../services/project-file-mutation-hooks.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -10,19 +11,20 @@ export interface CreateProjectArtifactInput {
   artifactManifest?: unknown;
 }
 
-export interface CreateProjectArtifactOptions {
+export interface CreateProjectArtifactOptions<T = unknown> {
   projectsRoot: string;
   projectId: string;
   input: CreateProjectArtifactInput;
   metadata?: unknown;
+  mutationHooks?: ProjectFileMutationHooks;
   writeProjectFile: (
     projectsRoot: string,
     projectId: string,
     name: string,
     body: Buffer,
-    options: { overwrite: false; artifactManifest: unknown },
+    options: { overwrite: false; artifactManifest: unknown; mutationHooks?: ProjectFileMutationHooks },
     metadata?: unknown,
-  ) => Promise<unknown>;
+  ) => Promise<T>;
 }
 
 export class ArtifactManifestRequiredError extends Error {
@@ -66,7 +68,7 @@ export function resolveCreateArtifactManifest(input: CreateProjectArtifactInput)
   throw new ArtifactManifestRequiredError(input.name);
 }
 
-export async function createProjectArtifactFile(options: CreateProjectArtifactOptions): Promise<unknown> {
+export async function createProjectArtifactFile<T>(options: CreateProjectArtifactOptions<T>): Promise<T> {
   const { input } = options;
   const body = input.encoding === 'base64'
     ? Buffer.from(input.content, 'base64')
@@ -79,6 +81,7 @@ export async function createProjectArtifactFile(options: CreateProjectArtifactOp
     {
       overwrite: false,
       artifactManifest: resolveCreateArtifactManifest(input),
+      ...(options.mutationHooks ? { mutationHooks: options.mutationHooks } : {}),
     },
     options.metadata,
   );

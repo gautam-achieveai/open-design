@@ -194,7 +194,6 @@ function renderChat(opts: {
       onSend={vi.fn()}
       onStop={vi.fn()}
       onRetry={vi.fn()}
-      amrBalanceCardUsd={null}
       conversations={[
         { projectId: 'project-1', id: 'conv-1', title: 'Current', createdAt: 1, updatedAt: 1 },
       ]}

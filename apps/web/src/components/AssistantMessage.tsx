@@ -1,10 +1,10 @@
 import { Fragment, memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCharReveal } from "./chat/useCharReveal";
 import { ExecutionShell } from "./chat/ExecutionShell";
+import { StreamClockProvider, useAssistantStreamClock } from "./chat/StreamClock";
 import { buildTurnBlocks } from "../runtime/chat/build-turn-blocks";
 import { copyableTurnText } from "../runtime/chat/copyable-turn";
 import type { ExecutionShell as ExecutionShellData } from "../runtime/chat/contract";
-import { upstreamActivityAt } from "../runtime/chat/upstream-activity";
 import type { RecordFileScope } from "../runtime/chat/record-file-open";
 import { FileOpsSummary } from "./FileOpsSummary";
 import { messageArtifactRefs } from "../runtime/chat/artifact-refs";
@@ -137,6 +137,7 @@ const viewedInlineQuestionForms = new Set<string>();
 const QUESTION_FORM_DRAFT_STORAGE_PREFIX = "open-design:question-form-draft:";
 const QUESTION_FORM_SUBMITTED_STORAGE_PREFIX =
   "open-design:question-form-submitted:";
+const EMPTY_MEDIA_TASKS: ProjectMediaTask[] = [];
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -356,49 +357,6 @@ export const AssistantMessage = memo(AssistantMessageImpl, areAssistantMessagePr
  *     the individual tool cards. Mirrors the chat surface in screenshot 9.
  *   - status pills
  */
-/**
- * 壳头那颗秒表的两个读数,每秒一起取一次,只在 `active` 期间走。
- *
- *  · `nowMs` —— 「现在」。不这么推的话 React 不会因为墙上时间变了就重渲染,
- *    秒表会冻在最后一次事件那一刻,页面上看着像卡死。
- *  · `lastEventAtMs` —— 上游最近一帧是什么时候到的(S12 的静默起点)。
- *
- * **两个读数必须同一刻取。** 分成两个 hook 就是两个 interval、两次 setState,
- * 而且它们取的「现在」差着毫秒,静默 = now − last 会莫名多出个负数或零头。
- *
- * **为什么从 `upstreamActivityAt` 取,而不是数事件条数。**
- * 上一版这里写的是 `useMemo(() => Date.now(), [displayEvents.length])` ——
- * 想法没错(到达时刻比事件自带的时刻诚实),但那把钥匙在流式期间根本不动:
- * `tool_input_delta` 不进事件数组、claude 的空 `thinking_delta` 被挡在门外、
- * 连续文字被合进最后一条。真机 run `7ed15c2f` 的 161.6 秒窗口里落了 126 条帧,
- * 而 `displayEvents.length` 一次都没变,于是壳头照报「已等 156 秒」。
- * 传输层那张表记的是帧到达,与事件加工无关,也与 agent 填不填时刻无关。
- *
- * 取不到(没有 runId、或这条 run 一帧都还没来过)就返回 undefined,
- * 让 `buildTurnBlocks` 退回轮次开头 —— 「卡在首个 token」那一档要的正是这个。
- */
-interface StreamClock {
-  nowMs?: number | undefined;
-  lastEventAtMs?: number | undefined;
-}
-
-function useTickingNow(active: boolean, runId?: string): StreamClock {
-  const [tick, setTick] = useState<StreamClock>({});
-  useEffect(() => {
-    if (!active) {
-      setTick({});
-      return;
-    }
-    const sample = (): void => {
-      setTick({ nowMs: Date.now(), lastEventAtMs: upstreamActivityAt(runId) ?? undefined });
-    };
-    sample();
-    const id = setInterval(sample, 1000);
-    return () => { clearInterval(id); };
-  }, [active, runId]);
-  return tick;
-}
-
 function AssistantMessageImpl({
   message,
   streaming,
@@ -408,7 +366,7 @@ function AssistantMessageImpl({
   projectFiles = [],
   projectFileNames,
   projectResolvedDir,
-  mediaTasks = [],
+  mediaTasks = EMPTY_MEDIA_TASKS,
   onRequestOpenFile,
   onRetryImage,
   onBrandBrowserAssistConfirm,
@@ -547,8 +505,8 @@ function AssistantMessageImpl({
    * 壳内装过程(thinking / 工具行 / done 之前的叙述),壳外只留结论 —— 归属规则全在
    * `buildTurnBlocks` 里,这里不做任何判断。
    */
-  /** 壳头那颗秒表的「现在」+ S12 的静默起点,每秒同刻取一次(见 `useTickingNow`)。 */
-  const { nowMs, lastEventAtMs } = useTickingNow(streaming, message.runId);
+  /** Clock ticks update only their text subscribers, never this message or its parser. */
+  const streamClock = useAssistantStreamClock(streaming, message.runId);
   // A retried message keeps its creation date but carries the new run's start.
   const runStartedAt = message.startedAt ?? message.createdAt;
 
@@ -563,6 +521,7 @@ function AssistantMessageImpl({
     [projectId, projectFileNames, projectResolvedDir],
   );
   const nextTurn = useMemo(() => {
+    const { nowMs, lastEventAtMs } = streamClock.sample();
     const turn = buildTurnBlocks({
       events: displayEvents,
       ...(mediaTasks.length ? { mediaTasks } : {}),
@@ -596,7 +555,10 @@ function AssistantMessageImpl({
     };
     // `message.endedAt` 从 undefined 变成时刻**就在轮次终止那一刻** —— 不进依赖的话
     // 兜底耗时会停在「还没有终点」的那一版,壳头刚收起时秒数是空的。
-  }, [displayEvents, turnRunStatus, nowMs, previousTodos, runStartedAt, message.endedAt, streaming, lastEventAtMs, mediaTasks]);
+    // nowMs / lastEventAtMs are deliberately sampled only when real inputs change.
+    // Their isolated subscribers own subsequent ticks; reparsing here caused the
+    // measured one-second streaming stalls.
+  }, [displayEvents, turnRunStatus, previousTodos, runStartedAt, message.endedAt, mediaTasks]);
   /**
    * 执行记录里**真的有东西**。
    *
@@ -862,10 +824,19 @@ function AssistantMessageImpl({
      * 没有 `show` 就只保留 daemon 权威归属的 `producedFiles`。所以这里不能再回到
      * raw fileOps / `displayedProduced` —— 后两者还混着裸工具行与正文 / mtime 推断。
      */
-    if (summaryArtifactOps.length > 0) return orderArtifactCards(summaryArtifactOps, artifactFocus);
-    if (streaming) return [];
-    return orderArtifactCards(producedFilesAsFileOps(declaredArtifactFiles), artifactFocus);
-  }, [artifactFocus, declaredArtifactFiles, streaming, summaryArtifactOps]);
+    const entries = summaryArtifactOps.length > 0
+      ? orderArtifactCards(summaryArtifactOps, artifactFocus)
+      : streaming
+        ? []
+        : orderArtifactCards(producedFilesAsFileOps(declaredArtifactFiles), artifactFocus);
+    // Build conversations are source-editing workspaces, not design-generation
+    // galleries. Wait for the write to finish and show the real artifact; a grey
+    // pending cover adds no useful information (D53). Design keeps D37's preview.
+    if (message.sessionMode === 'build' && (streaming || turnRunStatus === 'running')) {
+      return entries.filter((entry) => entry.status !== 'running');
+    }
+    return entries;
+  }, [artifactFocus, declaredArtifactFiles, message.sessionMode, streaming, summaryArtifactOps, turnRunStatus]);
   // The single artifact the "next step" affordance anchors to: prefer the HTML
   // produced by THIS turn; if the final turn emitted none (a summary / continue
   // message) fall back to the most recently modified HTML in the project so
@@ -1293,6 +1264,7 @@ function AssistantMessageImpl({
   };
 
   return (
+    <StreamClockProvider value={streamClock.context}>
     <div
       id={`assistant-message-${message.id}`}
       className={`msg assistant${showRole ? '' : ' assistant-continuation'}`}
@@ -1538,6 +1510,7 @@ function AssistantMessageImpl({
         ) : null}
       </div>
     </div>
+    </StreamClockProvider>
   );
 }
 

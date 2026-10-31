@@ -114,37 +114,14 @@ describe('od message-center CLI', () => {
     stub.setResponder(() => ({ status: 200, body: { ok: true } }));
   });
 
-  it('prints usage on `od message-center help` and exits 0', async () => {
+  it("rejects retired Cloud command without HTTP: prints usage on `od message-center help` and exits 0", async () => {
     const result = await runCli(['message-center', 'help']);
-    expect(result.code).toBe(0);
-    expect(result.stdout).toMatch(/od message-center/);
-    expect(result.stdout).toMatch(/read-all/);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od message-center');
     expect(stub.requests).toHaveLength(0);
   });
 
-  it('lists messages through the daemon route and maps locale/filter query params', async () => {
-    stub.setResponder((req) => {
-      if (req.method === 'GET' && req.url === '/api/integrations/vela/message-center/messages?locale=en-US&filter=unread&limit=50') {
-        return {
-          status: 200,
-          body: {
-            messages: [
-              {
-                id: 'release',
-                typeName: 'Product update',
-                title: 'OpenDesign 0.14 is available',
-                publishedAt: '2026-07-16T12:00:00.000Z',
-                readAt: null,
-              },
-            ],
-            nextCursor: null,
-            unreadCount: 1,
-          },
-        };
-      }
-      return { status: 404, body: { error: 'unexpected' } };
-    });
-
+  it("rejects retired Cloud command without HTTP: lists messages through the daemon route and maps locale/filter query params", async () => {
     const result = await runCli([
       'message-center',
       'list',
@@ -157,25 +134,12 @@ describe('od message-center CLI', () => {
       '--daemon-url',
       stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(0);
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({
-      method: 'GET',
-      url: '/api/integrations/vela/message-center/messages?locale=en-US&filter=unread&limit=50',
-    });
-    expect(result.stdout).toContain('release\tunread\tProduct update\t2026-07-16T12:00:00.000Z\tOpenDesign 0.14 is available');
-    expect(result.stdout).toContain('unreadCount\t1');
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od message-center');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('emits raw JSON for `message-center list --json`', async () => {
-    const payload = {
-      messages: [],
-      nextCursor: 'cursor-2',
-      unreadCount: 0,
-    };
-    stub.setResponder(() => ({ status: 200, body: payload }));
-
+  it("rejects retired Cloud command without HTTP: emits raw JSON for `message-center list --json`", async () => {
     const result = await runCli([
       'message-center',
       'list',
@@ -183,19 +147,12 @@ describe('od message-center CLI', () => {
       '--daemon-url',
       stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual(payload);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od message-center');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('POSTs the message read endpoint on `message-center read <id>`', async () => {
-    stub.setResponder((req) => {
-      if (req.method === 'POST' && req.url === '/api/integrations/vela/message-center/messages/release%2F2026/read') {
-        return { status: 200, body: { ok: true, id: 'release/2026' } };
-      }
-      return { status: 404, body: { error: 'unexpected' } };
-    });
-
+  it("rejects retired Cloud command without HTTP: POSTs the message read endpoint on `message-center read <id>`", async () => {
     const result = await runCli([
       'message-center',
       'read',
@@ -203,25 +160,12 @@ describe('od message-center CLI', () => {
       '--daemon-url',
       stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(0);
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({
-      method: 'POST',
-      url: '/api/integrations/vela/message-center/messages/release%2F2026/read',
-    });
-    expect(result.stdout).toContain('Marked message as read\trelease/2026');
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od message-center');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('POSTs the read-all endpoint on `message-center read-all --json`', async () => {
-    const payload = { ok: true, updated: 3 };
-    stub.setResponder((req) => {
-      if (req.method === 'POST' && req.url === '/api/integrations/vela/message-center/read-all') {
-        return { status: 200, body: payload };
-      }
-      return { status: 404, body: { error: 'unexpected' } };
-    });
-
+  it("rejects retired Cloud command without HTTP: POSTs the read-all endpoint on `message-center read-all --json`", async () => {
     const result = await runCli([
       'message-center',
       'read-all',
@@ -229,20 +173,15 @@ describe('od message-center CLI', () => {
       '--daemon-url',
       stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(0);
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({
-      method: 'POST',
-      url: '/api/integrations/vela/message-center/read-all',
-    });
-    expect(JSON.parse(result.stdout)).toEqual(payload);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od message-center');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('fails fast when `message-center read` is missing an id', async () => {
+  it("rejects retired Cloud command without HTTP: fails fast when `message-center read` is missing an id", async () => {
     const result = await runCli(['message-center', 'read', '--daemon-url', stub.baseUrl]);
     expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od message-center');
     expect(stub.requests).toHaveLength(0);
-    expect(result.stderr).toMatch(/Usage: od message-center read/);
   });
 });

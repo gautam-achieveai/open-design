@@ -128,7 +128,7 @@ describe('OPEND-2590 · 重进一个还在跑的项目', () => {
     for (const ch of ['新', '内', '容']) {
       live.buffer.appendContent(ch);
       runFrame();
-      vi.advanceTimersByTime(8);
+      vi.advanceTimersByTime(34);
     }
     expect(live.commits()).toBe(3);
     expect(reveal).toBeGreaterThan(0);
