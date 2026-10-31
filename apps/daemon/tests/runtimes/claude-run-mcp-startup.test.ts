@@ -39,6 +39,13 @@ describe('Claude MCP startup cancellation', () => {
   let daemon: { url: string; server: Server; shutdown: () => Promise<void> } | undefined;
   let root: string | undefined;
   let release = () => {};
+  let preparationWatcher: { controller: AbortController; settled: Promise<never> } | undefined;
+  const stopPreparationWatcher = async () => {
+    const watcher = preparationWatcher;
+    preparationWatcher = undefined;
+    watcher?.controller.abort();
+    await watcher?.settled.catch(() => undefined);
+  };
   const savedEnv = new Map<string, string | undefined>();
   const changeEnv = (key: string, value: string | undefined) => {
     if (!savedEnv.has(key)) savedEnv.set(key, process.env[key]);
@@ -47,6 +54,7 @@ describe('Claude MCP startup cancellation', () => {
   afterEach(async () => {
     if (boundary.phase !== 'complete') console.info(JSON.stringify({ test: 'claude-mcp-startup', phase: boundary.phase, runSpawns: boundary.runSpawns, taskExecutionPresent: boundary.taskExecutionPresent }));
     release();
+    await stopPreparationWatcher();
     boundary.prepared = null;
     boundary.release = null;
     await daemon?.shutdown();
@@ -91,8 +99,8 @@ describe('Claude MCP startup cancellation', () => {
     });
     boundary.phase = 'start-server';
     daemon = await startServer({ port: 0, host: '127.0.0.1', returnServer: true }) as typeof daemon;
-    const request = async (route: string, body?: unknown, method = 'POST') => {
-      const response = await fetch(daemon!.url + route, { method,
+    const request = async (route: string, body?: unknown, method = 'POST', signal: AbortSignal | null = null) => {
+      const response = await fetch(daemon!.url + route, { method, signal,
         headers: { 'content-type': 'application/json', 'x-od-analytics-device-id': 'claude-startup-test', 'x-od-analytics-session-id': 'claude-startup-session', 'x-od-analytics-client-type': 'web' },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       expect(response.ok).toBe(true);
@@ -107,12 +115,19 @@ describe('Claude MCP startup cancellation', () => {
     const run = await request('/api/runs', { projectId, conversationId: project.conversationId, assistantMessageId: `assistant-${randomUUID()}`, clientRequestId: `request-${randomUUID()}`, agentId: 'claude', message: 'Read browser', currentPrompt: 'Read browser' });
     boundary.taskExecutionPresent = typeof run.taskExecutionId === 'string';
     boundary.phase = 'wait-prepared';
-    const endedBeforePreparation = fetch(`${daemon!.url}/api/runs/${run.runId}/events`).then(response => response.text()).then(async () => {
-      const state = await request(`/api/runs/${run.runId}`, undefined, 'GET');
+    const controller = new AbortController();
+    const endedBeforePreparation = fetch(`${daemon!.url}/api/runs/${run.runId}/events`, { signal: controller.signal }).then(response => response.text()).then(async () => {
+      const state = await request(`/api/runs/${run.runId}`, undefined, 'GET', controller.signal);
       const code = typeof state.errorCode === 'string' && /^[A-Z_]{1,64}$/u.test(state.errorCode) ? state.errorCode : 'NONE';
       throw new Error(`Run ended before preparation: ${state.status}, ${code}, mcpFlag=${agentCapabilities.get('claude')?.mcpConfig === true}`);
     });
-    const configPath = await Promise.race([prepared, endedBeforePreparation]);
+    preparationWatcher = { controller, settled: endedBeforePreparation };
+    let configPath: string;
+    try {
+      configPath = await Promise.race([prepared, endedBeforePreparation]);
+    } finally {
+      await stopPreparationWatcher();
+    }
     expect(fs.existsSync(configPath)).toBe(true);
     boundary.phase = 'cancel';
     await request(`/api/runs/${run.runId}/cancel`, {});
