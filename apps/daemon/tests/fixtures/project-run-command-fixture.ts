@@ -1,5 +1,5 @@
 import express from 'express';
-import type Database from 'better-sqlite3';
+import type { Database } from 'better-sqlite3';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,10 +26,43 @@ const noop = () => undefined;
 const proxy = (values: Record<string, unknown> = {}) => new Proxy(values, { get: (obj, key) => key in obj ? obj[String(key)] : noop });
 export const closeProjectRunFixturePool = () => getGlobalDispatcher().close();
 
+// Name the fixture boundary explicitly so declaration checking does not expand
+// SQLite's private namespace through the inferred service return types.
+interface ProjectRunCommandFixture {
+  root: string;
+  db: Database;
+  projectsRoot: string;
+  runs: ReturnType<typeof createChatRunService>;
+  design: { runs: ReturnType<typeof createChatRunService>; analytics: { capture: typeof noop }; getAppVersion: () => string };
+  project: ReturnType<typeof registerProjectRoutes>;
+  runRoutes: ReturnType<typeof registerRunRoutes>;
+  commands: ReturnType<typeof createProjectRunCommandService>;
+  registry: McpToolRegistry;
+  tokens: ToolTokenRegistry;
+  store: McpCredentialStore;
+  credential: ReturnType<McpCredentialStore['create']>;
+  state: {
+    starts: number; resumeStarts: number; pauseCloud: boolean;
+    lastError: { name: string; message: string; stack?: string } | null;
+    beforeCreateValidation: (() => void | Promise<void>) | undefined;
+    beforeRegistryRead: (() => void | Promise<void>) | undefined;
+    onClaim: (() => void) | undefined;
+    beforeEventsRead: (() => void | Promise<void>) | undefined;
+    beforeOrigins: (() => void | Promise<void>) | undefined;
+    queryGets: number;
+  };
+  base: string;
+  call: (name: string, args: unknown, headers?: Record<string, string>) => Promise<{
+    ok: boolean; data?: Record<string, unknown>; error?: { code: string };
+  }>;
+  restartRegistry: () => void;
+  close: () => Promise<void>;
+}
+
 /** Actual REST handlers, SQLite and run registry; only the physical agent is synthetic. */
-export async function createProjectRunCommandFixture(options: { localCatalog?: boolean } = {}) {
+export async function createProjectRunCommandFixture(options: { localCatalog?: boolean } = {}): Promise<ProjectRunCommandFixture> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-project-run-command-'));
-  const db: Database.Database = dbApi.openDatabase(root, { dataDir: root });
+  const db: Database = dbApi.openDatabase(root, { dataDir: root });
   const projectsRoot = path.join(root, 'projects');
   await fs.mkdir(projectsRoot);
   await writeAppConfig(root, { odNextStrategyMode: 'off' });
