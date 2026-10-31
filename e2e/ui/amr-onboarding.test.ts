@@ -339,7 +339,6 @@ test('[P1] install-local BYOK survives daemon preference reset and cold reload',
 
 for (const destination of [
   { name: 'Home', path: '/' },
-  { name: 'Community', path: '/community' },
   { name: 'Projects', path: '/projects' },
   { name: 'Design Systems', path: '/design-systems' },
   { name: 'Plugins', path: '/plugins' },
@@ -358,6 +357,22 @@ for (const destination of [
     await expectModelSourceChooser(page);
   });
 }
+
+test('[P0] unconfigured users can browse Community without completing setup', async ({ page }) => {
+  const config = await wireOnboardingMocks(page, {});
+  await seedOnboardingConfig(page, config);
+  await page.route('**/api/plugins', route => route.fulfill({ json: { plugins: [] } }));
+
+  await page.goto('/community', { waitUntil: 'domcontentloaded' });
+  await waitForLoadingToClear(page);
+  await dismissPrivacyDialog(page);
+
+  await expect(page).toHaveURL(/\/community$/);
+  const community = page.getByRole('region', { name: 'Community', exact: true });
+  await expect(community.getByRole('heading', { name: 'Community', exact: true })).toBeVisible();
+  await expect(community.getByTestId('community-empty-state')).toBeVisible();
+  await pollStoredConfig(page).toMatchObject({ onboardingCompleted: false });
+});
 
 test('[P0] onboarding configuration Back returns to the source chooser with the test gate locked', async ({ page }) => {
   const config = await wireOnboardingMocks(page, {});
