@@ -2849,9 +2849,9 @@ process.stdin.on("end", () => {
 
   it("[P1] keeps the metadata-independent prerelease Windows smoke advisory to release cuts", async () => {
     const [canary, minorCut, patchCut] = await Promise.all([
-      readFile(mainPrereleaseWinSmokeWorkflowPath, "utf8"),
-      readFile(cutReleaseWorkflowPath, "utf8"),
-      readFile(cutPatchReleaseWorkflowPath, "utf8"),
+      readFile(mainPrereleaseWinSmokeWorkflowPath, "utf8").then(text => text.replace(/\r\n/g, "\n")),
+      readFile(cutReleaseWorkflowPath, "utf8").then(text => text.replace(/\r\n/g, "\n")),
+      readFile(cutPatchReleaseWorkflowPath, "utf8").then(text => text.replace(/\r\n/g, "\n")),
     ]);
 
     const trigger = sectionBetween(canary, "on:", "\npermissions:");
@@ -2861,8 +2861,8 @@ process.stdin.on("end", () => {
     expect(canary).toContain("ref: main");
     expect(canary).not.toContain("inputs.ref");
     expect(canary).toContain("runs-on: windows-latest");
-    expect(canary).toContain("OPEN_DESIGN_AMR_PROFILE: prod");
-    expect(canary).toContain("OD_VELA_WEB_URL: ${{ secrets.VELA_WEB_URL_PROD }}");
+    expect(canary).not.toContain("OPEN_DESIGN_AMR_PROFILE");
+    expect(canary).not.toContain("OD_VELA_WEB_URL");
     expect(canary).toContain("--namespace release-prerelease-canary-win");
     expect(canary).toContain('OD_PACKAGED_E2E_RELEASE_CHANNEL: prerelease');
     expect(canary).toContain("OD_PACKAGED_E2E_WIN_SMOKE_PROFILE: ${{ inputs.smoke_profile || 'core' }}");

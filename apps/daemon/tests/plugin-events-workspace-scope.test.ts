@@ -68,7 +68,7 @@ beforeAll(async () => {
     visibility: 'personal',
     createdByWorkspaceMemberId: 'event-member-b',
   });
-  ensureWorkspaceResource(db, 'plugin', 'event-workspace', 'event-team', {
+  ensureWorkspaceResource(db, 'plugin', 'event-team-workspace', 'event-team', {
     visibility: 'team',
     createdByWorkspaceMemberId: 'event-member-a',
   });
@@ -108,9 +108,9 @@ describe('plugin event workspace isolation', () => {
     expect(body.events.map((event) => event.pluginId).sort()).toEqual([
       'event-bundled',
       'event-personal-a',
-      'event-team',
     ]);
     expect(JSON.stringify(body)).not.toContain('event-personal-b');
+    expect(JSON.stringify(body)).not.toContain('event-team');
     expect(JSON.stringify(body)).not.toContain('/private/source/event-personal-b');
   });
 
@@ -131,11 +131,10 @@ describe('plugin event workspace isolation', () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       stats: {
-        total: 3,
+        total: 2,
         byPluginId: {
           'event-bundled': 1,
           'event-personal-a': 1,
-          'event-team': 1,
         },
       },
     });

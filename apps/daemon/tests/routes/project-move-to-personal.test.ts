@@ -380,9 +380,8 @@ describe('project move to personal on an unbound (never-locally-shared) project'
       const resp = await fetch(`${routeServer.url}/api/workspace/projects/team`, {
         headers: ownerTeamHeaders(),
       });
-      expect(resp.status).toBe(200);
-      const body = (await resp.json()) as { projects: Array<{ projectId: string }> };
-      expect(body.projects.some((project) => project.projectId === result.projectId)).toBe(true);
+      expect(resp.status).toBe(404);
+      expect(getWorkspaceProjectByProjectId(db, result.projectId)).toBeUndefined();
     } finally {
       await close(routeServer.server);
     }

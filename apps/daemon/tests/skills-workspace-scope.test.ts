@@ -208,7 +208,7 @@ describe('GET /api/skills — workspace visibility scope', () => {
     expect(files.status).toBe(404);
   });
 
-  it('shows a shared Team skill to another member in the same workspace', async () => {
+  it('rejects legacy Team scope without exposing the preserved skill', async () => {
     const skillId = `wsscope-team-${Date.now()}`;
     await seedSkillFolder(skillId);
     bindSkillToWorkspace(skillId, 'ws-scope-team-shared', 'member-owner');
@@ -217,11 +217,15 @@ describe('GET /api/skills — workspace visibility scope', () => {
       visibility: 'team',
     });
 
-    expect(await fetchSkillIds('ws-scope-team-shared', 'member-other')).toContain(skillId);
+    const list = await fetch(`${baseUrl}/api/skills`, {
+      headers: workspaceHeaders('member-other', 'member', 'ws-scope-team-shared'),
+    });
+    expect(list.status).toBe(403);
+    await expect(list.json()).resolves.toMatchObject({ error: { code: 'WORKSPACE_UNAVAILABLE' } });
     const detail = await fetch(`${baseUrl}/api/skills/${skillId}`, {
       headers: workspaceHeaders('member-other', 'member', 'ws-scope-team-shared'),
     });
-    expect(detail.status).toBe(200);
+    expect(detail.status).toBe(403);
   });
 
   it('falls back to the bundled skill when another member owns a same-id user shadow', async () => {
@@ -464,7 +468,7 @@ describe('Team Skill mutation targets', () => {
 
       expect(response.status).toBe(403);
       await expect(response.json()).resolves.toMatchObject({
-        error: { code: 'WORKSPACE_RESOURCE_MANAGE_DENIED' },
+        error: { code: 'WORKSPACE_UNAVAILABLE' },
       });
       expect(await readFile(path.join(personalFolder, 'SKILL.md'), 'utf8'))
         .toBe(personalBefore);
@@ -529,7 +533,7 @@ describe('POST /api/skills/install — same-id ownership preflight', () => {
 // as `visibility: 'team'` — this test only exercises the READ side (the
 // `GET /api/skills` projection), not the write path itself.
 describe('GET /api/skills — teamSynced projection', () => {
-  it('reports teamSynced:true for a skill bound with visibility "team"', async () => {
+  it('does not project a legacy Team skill as a local skill', async () => {
     const skillId = `wsteamsynced-team-${Date.now()}`;
     await seedSkillFolder(skillId);
     bindSkillToWorkspace(skillId, 'ws-teamsynced-1', 'member-owner');
@@ -539,10 +543,9 @@ describe('GET /api/skills — teamSynced projection', () => {
     const resp = await fetch(`${baseUrl}/api/skills`, {
       headers: workspaceHeaders('member-owner', 'member', 'ws-teamsynced-1'),
     });
-    const body = (await resp.json()) as { skills: Array<{ id: string; teamSynced?: boolean }> };
-    const skill = body.skills.find((s) => s.id === skillId);
-
-    expect(skill?.teamSynced).toBe(true);
+    expect(resp.status).toBe(403);
+    await expect(resp.json()).resolves.toMatchObject({ error: { code: 'WORKSPACE_UNAVAILABLE' } });
+    expect(getWorkspaceResourceByResourceId(db, 'skill', skillId)?.visibility).toBe('team');
   });
 
   it('hides a tombstoned Team mirror while retaining its recovery copy and attribution', async () => {
@@ -574,11 +577,23 @@ describe('GET /api/skills — teamSynced projection', () => {
       createdByWorkspaceMemberId: 'member-owner',
     });
 
-    expect(await fetchSkillIds(workspaceId)).toContain(skillId);
+    {
+      const response = await fetch(baseUrl + '/api/skills', {
+        headers: workspaceHeaders('member-owner', 'member', workspaceId),
+      });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: 'WORKSPACE_UNAVAILABLE' } });
+    }
 
     updateWorkspaceResource(db, 'skill', workspaceId, bindingId, { resourceState: 'deleted' });
 
-    expect(await fetchSkillIds(workspaceId)).not.toContain(skillId);
+    {
+      const response = await fetch(baseUrl + '/api/skills', {
+        headers: workspaceHeaders('member-owner', 'member', workspaceId),
+      });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: 'WORKSPACE_UNAVAILABLE' } });
+    }
     expect(existsSync(folder)).toBe(true);
     expect(getWorkspaceResourceByResourceId(db, 'skill', bindingId)).toMatchObject({
       workspaceId,

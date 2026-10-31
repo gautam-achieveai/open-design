@@ -106,102 +106,31 @@ describe('od amr login CLI', () => {
     stub.setResponder(() => ({ status: 404, body: { error: 'unexpected request' } }));
   });
 
-  it('documents login in `od amr help`', async () => {
+  it("rejects retired AMR command before HTTP: documents login in `od amr help`", async () => {
     const result = await runCli(['amr', 'help']);
-    expect(result.code).toBe(0);
-    expect(result.stdout).toContain('od amr login');
-    expect(result.stdout).toContain('od amr logout');
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od amr');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('logs out through the daemon and emits machine-readable JSON', async () => {
-    stub.setResponder((req) => req.method === 'POST'
-      && req.url === '/api/integrations/vela/logout'
-      ? { status: 200, body: { ok: true } }
-      : { status: 404, body: { error: 'unexpected request' } });
-
+  it("rejects retired AMR command before HTTP: logs out through the daemon and emits machine-readable JSON", async () => {
     const result = await runCli(['amr', 'logout', '--json', '--daemon-url', stub.baseUrl]);
-
-    expect(result.code).toBe(0);
-    expect(stub.requests).toEqual([
-      { method: 'POST', url: '/api/integrations/vela/logout' },
-    ]);
-    expect(JSON.parse(result.stdout)).toEqual({ ok: true });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od amr');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('starts browser login through the daemon and returns the activation state as JSON', async () => {
-    stub.setResponder((req) => {
-      if (req.method === 'POST' && req.url === '/api/integrations/vela/login') {
-        return {
-          status: 202,
-          body: { pid: 42, startedAt: '2026-07-24T00:00:00.000Z', profile: 'default' },
-        };
-      }
-      if (req.method === 'GET' && req.url === '/api/integrations/vela/status') {
-        return {
-          status: 200,
-          body: {
-            loggedIn: false,
-            loginInFlight: true,
-            profile: 'default',
-            user: null,
-            configPath: '/local/private/vela.json',
-            activationUrl: 'https://amr-link.open-design.ai/activate',
-            userCode: 'ABCD-EFGH',
-          },
-        };
-      }
-      return { status: 404, body: { error: 'unexpected request' } };
-    });
-
+  it("rejects retired AMR command before HTTP: starts browser login through the daemon and returns the activation state as JSON", async () => {
     const result = await runCli(['amr', 'login', '--json', '--daemon-url', stub.baseUrl]);
-
-    expect(result.code).toBe(0);
-    expect(stub.requests).toEqual([
-      { method: 'POST', url: '/api/integrations/vela/login' },
-      { method: 'GET', url: '/api/integrations/vela/status' },
-    ]);
-    expect(JSON.parse(result.stdout)).toEqual({
-      started: { pid: 42, startedAt: '2026-07-24T00:00:00.000Z', profile: 'default' },
-      status: {
-        loggedIn: false,
-        loginInFlight: true,
-        profile: 'default',
-        user: null,
-        configPath: '/local/private/vela.json',
-        activationUrl: 'https://amr-link.open-design.ai/activate',
-        userCode: 'ABCD-EFGH',
-      },
-    });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od amr');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('prints a manual activation link and user code when browser login needs help', async () => {
-    stub.setResponder((req) => {
-      if (req.method === 'POST' && req.url === '/api/integrations/vela/login') {
-        return {
-          status: 202,
-          body: { pid: 42, startedAt: '2026-07-24T00:00:00.000Z', profile: 'default' },
-        };
-      }
-      return {
-        status: 200,
-        body: {
-          loggedIn: false,
-          loginInFlight: true,
-          profile: 'default',
-          user: null,
-          configPath: '/local/private/vela.json',
-          activationUrl: 'https://amr-link.open-design.ai/activate',
-          userCode: 'ABCD-EFGH',
-          browserOpenFailed: true,
-        },
-      };
-    });
-
+  it("rejects retired AMR command before HTTP: prints a manual activation link and user code when browser login needs help", async () => {
     const result = await runCli(['amr', 'login', '--daemon-url', stub.baseUrl]);
-
-    expect(result.code).toBe(0);
-    expect(result.stdout).toContain('https://amr-link.open-design.ai/activate');
-    expect(result.stdout).toContain('ABCD-EFGH');
-    expect(result.stdout).toContain('browser could not be opened automatically');
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od amr');
+    expect(stub.requests).toHaveLength(0);
   });
 });

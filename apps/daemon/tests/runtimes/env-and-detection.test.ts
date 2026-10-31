@@ -173,21 +173,9 @@ test('spawnEnvForAgent reapplies sandbox state roots after configured env overri
       join(dataDir, 'sandbox', 'config', 'claude'),
     );
 
-    const amrEnv = spawnEnvForAgent(
-      'amr',
-      {
-        OD_DATA_DIR: dataDir,
-        OD_SANDBOX_MODE: '1',
-        PATH: '/usr/bin',
-      },
-      {
-        OPENCODE_TEST_HOME: '/Users/test/.opencode-host',
-      },
-    );
-    assert.equal(
-      amrEnv.OPENCODE_TEST_HOME,
-      join(dataDir, 'sandbox', 'agent-home', '.opencode'),
-    );
+    assert.throws(() => spawnEnvForAgent('amr', {
+      OD_DATA_DIR: dataDir, OD_SANDBOX_MODE: '1', PATH: '/usr/bin',
+    }), /Cloud runtime has been removed/);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
@@ -335,98 +323,25 @@ test('spawnEnvForAgent expands configured env home paths', () => {
   assert.equal(env.PATH, '/usr/bin');
 });
 
-test('spawnEnvForAgent injects the resolved AMR profile after configured env', () => {
-  const env = spawnEnvForAgent(
-    'amr',
-    {
-      OPEN_DESIGN_AMR_PROFILE: 'feature-test',
-      VELA_PROFILE: 'prod',
-      PATH: '/usr/bin',
-    },
-    {
-      VELA_PROFILE: 'local',
-    },
-  );
-
-  assert.equal(env.VELA_PROFILE, 'feature-test');
-  assert.equal(env.OPEN_DESIGN_AMR_PROFILE, 'feature-test');
-  assert.equal(env.PATH, '/usr/bin');
-});
-
-test('spawnEnvForAgent enables OpenCode web search providers for AMR by default', () => {
-  const env = spawnEnvForAgent('amr', { PATH: '/usr/bin' });
-
-  assert.equal(env.OPENCODE_ENABLE_EXA, '1');
-  assert.equal(env.VELA_ENABLE_PARALLEL_MCP, '1');
-
-  const overridden = spawnEnvForAgent('amr', {
-    OPENCODE_ENABLE_EXA: '0',
-    VELA_ENABLE_PARALLEL_MCP: '0',
-    PATH: '/usr/bin',
-  });
-  assert.equal(overridden.OPENCODE_ENABLE_EXA, '0');
-  assert.equal(overridden.VELA_ENABLE_PARALLEL_MCP, '0');
-});
-
-test('spawnEnvForAgent gives AMR a stable OpenCode home under OD_DATA_DIR', () => {
-  const dataDir = mkdtempSync(join(tmpdir(), 'od-amr-data-'));
-  try {
-    const env = spawnEnvForAgent('amr', {
-      OD_DATA_DIR: dataDir,
-      PATH: '/usr/bin',
-    });
-
-    assert.equal(
-      env.OPENCODE_TEST_HOME,
-      join(dataDir, 'amr', 'opencode-home'),
-    );
-  } finally {
-    rmSync(dataDir, { recursive: true, force: true });
+test('retired AMR cannot launch with legacy profile, home, search or binary overrides', () => {
+  for (const configured of [
+    { VELA_PROFILE: 'local' },
+    { OPENCODE_ENABLE_EXA: '1', VELA_ENABLE_PARALLEL_MCP: '1' },
+    { OPENCODE_TEST_HOME: '/legacy/home' },
+    { VELA_OPENCODE_BIN: '/legacy/bin/opencode' },
+  ]) {
+    assert.throws(() => spawnEnvForAgent('amr', { PATH: '/usr/bin' }, configured),
+      /Cloud runtime has been removed/);
   }
 });
 
-test('spawnEnvForAgent preserves a configured AMR OpenCode home override', () => {
-  const dataDir = mkdtempSync(join(tmpdir(), 'od-amr-data-'));
-  try {
-    const configuredHome = join(dataDir, 'custom-opencode-home');
-    const env = spawnEnvForAgent(
-      'amr',
-      {
-        OD_DATA_DIR: dataDir,
-        PATH: '/usr/bin',
-      },
-      {
-        OPENCODE_TEST_HOME: configuredHome,
-      },
-    );
 
-    assert.equal(env.OPENCODE_TEST_HOME, configuredHome);
-  } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-  }
-});
 
-fsTest('spawnEnvForAgent gives AMR a discovered OpenCode binary under a minimal child PATH', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'od-amr-opencode-home-'));
-  try {
-    return withEnvSnapshot(['PATH', 'OD_AGENT_HOME'], () => {
-      const opencodeBinDir = join(dir, '.opencode', 'bin');
-      const opencodeBin = join(opencodeBinDir, 'opencode');
-      mkdirSync(opencodeBinDir, { recursive: true });
-      writeFileSync(opencodeBin, '#!/bin/sh\nexit 0\n');
-      chmodSync(opencodeBin, 0o755);
-      process.env.PATH = '/usr/bin';
-      process.env.OD_AGENT_HOME = dir;
 
-      const env = spawnEnvForAgent('amr', { PATH: '/usr/bin' });
 
-      assert.equal(env.PATH, '/usr/bin');
-      assert.equal(env.VELA_OPENCODE_BIN, opencodeBin);
-    });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
+
+
+
 
 test('resolveAgentExecutable prefers a configured CODEX_BIN override over PATH resolution', () => {
   const dir = mkdtempSync(join(tmpdir(), 'od-codex-bin-'));
@@ -584,9 +499,7 @@ test('detectAgents includes sanitized install and docs metadata from split runti
       const deepseek = agents.find((agent) => agent.id === 'deepseek');
       const kimi = agents.find((agent) => agent.id === 'kimi');
 
-      assert.ok(amr);
-      assert.equal(amr.available, false);
-      assert.equal(amr.installUrl, 'https://open-design.powerformer.net/cloud/dashboard');
+      assert.equal(amr, undefined);
       assert.ok(qoder);
       assert.equal(qoder.available, false);
       assert.equal(qoder.installUrl, 'https://qoder.com/download');
@@ -726,17 +639,14 @@ fsTest('detectAgents keeps packaged built-in AMR unavailable when OpenCode canno
       const agents = await detectAgents();
       const amrAgent = agents.find((agent) => agent.id === 'amr');
 
-      assert.ok(amrAgent);
-      assert.equal(amrAgent.available, false);
-      assert.equal(amrAgent.path, undefined);
-      assert.equal(amrAgent.version, undefined);
+      assert.equal(amrAgent, undefined);
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-fsTest('detectAgents marks AMR available from packaged built-in Vela with the bundled OpenCode companion tree', async () => {
+fsTest('detectAgents excludes AMR even with packaged Vela and OpenCode', async () => {
   const root = mkdtempSync(join(tmpdir(), 'od-detect-amr-built-in-'));
   try {
     return await withEnvSnapshot(['PATH', 'OD_AGENT_HOME', 'OD_RESOURCE_ROOT', 'VELA_OPENCODE_BIN'], async () => {
@@ -765,10 +675,7 @@ fsTest('detectAgents marks AMR available from packaged built-in Vela with the bu
       const agents = await detectAgents();
       const amrAgent = agents.find((agent) => agent.id === 'amr');
 
-      assert.ok(amrAgent);
-      assert.equal(amrAgent.available, true);
-      assert.equal(amrAgent.path, builtInVela);
-      assert.equal(amrAgent.version, 'vela manual-amr');
+      assert.equal(amrAgent, undefined);
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -776,7 +683,7 @@ fsTest('detectAgents marks AMR available from packaged built-in Vela with the bu
 });
 
 
-fsTest('detectAgents prefers configured AMR live models over stale fallback defaults', async () => {
+fsTest('detectAgents ignores configured legacy AMR model probes', async () => {
   const root = mkdtempSync(join(tmpdir(), 'od-detect-amr-live-models-'));
   try {
     return await withEnvSnapshot(['PATH', 'OD_AGENT_HOME', 'OD_RESOURCE_ROOT', 'VELA_OPENCODE_BIN'], async () => {
@@ -808,24 +715,14 @@ exit 0
       });
       const amrAgent = agents.find((agent) => agent.id === 'amr');
 
-      assert.ok(amrAgent);
-      assert.equal(amrAgent.available, true);
-      assert.equal(amrAgent.path, fakeVela);
-      assert.equal(amrAgent.version, 'vela custom-live');
-      assert.equal(amrAgent.modelsSource, 'live');
-      assert.deepEqual(amrAgent.models, [
-        { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash' },
-        { id: 'glm-5', label: 'glm-5' },
-      ]);
-      assert.equal(amrAgent.models.some((model) => model.id === 'default'), false);
-      assert.equal(amrAgent.models.some((model) => model.id === 'gpt-5.4-mini'), false);
+      assert.equal(amrAgent, undefined);
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-fsTest('detectAgents preserves the scoped AMR cache when a later probe returns no models', async () => {
+fsTest('detectAgents leaves existing legacy cache unchanged without probing AMR', async () => {
   const root = mkdtempSync(join(tmpdir(), 'od-detect-amr-empty-models-'));
   try {
     return await withEnvSnapshot(['PATH', 'OD_AGENT_HOME', 'OD_RESOURCE_ROOT', 'VELA_OPENCODE_BIN'], async () => {
@@ -856,6 +753,7 @@ exit 0
       delete process.env.OD_RESOURCE_ROOT;
       delete process.env.VELA_OPENCODE_BIN;
 
+      const cacheBefore = getRememberedLiveModels('amr', 'prod');
       await detectAgents({
         amr: {
           VELA_BIN: fakeVela,
@@ -863,9 +761,7 @@ exit 0
           OPEN_DESIGN_AMR_PROFILE: 'prod',
         },
       });
-      assert.deepEqual(getRememberedLiveModels('amr', 'prod'), [
-        { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash' },
-      ]);
+      assert.deepEqual(getRememberedLiveModels('amr', 'prod'), cacheBefore);
 
       writeFileSync(modeFile, 'empty');
       const agents = await detectAgents({
@@ -877,13 +773,7 @@ exit 0
       });
       const amrAgent = agents.find((agent) => agent.id === 'amr');
 
-      assert.ok(amrAgent);
-      assert.deepEqual(amrAgent.models, [
-        { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash' },
-      ]);
-      assert.deepEqual(getRememberedLiveModels('amr', 'prod'), [
-        { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash' },
-      ]);
+      assert.equal(amrAgent, undefined);
     });
   } finally {
     rmSync(root, { recursive: true, force: true });

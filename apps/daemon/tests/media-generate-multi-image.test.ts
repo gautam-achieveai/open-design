@@ -51,7 +51,7 @@ async function runCli(images: string[]): Promise<{ code: number; stderr: string 
     '--surface',
     'image',
     '--model',
-    'vela/gpt-image-2',
+    'fixture-image-model',
     '--prompt',
     'Edit the references',
     '--daemon-url',
@@ -84,12 +84,14 @@ describe('od media generate repeated --image', () => {
     expect(body.images).toEqual(images);
   });
 
-  it('rejects six Vela images before making an HTTP request', async () => {
+  it('leaves provider image limits to the daemon instead of imposing the retired Vela limit', async () => {
     const images = Array.from({ length: 6 }, (_, index) => `ref-${index}.png`);
     const result = await runCli(images);
 
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain('at most 5 --image values');
-    expect(seenBodies).toHaveLength(0);
+    expect(result.code, result.stderr).toBe(0);
+    expect(seenBodies).toHaveLength(1);
+    expect(JSON.parse(seenBodies[0]!)).toMatchObject({
+      model: 'fixture-image-model', image: images[0], images,
+    });
   });
 });

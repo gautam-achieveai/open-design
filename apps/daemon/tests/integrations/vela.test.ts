@@ -61,7 +61,7 @@ beforeEach(() => {
   originalAmrHome = process.env.AMR_HOME;
   tmpHome = mkdtempSync(path.join(tmpdir(), 'od-vela-test-'));
   process.env.HOME = tmpHome;
-  delete process.env.AMR_HOME;
+  process.env.AMR_HOME = path.join(tmpHome, '.amr');
   delete process.env.OPEN_DESIGN_AMR_PROFILE;
   delete process.env.VELA_PROFILE;
 });
@@ -521,89 +521,13 @@ describe('forgetVelaLogin', () => {
   });
 });
 
-describe('spawnVelaLogin', () => {
-  it('returns an actionable error when no vela binary can be resolved', async () => {
-    const originalPath = process.env.PATH;
-    const originalResourceRoot = process.env.OD_RESOURCE_ROOT;
-    try {
-      process.env.PATH = '';
-      delete process.env.OD_RESOURCE_ROOT;
-      await expect(
-        spawnVelaLogin({
-          baseEnv: { ...process.env, HOME: tmpHome },
-          configuredEnv: {},
-        }),
-      ).rejects.toThrow('vela binary not found');
-    } finally {
-      if (originalPath === undefined) delete process.env.PATH;
-      else process.env.PATH = originalPath;
-      if (originalResourceRoot === undefined) delete process.env.OD_RESOURCE_ROOT;
-      else process.env.OD_RESOURCE_ROOT = originalResourceRoot;
-    }
-  });
-
-  it('spawns the configured vela binary and writes/reads only the feature-test AMR profile', async () => {
-    const result = await spawnVelaLogin({
-      baseEnv: {
-        ...process.env,
-        HOME: tmpHome,
-        OPEN_DESIGN_AMR_PROFILE: 'feature-test',
-        VELA_PROFILE: 'prod',
-        FAKE_VELA_LOGIN_USER_EMAIL: 'spawn-login@example.com',
-      },
-      configuredEnv: {
-        VELA_BIN: FAKE_VELA,
-      },
-    });
-
-    expect(result.pid).toBeGreaterThan(0);
-    expect(result.profile).toBe('feature-test');
-
-    const file = path.join(tmpHome, '.amr', 'config.json');
-    for (let i = 0; i < 20; i += 1) {
-      if (existsSync(file)) break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-
-    const next = JSON.parse(readFileSync(file, 'utf8'));
-    expect(Object.keys(next.profiles)).toEqual(['feature-test']);
-    expect(next.profiles['feature-test'].user.email).toBe('spawn-login@example.com');
-    expect(next.profiles.prod).toBeUndefined();
-    expect(next.profiles.test).toBeUndefined();
-    expect(readVelaLoginStatus({ OPEN_DESIGN_AMR_PROFILE: 'feature-test' })).toMatchObject({
-      loggedIn: true,
-      profile: 'feature-test',
-      user: { email: 'spawn-login@example.com' },
-    });
-  });
-
-  it('spawns login with the Settings-configured AMR profile over daemon env', async () => {
-    const result = await spawnVelaLogin({
-      baseEnv: {
-        ...process.env,
-        HOME: tmpHome,
-        OPEN_DESIGN_AMR_PROFILE: 'prod',
-        VELA_PROFILE: 'prod',
-        FAKE_VELA_LOGIN_USER_EMAIL: 'settings-profile@example.com',
-      },
-      configuredEnv: {
-        VELA_BIN: FAKE_VELA,
-        OPEN_DESIGN_AMR_PROFILE: 'local',
-      },
-    });
-
-    expect(result.pid).toBeGreaterThan(0);
-    expect(result.profile).toBe('local');
-
-    const file = path.join(tmpHome, '.amr', 'config.json');
-    for (let i = 0; i < 20; i += 1) {
-      if (existsSync(file)) break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-
-    const next = JSON.parse(readFileSync(file, 'utf8'));
-    expect(next.profiles.local.user.email).toBe('settings-profile@example.com');
-    expect(next.profiles.prod).toBeUndefined();
+describe('spawnVelaLogin after retirement', () => {
+  it.each(['prod', 'feature-test'])('rejects saved %s configuration without writing credentials', async (profile) => {
+    await expect(spawnVelaLogin({
+      baseEnv: { ...process.env, HOME: tmpHome, OPEN_DESIGN_AMR_PROFILE: profile },
+      configuredEnv: { VELA_BIN: FAKE_VELA, OPEN_DESIGN_AMR_PROFILE: profile },
+    })).rejects.toThrow('AMR runtime def not registered');
+    expect(existsSync(path.join(tmpHome, '.amr', 'config.json'))).toBe(false);
   });
 });
 

@@ -10,18 +10,9 @@ import {
 } from '@open-design/contracts';
 
 /**
- * Presence when the vela-cli collab transport is OFF.
- *
- * `createVelaCliCollabClientFromEnv` returns `null` unless this run opted into
- * the vela-cli collab transport — which is every stable/prod packaged build and
- * every plain `tools-dev` run. `registerCollabPresenceRoutes` is built to cope
- * with that: `deps.cloud` is optional and each endpoint falls back to the
- * process-local presence tracker.
- *
- * These tests pin that contract at the real daemon HTTP boundary (the routes are
- * wired in `server.ts`, so a route-module test cannot see the wiring), and pin
- * the other direction too: with the transport ON, presence must still relay to
- * the cloud.
+ * Retired Cloud presence settings must stay inert at the real daemon boundary.
+ * Local leave remains available; legacy remote sharing/viewer claims must not
+ * populate presence or trigger a Vela subprocess, even when old flags are on.
  */
 
 type StartedServer = {
@@ -59,6 +50,9 @@ const savedEnv = new Map<string, string | undefined>();
 
 afterEach(async () => {
   await stopServer();
+  // Use the same module instance as the server imported after resetModules.
+  const { closeDatabase } = await import('../src/db.js');
+  closeDatabase();
   if (scratch) await rm(scratch, { recursive: true, force: true });
   scratch = null;
   for (const [key, value] of savedEnv) {
@@ -72,9 +66,7 @@ const SHARED_PROJECT = 'presence-transport-off-shared';
 
 describe('collab presence with the vela-cli collab transport off', () => {
   it('falls back to process-local presence on leave instead of failing', async () => {
-    // The leanest possible reproduction: no cloud transport, no fixtures. `leave`
-    // carries no shared/authorized precondition, so it reaches the cloud branch
-    // on any project id.
+    // Local leave remains a no-op for an unknown project without Cloud setup.
     setEnv({ OD_COLLAB_TRANSPORT: 'off' });
     const api = await startIsolatedServer();
 
@@ -86,10 +78,8 @@ describe('collab presence with the vela-cli collab transport off', () => {
     expect(left.body).toMatchObject({ ok: true, present: [] });
   }, 60_000);
 
-  it('serves the process-local present set for a shared project', async () => {
-    // A genuinely shared project clears the presence gate, so heartbeat/list
-    // reach the same cloud branch. With the transport off they must answer from
-    // the in-process tracker.
+  it('ignores legacy remote sharing claims when transport is off', async () => {
+    // A legacy catalog claim cannot establish sharing or populate presence.
     setEnv({
       OD_COLLAB_TRANSPORT: 'off',
       OD_TEAM_PROJECTS_TRANSPORT: 'vela-cli',
@@ -112,17 +102,12 @@ describe('collab presence with the vela-cli collab transport off', () => {
       role: 'owner',
     });
     expect(beat.status).toBe(200);
-    expect(presentIds(beat.body)).toEqual(['local-member']);
-    // The project really did clear the shared-project gate via the CLI catalog.
-    expect((await velaCalls()).some((call) => call.startsWith('team-projects'))).toBe(true);
-    // ...and no presence call was relayed, because there is no cloud transport.
-    expect(
-      (await velaCalls()).some((call) => call.startsWith('collab presence')),
-    ).toBe(false);
+    expect(presentIds(beat.body)).toEqual([]);
+    expect(await velaCalls()).toEqual([]);
 
     const list = await api.get(`/api/projects/${SHARED_PROJECT}/presence`);
     expect(list.status).toBe(200);
-    expect(presentIds(list.body)).toEqual(['local-member']);
+    expect(presentIds(list.body)).toEqual([]);
 
     const left = await api.post(`/api/projects/${SHARED_PROJECT}/presence/leave`, {
       memberId: 'local-member',
@@ -133,7 +118,7 @@ describe('collab presence with the vela-cli collab transport off', () => {
 });
 
 describe('collab presence with the vela-cli collab transport on', () => {
-  it('still relays presence to the cloud', async () => {
+  it('does not revive Cloud presence when the retired transport is requested', async () => {
     setEnv({
       OD_COLLAB_TRANSPORT: 'vela-cli',
       OD_TEAM_PROJECTS_TRANSPORT: 'vela-cli',
@@ -153,12 +138,10 @@ describe('collab presence with the vela-cli collab transport on', () => {
     await setupVelaStub();
     const api = await startIsolatedServer();
 
-    // Exercise the read relay before the heartbeat primes its short-lived
-    // roster cache. The cloud answer wins over anything the in-process tracker
-    // holds, which is how a second daemon's viewer becomes visible here.
+    // Old transport flags and remote viewer claims cannot revive the relay.
     const list = await api.get(`/api/projects/${SHARED_PROJECT}/presence`);
     expect(list.status).toBe(200);
-    expect(presentIds(list.body)).toEqual(['cloud-member']);
+    expect(presentIds(list.body)).toEqual([]);
 
     const beat = await api.post(`/api/projects/${SHARED_PROJECT}/presence/heartbeat`, {
       memberId: 'local-member',
@@ -166,7 +149,7 @@ describe('collab presence with the vela-cli collab transport on', () => {
       role: 'owner',
     });
     expect(beat.status).toBe(200);
-    expect(presentIds(beat.body)).toEqual(['cloud-member']);
+    expect(presentIds(beat.body)).toEqual([]);
 
     const left = await api.post(`/api/projects/${SHARED_PROJECT}/presence/leave`, {
       memberId: 'local-member',
@@ -174,14 +157,7 @@ describe('collab presence with the vela-cli collab transport on', () => {
     expect(left.status).toBe(200);
     expect(left.body).toMatchObject({ ok: true });
 
-    const calls = await velaCalls();
-    expect(calls).toContain(`collab presence list ${SHARED_PROJECT}`);
-    expect(
-      calls.some((call) => call.startsWith(`collab presence heartbeat ${SHARED_PROJECT}`)),
-    ).toBe(true);
-    expect(
-      calls.some((call) => call.startsWith(`collab presence leave ${SHARED_PROJECT}`)),
-    ).toBe(true);
+    expect(await velaCalls()).toEqual([]);
   }, 60_000);
 });
 
@@ -240,11 +216,7 @@ function devWorkspaceHeaders(): Record<string, string> {
   };
 }
 
-/**
- * A stand-in `vela` on the daemon's normal resolution path (`VELA_BIN`), so the
- * team-project catalog and the collab presence relay exercise the real
- * child-process transport rather than an injected fake.
- */
+/** Legacy executable fixture: any invocation is an observable regression. */
 async function setupVelaStub(): Promise<void> {
   const root = await ensureScratch();
   const script = join(root, 'vela-stub.mjs');

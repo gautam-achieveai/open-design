@@ -1,10 +1,6 @@
-// Run creation is a billing-address boundary, not a local project-file
-// mutation gate. The persisted `workspace_projects` row supplies the exact
-// Team or Personal Workspace id to Vela/AMR. Headerless local callers remain
-// valid for Personal-bound, unbound, and scratch projects; a shared Team
-// project requires the explicit project-owner identity because starting a run
-// mutates its files and conversation state. Membership, balance, and
-// subscription eligibility remain backend decisions.
+// Run creation pins existing Personal project ownership. Supported local agents
+// leave unbound projects unbound and do not consult retired Cloud authority.
+// Historical runtime identity is tested through saved records, not new AMR runs.
 
 import http from 'node:http';
 import express from 'express';
@@ -1398,7 +1394,7 @@ describe('POST /api/runs — workspace mutation gate', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projectId: PERSONAL_PROJECT,
-          agentId: 'amr',
+          agentId: 'claude',
           message: 'pin billing scope',
         }),
       });
@@ -1570,7 +1566,7 @@ describe('POST /api/runs — workspace mutation gate', () => {
     },
   );
 
-  it('keeps an untyped historical AMR run account-scoped during a directory outage', async () => {
+  it('keeps an untyped local run unbound during a directory outage', async () => {
     const verifyWorkspaceRequestAuthority = vi.fn(async () => ({
       ok: false,
       status: 503,
@@ -1591,7 +1587,7 @@ describe('POST /api/runs — workspace mutation gate', () => {
       },
       body: JSON.stringify({
         projectId: UNBOUND_PROJECT,
-        agentId: 'amr',
+        agentId: 'claude',
         message: 'local send must survive the outage',
       }),
     });
@@ -1633,7 +1629,7 @@ describe('POST /api/runs — workspace mutation gate', () => {
     expect(calls).toEqual(['plugin', 'registry']);
   });
 
-  it('adopts an explicitly Personal local scope before authorizing its chat plugin', async () => {
+  it('authorizes the local chat plugin without implicitly adopting the project', async () => {
     const calls: string[] = [];
     const baseUrl = await startServer({
       isAmrSignedIn: () => true,
@@ -1667,7 +1663,7 @@ describe('POST /api/runs — workspace mutation gate', () => {
       },
       body: JSON.stringify({
         projectId: UNBOUND_PROJECT,
-        agentId: 'amr',
+        agentId: 'claude',
         pluginId: 'explicit-plugin',
         message: 'adopt before plugin lookup',
       }),
@@ -1676,10 +1672,7 @@ describe('POST /api/runs — workspace mutation gate', () => {
     expect(response.status).toBe(202);
     expect(calls).toEqual(['plugin']);
     expect(getWorkspaceProjectByProjectId(openDatabase(tempDir!), UNBOUND_PROJECT))
-      .toMatchObject({
-        workspaceId: WORKSPACE_ID,
-        createdByWorkspaceMemberId: OWNER_MEMBER_ID,
-      });
+      .toBeUndefined();
   });
 
   it('still allows a headerless run creation with no projectId at all (scratch / non-project usage)', async () => {
@@ -1874,20 +1867,9 @@ describe('Workspace-bound run lifecycle authority', () => {
 
   it('keeps persisted local AMR run status, events, and cancel available offline', async () => {
     const baseUrl = await startServer();
-    const createResponse = await fetch(`${baseUrl}/api/runs`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
-      },
-      body: JSON.stringify({
-        projectId: TEAM_PROJECT,
-        agentId: 'amr',
-        message: 'cloud run',
-      }),
-    });
-    expect(createResponse.status).toBe(202);
-    const { runId } = (await createResponse.json()) as { runId: string };
+    const runId = 'historical-amr';
+    runsServiceStub!.seed({ id: runId, projectId: PERSONAL_PROJECT, agentId: 'amr',
+      status: 'succeeded', workspaceScope: null });
 
     for (const [path, method] of [
       [`/api/runs/${runId}`, 'GET'],
@@ -1969,20 +1951,9 @@ describe('Workspace-bound run lifecycle authority', () => {
     'lists only non-AMR runs for a headerless caller when %s, independent of representative order',
     async (_label, agentIds) => {
       const baseUrl = await startServer();
-      for (const agentId of agentIds) {
-        const createResponse = await fetch(`${baseUrl}/api/runs`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
-          },
-          body: JSON.stringify({
-            projectId: TEAM_PROJECT,
-            agentId,
-            message: `${agentId} run`,
-          }),
-        });
-        expect(createResponse.status).toBe(202);
+      for (const [index, agentId] of agentIds.entries()) {
+        runsServiceStub!.seed({ id: `historical-${index}`, projectId: TEAM_PROJECT, agentId,
+          status: 'succeeded', workspaceScope: null });
       }
 
       const headerlessResponse = await fetch(
@@ -2053,9 +2024,9 @@ describe('POST /api/runs — delegates membership and balance eligibility to Vel
   });
 });
 
-describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () => {
+describe('POST /api/runs — local project ownership without Cloud adoption', () => {
   it.each(['/api/runs', '/api/chat'])(
-    'transactionally binds an unbound historical project to the exact local Personal Workspace through %s',
+    'keeps local project ownership unbound through %s despite Personal headers',
     async (route) => {
     const verifyWorkspaceRequestAuthority = vi.fn(async () => ({
       ok: true,
@@ -2083,7 +2054,7 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
       },
       body: JSON.stringify({
         projectId: UNBOUND_PROJECT,
-        agentId: 'amr',
+        agentId: 'claude',
         message: 'migrate and run',
       }),
     });
@@ -2092,15 +2063,11 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
       expect(verifyWorkspaceRequestAuthority).not.toHaveBeenCalled();
       expect(
         getWorkspaceProjectByProjectId(openDatabase(tempDir!), UNBOUND_PROJECT),
-      ).toMatchObject({
-        workspaceId: WORKSPACE_ID,
-        visibility: 'personal',
-        createdByWorkspaceMemberId: OWNER_MEMBER_ID,
-      });
+      ).toBeUndefined();
     },
   );
 
-  it('keeps an adopted Personal project runnable only by its persisted creator', async () => {
+  it('keeps an explicitly bound Personal project runnable only by its persisted creator', async () => {
     const verifyWorkspaceRequestAuthority = vi.fn(async (req: any) => {
       const memberId = req.get('x-od-workspace-member-id');
       return {
@@ -2121,6 +2088,12 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
       verifyWorkspaceRequestAuthority,
     });
 
+    ensureWorkspaceProject(openDatabase(tempDir!), {
+      projectId: UNBOUND_PROJECT, workspaceId: WORKSPACE_ID,
+      visibility: 'personal', resourceState: 'active',
+      createdByWorkspaceMemberId: OWNER_MEMBER_ID,
+    });
+
     const run = (memberId: string, role: 'owner' | 'member') =>
       fetch(`${baseUrl}/api/runs`, {
         method: 'POST',
@@ -2131,7 +2104,7 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
         },
         body: JSON.stringify({
           projectId: UNBOUND_PROJECT,
-          agentId: 'amr',
+          agentId: 'claude',
           message: 'run adopted project',
         }),
       });
@@ -2155,7 +2128,7 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
   });
 
   it.each(['/api/runs', '/api/chat'])(
-    'keeps a signed-in AMR run through %s account-scoped when its local project is unbound',
+    'keeps a local run through %s unbound when its local project is unbound',
     async (route) => {
     const verifyWorkspaceRequestAuthority = vi.fn();
     const baseUrl = await startServer({
@@ -2168,7 +2141,7 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         projectId: UNBOUND_PROJECT,
-        agentId: 'amr',
+        agentId: 'claude',
         message: 'must not use account wallet',
       }),
     });
@@ -2208,21 +2181,19 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
       },
       body: JSON.stringify({
         projectId: UNBOUND_PROJECT,
-        agentId: 'amr',
+        agentId: 'claude',
         message: 'must stay personal',
       }),
     });
 
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: 'AMR_PERSONAL_WORKSPACE_REQUIRED' },
-    });
+    expect(response.status).toBe(202);
+    expect(verifyWorkspaceRequestAuthority).not.toHaveBeenCalled();
     expect(
       getWorkspaceProjectByProjectId(openDatabase(tempDir!), UNBOUND_PROJECT),
     ).toBeUndefined();
   });
 
-  it('adopts an explicitly Personal project locally when Workspace authority is unavailable', async () => {
+  it('keeps local project ownership unbound when Workspace authority is unavailable', async () => {
     const verifyWorkspaceRequestAuthority = vi.fn(async () => ({
       ok: false,
       status: 503,
@@ -2244,7 +2215,7 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
       },
       body: JSON.stringify({
         projectId: UNBOUND_PROJECT,
-        agentId: 'amr',
+        agentId: 'claude',
         message: 'keep local send available',
       }),
     });
@@ -2253,11 +2224,7 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
     expect(verifyWorkspaceRequestAuthority).not.toHaveBeenCalled();
     expect(
       getWorkspaceProjectByProjectId(openDatabase(tempDir!), UNBOUND_PROJECT),
-    ).toMatchObject({
-      workspaceId: WORKSPACE_ID,
-      visibility: 'personal',
-      createdByWorkspaceMemberId: OWNER_MEMBER_ID,
-    });
+    ).toBeUndefined();
   });
 
   it.each(['/api/runs', '/api/chat'])(
@@ -2302,7 +2269,7 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
     },
   );
 
-  it('does not fetch authority, bind, or synchronously refuse an unlogged AMR run', async () => {
+  it('rejects retired AMR without fetching authority, binding or creating a run', async () => {
     const verifyWorkspaceRequestAuthority = vi.fn();
     const baseUrl = await startServer({
       isAmrSignedIn: () => false,
@@ -2323,7 +2290,9 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
       }),
     });
 
-    expect(response.status).toBe(202);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: 'AGENT_UNAVAILABLE' } });
+    expect(createdRunCount).toBe(0);
     expect(verifyWorkspaceRequestAuthority).not.toHaveBeenCalled();
     expect(
       getWorkspaceProjectByProjectId(openDatabase(tempDir!), UNBOUND_PROJECT),

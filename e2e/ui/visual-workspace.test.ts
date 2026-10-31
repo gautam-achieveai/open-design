@@ -5,7 +5,6 @@ import {
   configureVisualPage,
   gotoVisualHome,
   gotoVisualWorkspace,
-  mockSignedInVelaAccount,
   prepareVisualAvatarMenu,
   prepareVisualWorkspaceFileList,
   prepareVisualWorkspacePreview,
@@ -128,55 +127,28 @@ test('[P2] captures the topbar execution switcher surface', async ({ page }) => 
   );
 });
 
-test('[P1] captures the topbar OpenDesign model picker with no account surface', async ({ page }) => {
-  test.setTimeout(60_000);
-
+test('[P1] topbar selects local models without Cloud status or account controls', async ({ page }) => {
   await configureVisualPage(page, {
     agents: [...VISUAL_CLI_AGENTS, VISUAL_AMR_AGENT],
-    config: {
-      agentId: 'amr',
-      agentModels: { amr: { model: 'deepseek-v4-flash', reasoning: 'default' } },
-      agentCliEnv: { amr: { OPEN_DESIGN_AMR_PROFILE: 'test' } },
-    },
+    config: { agentId: 'codex', agentModels: { codex: { model: 'gpt-5.4', reasoning: 'default' } } },
   });
-  await mockSignedInVelaAccount(page);
-  // Count the signed-in status requests so the "no account surface" assertions
-  // below cannot pass by racing ahead of the popover's own fetch. `fallback()`
-  // hands the request straight to mockSignedInVelaAccount's handler, so the
-  // payload stays defined in exactly one place.
-  let velaStatusRequests = 0;
-  await page.route('**/api/integrations/vela/status', async (route) => {
-    velaStatusRequests += 1;
-    await route.fallback();
+  const requests: string[] = [];
+  page.on('request', request => {
+    if (request.url().includes('/api/integrations/vela/')) requests.push(request.url());
   });
   await gotoVisualHome(page);
-
-  const requestsBeforeOpen = velaStatusRequests;
-  await page.getByTestId('inline-model-switcher-chip').click();
+  const chip = page.getByTestId('inline-model-switcher-chip');
+  await chip.click();
   const popover = page.getByTestId('inline-model-switcher-popover');
   await expect(popover).toBeVisible();
-  // InlineModelSwitcher refetches the AMR status whenever the popover opens
-  // with OpenDesign installed, so a landed response proves the signed-in
-  // render happened.
-  await expect.poll(() => velaStatusRequests).toBeGreaterThan(requestsBeforeOpen);
-
-  // ef9c8cd8b's compact home popover lists the active agent's models and
-  // nothing else. The agent grid (which is where the Open-Design-first ordering
-  // was observable), the account block with its plan badge + balance, and the
-  // 升级 entry all belong to the non-compact shape that the top bar stopped
-  // mounting — account and billing surfaces live in the nav rail and Settings
-  // now. Coverage did not disappear with the assertions: the live plan/balance/
-  // upgrade card is captured by visual-settings.test.ts's "settings OpenDesign
-  // account balance" case in this same lane, and the `inline_amr_upgrade`
-  // attribution URL by apps/web/tests/components/InlineModelSwitcher.test.tsx
-  // ("routes inline upgrades through the signed-in AMR profile").
-  await expect(popover.getByTestId('inline-model-switcher-compact-model-deepseek-v4-flash')).toBeVisible();
-  await expect(popover.locator('.inline-switcher__agent.is-active')).toHaveCount(1);
+  await expect(popover.getByTestId('inline-model-switcher-compact-model-gpt-5.4')).toBeVisible();
   await expect(popover.locator('.inline-switcher__account')).toHaveCount(0);
   await expect(popover.getByTestId('inline-model-switcher-account-upgrade')).toHaveCount(0);
-  await expect(popover).not.toContainText('$247.51');
-
-  await captureVisual(page, 'visual-topbar-open-design-model-picker');
+  await expect(popover.getByTestId('inline-model-switcher-compact-model-deepseek-v4-flash')).toHaveCount(0);
+  expect(requests).toEqual([]);
+  await captureVisual(page, 'visual-topbar-local-without-cloud');
+  await popover.getByTestId('inline-model-switcher-compact-model-gpt-5.4-mini').click();
+  await expect(chip).toHaveAttribute('aria-label', /GPT-5.4-Mini/i);
 });
 
 test('[P2] captures the topbar local CLI model list surface', async ({ page }) => {
@@ -298,58 +270,26 @@ test('[P2] captures the avatar menu surface', async ({ page }) => {
   await captureVisualTarget(page, 'visual-avatar-menu-panel', menu);
 });
 
-test('[P1] Avatar menu stays a model picker for a signed-in OpenDesign account', async ({ page }) => {
-  test.setTimeout(60_000);
-
+test('[P1] Avatar menu remains a local model picker without Cloud account controls', async ({ page }) => {
   await configureVisualPage(page, {
     agents: [...VISUAL_CLI_AGENTS, VISUAL_AMR_AGENT],
-    config: {
-      mode: 'daemon',
-      agentId: 'amr',
-      agentModels: { amr: { model: 'deepseek-v4-flash', reasoning: 'default' } },
-      agentCliEnv: { amr: { OPEN_DESIGN_AMR_PROFILE: 'test' } },
-    },
+    config: { agentId: 'codex', agentModels: { codex: { model: 'gpt-5.4', reasoning: 'default' } } },
   });
-  await mockSignedInVelaAccount(page);
-  // Same discipline as the topbar case: count the status requests so the
-  // absence assertions cannot pass by outrunning the popover's own signed-in
-  // fetch. `fallback()` defers the payload to mockSignedInVelaAccount.
-  let velaStatusRequests = 0;
-  await page.route('**/api/integrations/vela/status', async (route) => {
-    velaStatusRequests += 1;
-    await route.fallback();
+  const requests: string[] = [];
+  page.on('request', request => {
+    if (request.url().includes('/api/integrations/vela/')) requests.push(request.url());
   });
   await gotoVisualHome(page);
   await gotoVisualWorkspace(page);
-
-  const requestsBeforeOpen = velaStatusRequests;
   const menu = await prepareVisualAvatarMenu(page);
-  // AvatarMenu refetches the login status on open whenever OpenDesign is
-  // installed, so a landed response means the signed-in render has happened.
-  await expect.poll(() => velaStatusRequests).toBeGreaterThan(requestsBeforeOpen);
-
-  // 4e3161751 (#6156) deleted the OpenDesign account row from this popover —
-  // plan badge, balance, wallet fallback, upgrade/console links — and retired
-  // the nine Vitest suites that asserted it, recasting the survivor as
-  // apps/web/tests/components/AvatarMenu.test.tsx's "never renders the account
-  // row, plan badge or balance in the popover". This is that invariant at the
-  // rendered-app layer. The signed-in account surface itself is captured by
-  // visual-settings.test.ts's "settings OpenDesign account balance" case, and
-  // the `avatar_amr_upgrade` deep link — now reachable only by clicking a
-  // plan-gated model row, which needs workspace billing permission this lane
-  // does not fixture — by that same Vitest file's "routes a locked model only
-  // when the exact project member can upgrade".
-  await expect(menu.locator('[data-testid^="avatar-agent-option-"]')).toHaveCount(0);
-  await expect(menu.locator('.avatar-amr-row')).toHaveCount(0);
-  await expect(menu).not.toContainText('$247.51');
-  // What it does render for a signed-in OpenDesign runtime: that runtime's
-  // model catalog, with the configured model marked active.
   const modelList = menu.getByTestId('avatar-model-list');
   await expect(modelList).toBeVisible();
-  await expect(modelList.getByRole('radio', { name: /DeepSeek V4 Flash/i })).toBeVisible();
+  await expect(modelList.getByRole('radio', { name: /^GPT-5.4$/i })).toBeVisible();
   await expect(modelList.locator('.avatar-model-option.is-active')).toHaveCount(1);
-
-  await captureVisual(page, 'visual-avatar-open-design-model-picker');
+  await expect(menu.locator('.avatar-amr-row')).toHaveCount(0);
+  await expect(menu.getByRole('radio', { name: /DeepSeek V4 Flash/i })).toHaveCount(0);
+  expect(requests).toEqual([]);
+  await captureVisual(page, 'visual-avatar-local-without-cloud');
 });
 
 test('[P2] captures the avatar reasoning selector surface', async ({ page }) => {

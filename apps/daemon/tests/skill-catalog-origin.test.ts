@@ -17,7 +17,7 @@ afterEach(async () => {
 });
 
 describe('skill catalog private origin revalidation', () => {
-  it('rechecks exact Team marker identity and ordinary bindings with real SQLite', async () => {
+  it('omits retired Team materializations and rechecks Personal bindings with real SQLite', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'od-skill-origin-')); roots.push(root);
     const userRoot = path.join(root, 'user'); await fs.mkdir(userRoot);
     const workspace = 'workspace-1', logical = 'user:design';
@@ -55,12 +55,14 @@ describe('skill catalog private origin revalidation', () => {
       designSystems: {} as never, projects: {} as never });
     try {
       const snap = await services.listAllSkillsSnapshot({ workspaceId: workspace, workspaceMemberId: 'alice' });
-      expect(snap.entries.map(x => x.id)).toEqual([logical, `${logical}:example`, 'personal', 'personal:example']);
-      expect(snap.entries[0]).toMatchObject({ source: 'user', teamSynced: true });
+      expect(snap.entries.map(x => x.id)).toEqual([logical, 'personal', 'personal:example']);
+      expect(snap.entries[0]).toMatchObject({ source: 'built-in' });
+      expect(await fs.readFile(path.join(materialized.targetDir, 'SKILL.md'), 'utf8')).toBe('synthetic');
       expect(snap.revalidate(snap.entries.map(x => x.id))).toBe(true);
       mutateTeamDuringRead = true;
       const duringTeamRead = await services.listAllSkillsSnapshot({ workspaceId: workspace, workspaceMemberId: 'alice' });
-      expect(duringTeamRead.revalidate([logical, `${logical}:example`])).toBe(false);
+      expect(duringTeamRead.revalidate([logical])).toBe(true);
+      expect(duringTeamRead.entries.some(x => x.id === `${logical}:example`)).toBe(false);
       mutateTeamDuringRead = false;
       db.prepare(`UPDATE workspace_resources SET resource_hub_resource_id=NULL WHERE resource_id=?`).run(teamKey);
       mutatePersonalDuringRead = true;

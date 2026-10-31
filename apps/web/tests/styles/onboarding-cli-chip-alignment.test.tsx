@@ -81,7 +81,7 @@ const agents: AgentInfo[] = [
 
 function baseConfig(): AppConfig {
   return {
-    cloudFeatures: true,
+    cloudFeatures: false,
     mode: 'daemon',
     agentId: 'claude-code',
     agentModels: { 'claude-code': { model: 'sonnet' } },
@@ -148,9 +148,6 @@ function renderOnboarding() {
 }
 
 async function openLocalCliStep() {
-  fireEvent.click(
-    await screen.findByRole('button', { name: /Continue \(signed in\)/i }),
-  );
   await waitFor(() => {
     expect(screen.getByRole('heading', { name: 'Choose your model source' })).toBeTruthy();
   });
@@ -172,14 +169,7 @@ beforeEach(() => {
   globalThis.ResizeObserver = ResizeObserverMock as typeof ResizeObserver;
   globalThis.fetch = vi.fn(async (input) => {
     const url = String(input);
-    if (url.endsWith('/api/integrations/vela/status')) {
-      return jsonResponse({
-        loggedIn: true,
-        profile: 'prod',
-        configPath: '/x',
-        user: { id: 'u', email: 'user@example.com' },
-      });
-    }
+    expect(url).not.toContain('/integrations/vela/');
     return jsonResponse({});
   }) as typeof fetch;
 });

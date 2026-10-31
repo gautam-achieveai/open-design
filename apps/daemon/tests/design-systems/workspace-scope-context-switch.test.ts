@@ -8,6 +8,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startServer } from '../../src/server.js';
+import { getWorkspaceProjectByProjectId, openDatabase } from '../../src/db.js';
 
 type StartedServer = {
   url: string;
@@ -18,7 +19,7 @@ type StartedServer = {
 const CONTEXT_WS1 = {
   workspaceMemberId: 'member-switch',
   workspaceId: 'ws-switch-one',
-  workspaceType: 'team',
+  workspaceType: 'personal',
   role: 'owner',
   memberStatus: 'active',
   lifecycleState: 'active',
@@ -33,16 +34,14 @@ const CONTEXT_WS2 = {
   lifecycleState: 'active',
 };
 
-// The dev/demo seam (`workspaceContext.set`), NOT `PUT /api/workspace/active`:
-// this is deliberately the same shape as a Vela-Web-driven switch — the
-// daemon's notion of "current" context changes, but no local pin is written.
+// The retired compatibility write must not establish ambient authority.
 async function setContext(baseUrl: string, context: unknown): Promise<void> {
   const resp = await fetch(`${baseUrl}/api/workspace/context`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(context),
   });
-  expect(resp.ok).toBe(true);
+  expect(resp.status).toBe(404);
 }
 
 function workspaceHeaders(context: typeof CONTEXT_WS1 | typeof CONTEXT_WS2): Record<string, string> {
@@ -149,21 +148,13 @@ describe('GET/POST /api/design-systems — explicit request scope is isolated fr
     const workspaceBody = await workspaceResp.json() as {
       project: { id: string };
     };
-    const projectsResp = await fetch(
-      `${baseUrl}/api/workspaces/${CONTEXT_WS1.workspaceId}/projects?view=all`,
-      { headers: workspaceHeaders(CONTEXT_WS1) },
-    );
-    expect(projectsResp.status).toBe(200);
-    const projectsBody = await projectsResp.json() as {
-      projects: Array<{
-        id: string;
-        createdByWorkspaceMemberId?: string | null;
-      }>;
-    };
-    expect(
-      projectsBody.projects.find((project) => project.id === workspaceBody.project.id),
-    ).toMatchObject({
-      id: workspaceBody.project.id,
+    // The retired workspace-list route is not an attribution witness. Inspect
+    // the binding created by the supported design-system workspace endpoint.
+    const db = openDatabase(process.cwd(), { dataDir: process.env.OD_DATA_DIR! });
+    expect(getWorkspaceProjectByProjectId(db, workspaceBody.project.id)).toMatchObject({
+      projectId: workspaceBody.project.id,
+      workspaceId: CONTEXT_WS1.workspaceId,
+      visibility: 'personal',
       createdByWorkspaceMemberId: CONTEXT_WS1.workspaceMemberId,
     });
 

@@ -4,32 +4,23 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Explicit synthetic local ACP capability: real Hermes does not promise session/load.
+// The full server still owns persistence, retry, teardown and conversation identity.
+vi.mock('../src/runtimes/registry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/runtimes/registry.js')>();
+  const hermes = actual.getAgentDef('hermes')!;
+  const fixture = { ...hermes, resumesSessionViaAcpLoad: true, fetchModels: undefined,
+    buildArgs: () => ['agent', 'run'], supportsCustomModel: true };
+  return { ...actual, AGENT_DEFS: actual.AGENT_DEFS.map(def => def.id === 'hermes' ? fixture : def),
+    getAgentDef: (id: string) => id === 'hermes' ? fixture : actual.getAgentDef(id) };
+});
 
 import { startServer } from '../src/server.js';
 
-// End-to-end coverage for AMR (vela) ACP session resume through the FULL server
-// close handler — not just `attachAcpSession` in isolation.
-//
-// AMR is `resumesSessionViaAcpLoad`: turn 1 issues `session/new` and the daemon
-// captures vela's durable `openCodeSessionId`; the next turn in the same
-// conversation issues `session/load <handle>` to resume the upstream OpenCode
-// session instead of re-paying the whole transcript cache-cold.
-//
-// The headline guard is the dead-handle fallback. When the resumed upstream
-// session is gone, vela returns a structured `resume_failed` JSON-RPC error,
-// which the ACP bridge turns into a FATAL. The daemon must STILL recognize it as
-// a resume failure, clear the stale handle, surface a retryable error, and let
-// the NEXT turn start a fresh `session/new` (re-seeded with the full transcript)
-// — one cold turn, never a conversation wedged retrying a dead `session/load`.
-//
-// Regression note: turn-2's error code is `AGENT_EXECUTION_FAILED` whether or
-// not the handle is cleared, so the load-bearing assertions are turn-3 (must
-// SUCCEED via a fresh session) and the session-bind sequence
-// (['new','load','new'], not ['new','load','load']). Before the close-handler
-// ordering fix — where `hasFatalError()` short-circuited BEFORE the
-// resume-failure reseed block — the dead handle was never cleared, so turn-3
-// resumed it again, going ['new','load','load'] and failing.
+// Generic ACP continuation coverage, using the local synthetic capability above.
+// Retired Cloud catalog choices are separately rejected before process launch.
 
 type StartedServer = {
   url: string;
@@ -49,7 +40,7 @@ type RunEvent = { event: string; data: unknown };
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FAKE_VELA = path.join(HERE, 'fixtures', 'fake-vela.mjs');
 
-describe('AMR (vela) ACP session resume — full server cycle', () => {
+describe('synthetic local ACP session resume — full server cycle', () => {
   const originalEnv = snapshotEnv();
   let started: StartedServer | null = null;
   let binDir: string | null = null;
@@ -71,47 +62,48 @@ describe('AMR (vela) ACP session resume — full server cycle', () => {
   });
 
   it.each(['success', 'pending', 'legacy', 'missing', 'mismatch', 'limit'])(
-    'safely converges compaction continuation: %s', async (scenario) => {
+    'stops unsupported compaction continuation without repeating tool writes: %s', async (scenario) => {
       binDir = await mkdtemp(path.join(os.tmpdir(), 'od-amr-continuation-'));
-      const bin = path.join(binDir, 'vela');
+      const bin = path.join(binDir, process.platform === 'win32' ? 'local-acp.cmd' : 'local-acp');
       const fixture = path.join(HERE, 'fixtures', 'fake-vela-continuation.ts');
       const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-      await writeFile(bin, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)} ${quote(scenario)} ${quote(binDir)} "$@"\n`);
+      await writeFile(bin, process.platform === 'win32'
+        ? `@echo off\r\n"${process.execPath}" "${fixture}" "${scenario}" "${binDir}" %*\r\n`
+        : `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)} ${quote(scenario)} ${quote(binDir)} "$@"\n`);
       await chmod(bin, 0o755);
       clearTelemetryEnv();
       started = await startServer({ port: 0, returnServer: true }) as StartedServer;
-      await putConfig(started.url, { agentId: 'amr', agentCliEnv: { amr: { VELA_BIN: bin } } });
+      await putConfig(started.url, { agentId: 'hermes', agentCliEnv: { hermes: { HERMES_BIN: bin } } });
       const conversation = await createConversation(started.url);
       const run = await sendRunAndWait(started.url, conversation, 'write exactly once');
-      expect(run.status, JSON.stringify({ run, events: (await readRunEvents(run.eventsLogPath)).slice(-8) })).toBe(scenario === 'success' ? 'succeeded' : 'failed');
+      expect(run.status, JSON.stringify({ run, events: (await readRunEvents(run.eventsLogPath)).slice(-8) })).toBe('failed');
       const ledger = (await readFile(path.join(binDir, 'ledger.jsonl'), 'utf8')).trim().split('\n')
         .map((line) => JSON.parse(line));
       expect(ledger.filter((row) => row.method === 'session/new')).toHaveLength(1);
       expect(ledger.filter((row) => row.method === 'session/prompt')).toHaveLength(1);
       expect(await readFile(path.join(binDir, 'tool-executions'), 'utf8')).toBe('write\n');
-      const canAttempt = !['pending', 'legacy'].includes(scenario);
-      expect(ledger.filter((row) => row.method === 'session/load')).toHaveLength(canAttempt ? 1 : 0);
+      expect(ledger.filter((row) => row.method === 'session/load')).toHaveLength(0);
       const attempts = ledger.filter((row) => row.method === '_session/continue');
-      expect(attempts).toHaveLength(['success', 'limit'].includes(scenario) ? 1 : 0);
+      expect(attempts).toHaveLength(0);
       const events = await readRunEvents(run.eventsLogPath);
       expect(events.filter((event) => event.event === 'end')).toHaveLength(1);
-      expect(events.filter((event) => event.event === 'run_retry_attempted')).toHaveLength(canAttempt ? 1 : 0);
+      expect(events.filter((event) => event.event === 'run_retry_attempted')).toHaveLength(0);
       expect(hasDiagnostic(events, { type: 'agent_resume_auto_reseed' })).toBe(false);
       const final = events.find((event) => event.event === 'run_retry_finished');
-      expect(final?.data).toMatchObject({ retry_result: scenario === 'success' ? 'success' : canAttempt ? 'failed' : 'suppressed' });
+      expect(final?.data).toMatchObject({ retry_result: 'suppressed' });
     }, 30_000,
   );
 
   it('captures the durable handle on turn 1 and resumes it via session/load on turn 2', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-amr-resume-bin-'));
     const logPath = path.join(binDir, 'invocations.jsonl');
-    const bin = await writeVelaWrapper(binDir, 'vela-resume', { logPath });
+    const bin = await writeLocalAcpWrapper(binDir, 'vela-resume', { logPath });
 
     clearTelemetryEnv();
     started = (await startServer({ port: 0, returnServer: true })) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: bin } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: bin } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
@@ -128,18 +120,17 @@ describe('AMR (vela) ACP session resume — full server cycle', () => {
     expect(await readInvocations(logPath)).toEqual(['new', 'load']);
   });
 
-  it('transparently auto-reseeds within the same turn when the resumed session is gone', async () => {
+  it('bounds retry of rejected resumed prompts without opening a fresh session', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-amr-deadresume-bin-'));
     const logPath = path.join(binDir, 'invocations.jsonl');
-    // The resumed session is gone: any session/load turn fails with the
-    // structured resume_failed; a fresh session/new turn still succeeds.
-    const bin = await writeVelaWrapper(binDir, 'vela-deadresume', { logPath, resumeFailed: true });
+    // session/load succeeds; the fixture rejects the resumed prompt before work.
+    const bin = await writeLocalAcpWrapper(binDir, 'vela-deadresume', { logPath, resumeFailed: true, logPrompt: true });
 
     clearTelemetryEnv();
     started = (await startServer({ port: 0, returnServer: true })) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: bin } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: bin } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
@@ -150,31 +141,24 @@ describe('AMR (vela) ACP session resume — full server cycle', () => {
     const turn1 = await sendRunAndWait(started.url, conversationId, 'first request');
     expect(turn1.status).toBe('succeeded');
 
-    // Turn 2 resumes (session/load), but the upstream session is gone → vela
-    // returns resume_failed. The daemon must NOT surface an error: it clears the
-    // dead handle and TRANSPARENTLY re-runs the same turn with a fresh session
-    // (session/new) + full transcript, all within this one run. The user sees a
-    // succeeded turn, never a "could not be resumed" message.
+    // The local adapter treats this RPC error as transient before visible work.
+    // It may retry the same native session once, without fresh-session reseeding.
     const turn2 = await sendRunAndWait(started.url, conversationId, 'second request');
-    expect(turn2.status).toBe('succeeded');
-    expect(turn2.error ?? '').not.toMatch(/could not be resumed/i);
-
-    // The bind sequence proves the in-turn reseed: turn 1 = new, turn 2 =
-    // load (dead) → new (transparent reseed). Pre-feature this surfaced a failed
-    // turn-2 and deferred the fresh session to a turn 3 the user had to trigger.
-    expect(await readInvocations(logPath)).toEqual(['new', 'load', 'new']);
+    expect(turn2.status).toBe('failed');
+    expect(turn2.errorCode).toBe('AGENT_EXECUTION_FAILED');
+    assertBoundedRejectedPromptRetry(await readRunEvents(turn2.eventsLogPath), await readInvocations(logPath));
   });
 
-  it('does not flash a client-visible error event during the transparent reseed', async () => {
+  it('keeps two rejected prompt attempts distinct from one terminal failure', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-amr-reseed-noerror-bin-'));
     const logPath = path.join(binDir, 'invocations.jsonl');
-    const bin = await writeVelaWrapper(binDir, 'vela-deadresume-noerror', { logPath, resumeFailed: true });
+    const bin = await writeLocalAcpWrapper(binDir, 'vela-deadresume-noerror', { logPath, resumeFailed: true, logPrompt: true });
 
     clearTelemetryEnv();
     started = (await startServer({ port: 0, returnServer: true })) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: bin } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: bin } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
@@ -184,30 +168,9 @@ describe('AMR (vela) ACP session resume — full server cycle', () => {
     expect((await sendRunAndWait(started.url, conversationId, 'first request')).status)
       .toBe('succeeded');
 
-    // Turn 2 resumes a now-dead session: vela returns resume_failed and the ACP
-    // bridge calls fail() -> send('error') for the failed session/load BEFORE the
-    // close handler clears the stale handle and re-runs the turn fresh. That
-    // recovery is meant to be INVISIBLE, so the run's event log must carry no
-    // client-visible `error` event — only the internal suppression diagnostic.
     const turn2 = await sendRunAndWait(started.url, conversationId, 'second request');
-    expect(turn2.status).toBe('succeeded');
-
-    const events = await readRunEvents(turn2.eventsLogPath);
-    // Red before the fix: an `error` event flashes here even though turn 2
-    // ultimately succeeds via the reseed, tripping any client that treats an SSE
-    // `error` as terminal.
-    expect(events.filter((e) => e.event === 'error')).toEqual([]);
-    // The failure is held back as a non-user-visible diagnostic instead.
-    expect(
-      hasDiagnostic(events, { type: 'agent_resume_failed_suppressed' }),
-    ).toBe(true);
-    expect(hasDiagnostic(events, {
-      type: 'agent_resume_auto_reseed',
-      reason: 'resume_failed',
-      stale_session_cleared: true,
-    })).toBe(true);
-    // The transparent reseed still happened: new → load (dead) → new.
-    expect(await readInvocations(logPath)).toEqual(['new', 'load', 'new']);
+    expect(turn2.status).toBe('failed');
+    assertBoundedRejectedPromptRetry(await readRunEvents(turn2.eventsLogPath), await readInvocations(logPath));
   });
 
   it('opens a fresh session next turn when turn 1 yields no durable handle', async () => {
@@ -215,13 +178,13 @@ describe('AMR (vela) ACP session resume — full server cycle', () => {
     const logPath = path.join(binDir, 'invocations.jsonl');
     // vela never reports openCodeSessionId → the daemon captures null and must
     // clear the row, so the next turn cannot attempt a session/load.
-    const bin = await writeVelaWrapper(binDir, 'vela-nohandle', { logPath, omitHandle: true });
+    const bin = await writeLocalAcpWrapper(binDir, 'vela-nohandle', { logPath, omitHandle: true });
 
     clearTelemetryEnv();
     started = (await startServer({ port: 0, returnServer: true })) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: bin } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: bin } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
@@ -238,10 +201,10 @@ describe('AMR (vela) ACP session resume — full server cycle', () => {
     expect(await readInvocations(logPath)).toEqual(['new', 'new']);
   });
 
-  it('clears a resumed AMR session after request_too_large so the next turn starts fresh', async () => {
+  it('clears a resumed local ACP session after request_too_large so the next turn starts fresh', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-amr-largecontext-bin-'));
     const logPath = path.join(binDir, 'invocations.jsonl');
-    const bin = await writeVelaWrapper(binDir, 'vela-largecontext', {
+    const bin = await writeLocalAcpWrapper(binDir, 'vela-largecontext', {
       logPath,
       promptErrorOnLoad: '[code=request_too_large] request body exceeds configured limit',
     });
@@ -249,8 +212,8 @@ describe('AMR (vela) ACP session resume — full server cycle', () => {
     clearTelemetryEnv();
     started = (await startServer({ port: 0, returnServer: true })) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: bin } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: bin } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
@@ -282,166 +245,32 @@ describe('AMR (vela) ACP session resume — full server cycle', () => {
     expect(await readInvocations(logPath)).toEqual(['new', 'load', 'new']);
   });
 
-  it('persists the concrete resolved model for a default turn (equivalent explicit follow-up resumes)', async () => {
-    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-amr-defaultmodel-bin-'));
-    const logPath = path.join(binDir, 'invocations.jsonl');
-    const bin = await writeVelaWrapper(binDir, 'vela-defaultmodel', { logPath });
-
-    clearTelemetryEnv();
-    started = (await startServer({ port: 0, returnServer: true })) as StartedServer;
-    await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: bin } },
-      telemetry: { metrics: true, content: false, artifactManifest: false },
-      privacyDecisionAt: Date.now(),
-    });
-
-    const conversationId = await createConversation(started.url);
-
-    // Turn 1 runs with the implicit default model, which resolves to the live
-    // catalog's first entry (deepseek-v4-flash, the fake preset's head on a cold
-    // cache). The guard must persist that CONCRETE id, not the raw `default`/null
-    // request token.
-    expect((await sendRunAndWait(started.url, conversationId, 'first request')).status)
-      .toBe('succeeded');
-    // Turn 2 names the SAME concrete model explicitly. Because turn 1 stored the
-    // concrete id, the identity still matches and the session resumes. (Pre-fix
-    // turn 1 stored null/`default`, so this read as model_changed and forced a
-    // needless cold reseed.)
-    expect((await sendRunAndWait(started.url, conversationId, 'second request', 'deepseek-v4-flash')).status)
-      .toBe('succeeded');
-
-    expect(await readInvocations(logPath)).toEqual(['new', 'load']);
-  });
-
-  it('resolves an explicit default model to the live catalog default before spawning AMR', async () => {
-    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-amr-explicit-default-bin-'));
-    const logPath = path.join(binDir, 'invocations.jsonl');
-    const bin = await writeVelaWrapper(binDir, 'vela-explicit-default', {
-      logPath,
-      logSetModel: true,
-      requireSetModel: true,
-    });
-
-    clearTelemetryEnv();
-    started = (await startServer({ port: 0, returnServer: true })) as StartedServer;
-    await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: bin } },
-      telemetry: { metrics: true, content: false, artifactManifest: false },
-      privacyDecisionAt: Date.now(),
-    });
-
-    const conversationId = await createConversation(started.url);
-
-    expect((await sendRunAndWait(started.url, conversationId, 'use account default', 'default')).status)
-      .toBe('succeeded');
-    expect((await sendRunAndWait(started.url, conversationId, 'use account default again', 'default')).status)
-      .toBe('succeeded');
-
-    expect(await readInvocations(logPath)).toEqual([
-      'new',
-      'set_model:deepseek-v4-flash',
-      'load',
-      'set_model:deepseek-v4-flash',
-    ]);
-  });
-
-  it('uses the catalog default model for omitted AMR model selections, skipping disabled catalog heads', async () => {
-    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-amr-catalog-default-bin-'));
-    const logPath = path.join(binDir, 'invocations.jsonl');
-    const presetCatalog = JSON.stringify({
-      source: 'preset',
-      data: [
-        { id: 'deepseek-v4-flash', enabled: false },
-        { id: 'kimi-k2.6', default: true },
-        { id: 'glm-5.1' },
-      ],
-    });
-    const remoteCatalog = JSON.stringify({
-      source: 'remote',
-      data: [
-        { id: 'deepseek-v4-flash', enabled: false },
-        { id: 'kimi-k2.6', default: true },
-        { id: 'glm-5.1' },
-      ],
-    });
-    const bin = await writeVelaWrapper(binDir, 'vela-catalog-default', {
-      logPath,
-      logSetModel: true,
-      modelPresetJson: presetCatalog,
-      modelListJson: remoteCatalog,
-    });
-
-    clearTelemetryEnv();
-    started = (await startServer({ port: 0, returnServer: true })) as StartedServer;
-    await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: bin } },
-      telemetry: { metrics: true, content: false, artifactManifest: false },
-      privacyDecisionAt: Date.now(),
-    });
-
-    const conversationId = await createConversation(started.url);
-
-    expect((await sendRunAndWait(started.url, conversationId, 'use catalog default')).status)
-      .toBe('succeeded');
-
-    expect(await readInvocations(logPath)).toEqual(['new', 'set_model:kimi-k2.6']);
-  });
-
-  it('rejects explicit AMR default when every catalog model is disabled', async () => {
-    binDir = await mkdtemp(path.join(os.tmpdir(), 'od-amr-locked-default-bin-'));
-    const logPath = path.join(binDir, 'invocations.jsonl');
-    const lockedCatalog = JSON.stringify({
-      source: 'preset',
-      data: [
-        { id: 'deepseek-v4-flash', enabled: false },
-        { id: 'kimi-k2.6', enabled: false },
-      ],
-    });
-    const lockedRemoteCatalog = JSON.stringify({
-      source: 'remote',
-      data: [
-        { id: 'deepseek-v4-flash', enabled: false },
-        { id: 'kimi-k2.6', enabled: false },
-      ],
-    });
-    const bin = await writeVelaWrapper(binDir, 'vela-locked-default', {
-      logPath,
-      logSetModel: true,
-      requireSetModel: true,
-      modelPresetJson: lockedCatalog,
-      modelListJson: lockedRemoteCatalog,
-    });
-
-    clearTelemetryEnv();
-    started = (await startServer({ port: 0, returnServer: true })) as StartedServer;
-    await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: bin } },
-      telemetry: { metrics: true, content: false, artifactManifest: false },
-      privacyDecisionAt: Date.now(),
-    });
-
-    const conversationId = await createConversation(started.url);
-    const run = await sendRunAndWait(started.url, conversationId, 'use account default', 'default');
-
-    expect(run.status).toBe('failed');
-    expect(run.errorCode).toBe('AMR_MODEL_UNAVAILABLE');
-    expect(await readInvocations(logPath)).toEqual([]);
-  });
+  it.each([undefined, 'default', 'legacy-disabled-model', 'legacy-custom/model'])(
+    'rejects retired Cloud model selection before creating a run: %s', async (model) => {
+      clearTelemetryEnv();
+      started = await startServer({ port: 0, returnServer: true }) as StartedServer;
+      const [projectId, conversationId] = (await createConversation(started.url)).split('::');
+      const response = await fetch(started.url + '/api/runs', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId, conversationId, agentId: 'amr', model, message: 'retired Cloud request' }),
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json() as { error: { code: string }; runId?: string };
+      expect(body.error.code).toBe('AGENT_UNAVAILABLE');
+      expect(body.runId).toBeUndefined();
+    },
+  );
 
   it('reseeds a fresh session (no resume) when the model changes between turns', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-amr-modelchange-bin-'));
     const logPath = path.join(binDir, 'invocations.jsonl');
-    const bin = await writeVelaWrapper(binDir, 'vela-modelchange', { logPath });
+    const bin = await writeLocalAcpWrapper(binDir, 'vela-modelchange', { logPath });
 
     clearTelemetryEnv();
     started = (await startServer({ port: 0, returnServer: true })) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: bin } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: bin } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
@@ -461,12 +290,9 @@ describe('AMR (vela) ACP session resume — full server cycle', () => {
   });
 });
 
-// A tiny executable shim that forwards to fake-vela.mjs under the current node,
-// so VELA_BIN resolves to a real executable regardless of the fixture's mode.
-// The daemon's `agentCliEnv` is allowlisted (only VELA_BIN survives for AMR), so
-// behavior knobs are baked into the wrapper's OWN env here instead of passed
-// through config — the wrapper exports them before exec'ing fake-vela.
-async function writeVelaWrapper(
+// Synthetic ACP fixture launched through HERMES_BIN. Its private behavior flags
+// are set in the owned wrapper, keeping the real runtime environment allowlist.
+async function writeLocalAcpWrapper(
   dir: string,
   name: string,
   opts: {
@@ -475,12 +301,13 @@ async function writeVelaWrapper(
     omitHandle?: boolean;
     promptErrorOnLoad?: string;
     logSetModel?: boolean;
+    logPrompt?: boolean;
     requireSetModel?: boolean;
     modelPresetJson?: string;
     modelListJson?: string;
   },
 ): Promise<string> {
-  const bin = path.join(dir, name);
+  const bin = path.join(dir, process.platform === 'win32' ? name + '.cmd' : name);
   const lines = [
     '#!/bin/sh',
     `export FAKE_VELA_INVOCATION_LOG=${JSON.stringify(opts.logPath)}`,
@@ -496,6 +323,7 @@ async function writeVelaWrapper(
     lines.push(`export FAKE_VELA_PROMPT_ERROR_ON_LOAD=${JSON.stringify(opts.promptErrorOnLoad)}`);
   }
   if (opts.logSetModel) lines.push('export FAKE_VELA_LOG_SET_MODEL=1');
+  if (opts.logPrompt) lines.push('export FAKE_VELA_LOG_PROMPT=1');
   if (opts.modelPresetJson) {
     lines.push(`export FAKE_VELA_MODEL_PRESET_JSON=${JSON.stringify(opts.modelPresetJson)}`);
   }
@@ -503,9 +331,39 @@ async function writeVelaWrapper(
     lines.push(`export FAKE_VELA_MODEL_LIST_JSON=${JSON.stringify(opts.modelListJson)}`);
   }
   lines.push(`exec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_VELA)} "$@"`, '');
-  await writeFile(bin, lines.join('\n'), 'utf8');
+  const script = process.platform === 'win32'
+    ? lines.map((line) => line === '#!/bin/sh' ? '@echo off'
+      : line.startsWith('export ') ? 'set "' + line.slice(7).replace(/="(.*)"$/, '=$1') + '"'
+      : line.startsWith('exec ') ? line.slice(5).replace('"$@"', '%*') : line).join('\r\n')
+    : lines.join('\n');
+  await writeFile(bin, script, 'utf8');
   await chmod(bin, 0o755);
   return bin;
+}
+
+function assertBoundedRejectedPromptRetry(events: RunEvent[], invocations: string[]): void {
+  expect(invocations).toEqual(['new', 'prompt', 'load', 'prompt', 'load', 'prompt']);
+  expect(events.filter(event => event.event === 'error')).toHaveLength(2);
+  expect(events.filter(event => event.event === 'run_retry_attempted')).toEqual([
+    expect.objectContaining({ data: expect.objectContaining({
+      retry_reason: 'transient_failure', retry_strategy: 'same_run_transient',
+      retry_attempt_index: 1, retry_max_attempts: 1,
+      failure_detail: 'fatal_rpc_error',
+    }) }),
+  ]);
+  expect(events.filter(event => event.event === 'run_retry_finished')).toEqual([
+    expect.objectContaining({ data: expect.objectContaining({ retry_result: 'failed', retry_attempt_index: 1 }) }),
+  ]);
+  expect(events.filter(event => event.event === 'end')).toEqual([
+    expect.objectContaining({ data: expect.objectContaining({ status: 'failed' }) }),
+  ]);
+  expect(hasDiagnostic(events, { type: 'agent_resume_auto_reseed' })).toBe(false);
+  expect(events.filter(event => {
+    if (event.event !== 'agent' || !event.data || typeof event.data !== 'object') return false;
+    const data = event.data as Record<string, unknown>;
+    return data.type === 'tool_use' || data.type === 'tool_result'
+      || (data.type === 'text_delta' && typeof data.delta === 'string' && data.delta.length > 0);
+  })).toEqual([]);
 }
 
 async function readInvocations(logPath: string): Promise<string[]> {
@@ -578,30 +436,10 @@ function clearTelemetryEnv(): void {
 }
 
 async function putConfig(url: string, patch: Record<string, unknown>): Promise<void> {
-  const agentCliEnv =
-    patch.agentCliEnv && typeof patch.agentCliEnv === 'object'
-      ? patch.agentCliEnv as Record<string, unknown>
-      : {};
-  const amr =
-    agentCliEnv.amr && typeof agentCliEnv.amr === 'object'
-      ? agentCliEnv.amr as Record<string, unknown>
-      : {};
-  const response = await fetch(`${url}/api/app-config`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      ...patch,
-      agentCliEnv: {
-        ...agentCliEnv,
-        amr: {
-          ...amr,
-          VELA_RUNTIME_KEY: 'rt-amr-session-resume-test',
-          VELA_LINK_URL: 'https://amr-link.example.test/v1',
-        },
-      },
-    }),
+  const response = await fetch(url + '/api/app-config', {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch),
   });
-  expect(response.status).toBe(200);
+  expect(response.status, await response.text()).toBe(200);
 }
 
 async function createConversation(url: string): Promise<string> {
@@ -666,7 +504,7 @@ async function sendRunAndWait(
       conversationId,
       assistantMessageId,
       clientRequestId: `client_amr_${randomUUID()}`,
-      agentId: 'amr',
+      agentId: 'hermes',
       message,
       currentPrompt: message,
       ...(model ? { model } : {}),

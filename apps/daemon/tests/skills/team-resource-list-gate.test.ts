@@ -100,7 +100,7 @@ function bindTeamSkill(
 }
 
 describe('listAllSkills Team materialization gate', () => {
-  it('requires both an exact marker and an active exact Workspace binding', async () => {
+  it('keeps legacy Team resources hidden while preserving the Personal copy', async () => {
     const fixture = await createFixture();
     const skillId = 'same-skill';
     const personalDir = path.join(fixture.userSkills, skillId);
@@ -120,11 +120,11 @@ describe('listAllSkills Team materialization gate', () => {
     expect(skills.findSkillById(
       await fixture.services.listAllSkills({ workspaceId: 'workspace-a' }),
       skillId,
-    )?.body).toContain('team-a');
+    )).toBeUndefined();
     expect(skills.findSkillById(
       await fixture.services.listAllSkills({ workspaceId: 'workspace-b' }),
       skillId,
-    )?.body).toContain('team-b');
+    )).toBeUndefined();
     expect(skills.findSkillById(await fixture.services.listAllSkills(), skillId)?.body)
       .toContain('personal-body');
 
@@ -140,7 +140,7 @@ describe('listAllSkills Team materialization gate', () => {
     expect(skills.findSkillById(
       await fixture.services.listAllSkills({ workspaceId: 'workspace-b' }),
       skillId,
-    )?.body).toContain('team-b');
+    )).toBeUndefined();
     expect(skills.findSkillById(await fixture.services.listAllSkills(), skillId)?.body)
       .toContain('personal-body');
   });
@@ -165,47 +165,21 @@ describe('listAllSkills Team materialization gate', () => {
     expect(skills.findSkillById(bindingOnly, 'binding-only')).toBeUndefined();
   });
 
-  it('drops a Team Skill retracted while its directory is resolving', async () => {
-    let finishTeamRead!: () => void;
-    const teamReadGate = new Promise<void>((resolve) => {
-      finishTeamRead = resolve;
-    });
-    let teamReadStarted!: () => void;
-    const teamReadDidStart = new Promise<void>((resolve) => {
-      teamReadStarted = resolve;
-    });
+  it('does not read retired Team directories during discovery', async () => {
+    const teamReads: string[] = [];
     let userSkillsRoot = '';
     const fixture = await createFixture({
       listSkills: async (rootsArg, options) => {
-        const rootsList = Array.isArray(rootsArg) ? rootsArg : [rootsArg];
-        if (
-          userSkillsRoot
-          && rootsList.length === 1
-          && rootsList[0]?.startsWith(path.join(userSkillsRoot, '.team-workspaces'))
-        ) {
-          teamReadStarted();
-          await teamReadGate;
-        }
+        const roots = Array.isArray(rootsArg) ? rootsArg : [rootsArg];
+        teamReads.push(...roots.filter(root => root.startsWith(path.join(userSkillsRoot, '.team-workspaces'))));
         return skills.listSkills(rootsArg, options);
       },
     });
     userSkillsRoot = fixture.userSkills;
-    const workspaceId = 'workspace-race';
-    const skillId = 'racing-skill';
-    await materializeTeamSkill(fixture.userSkills, workspaceId, skillId, 'racing-body');
-    bindTeamSkill(fixture.db, workspaceId, skillId);
-
-    const pending = fixture.services.listAllSkills({ workspaceId });
-    await teamReadDidStart;
-    updateWorkspaceResource(
-      fixture.db,
-      'skill',
-      workspaceId,
-      workspaceTeamSkillBindingResourceId(workspaceId, skillId),
-      { resourceState: 'deleted' },
-    );
-    finishTeamRead();
-
-    expect(skills.findSkillById(await pending, skillId)).toBeUndefined();
+    await materializeTeamSkill(userSkillsRoot, 'workspace-race', 'racing-skill', 'racing-body');
+    bindTeamSkill(fixture.db, 'workspace-race', 'racing-skill');
+    const entries = await fixture.services.listAllSkills({ workspaceId: 'workspace-race' });
+    expect(skills.findSkillById(entries, 'racing-skill')).toBeUndefined();
+    expect(teamReads).toEqual([]);
   });
 });

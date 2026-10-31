@@ -362,9 +362,8 @@ describe('od project CLI', () => {
     expect(JSON.parse(stub.requests[0]!.body)).toEqual({ name: 'Duplicate Copy' });
   });
 
-  it('lists workspace projects through the workspace-scoped API', async () => {
+  it("rejects retired Cloud command without HTTP: lists workspace projects through the workspace-scoped API", async () => {
     stub = await startProjectStubServer();
-
     const result = await runCli([
       'workspace',
       'projects',
@@ -381,22 +380,9 @@ describe('od project CLI', () => {
       '--daemon-url',
       stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(0);
-    expect(result.stderr).toBe('');
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      projects: [{ id: 'project-1', visibility: 'team' }],
-    });
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({
-      method: 'GET',
-      url: '/api/workspaces/ws-1/projects?view=team',
-    });
-    expect(stub.requests[0]!.headers).toMatchObject({
-      'x-od-workspace-id': 'ws-1',
-      'x-od-workspace-member-id': 'member-1',
-      'x-od-workspace-role': 'admin',
-    });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od workspace');
+    expect(stub.requests).toHaveLength(0);
   });
 
   it('od project list without --workspace resolves the signed-in workspace automatically (#6679)', async () => {
@@ -522,9 +508,8 @@ describe('od project CLI', () => {
     expect(catalogReq).toBeDefined();
   });
 
-  it('creates workspace invites through the workspace invite API', async () => {
+  it("rejects retired Cloud command without HTTP: creates workspace invites through the workspace invite API", async () => {
     stub = await startProjectStubServer();
-
     const result = await runCli([
       'workspace',
       'invite',
@@ -540,27 +525,13 @@ describe('od project CLI', () => {
       '--daemon-url',
       stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(0);
-    expect(result.stderr).toBe('');
-    expect(JSON.parse(result.stdout)).toEqual({
-      results: [{ email: 'teammate@example.com', ok: true, inviteId: 'invite-1' }],
-    });
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({
-      method: 'POST',
-      url: '/api/workspace/invite',
-      body: JSON.stringify({ email: 'teammate@example.com', role: 'member' }),
-    });
-    expect(stub.requests[0]!.headers).toMatchObject({
-      'x-od-workspace-id': 'ws-1',
-      'x-od-workspace-member-id': 'member-1',
-    });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od workspace');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('lists team projects through the workspace discovery API', async () => {
+  it("rejects retired Cloud command without HTTP: lists team projects through the workspace discovery API", async () => {
     stub = await startProjectStubServer();
-
     const result = await runCli([
       'workspace',
       'projects',
@@ -573,26 +544,13 @@ describe('od project CLI', () => {
       '--daemon-url',
       stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(0);
-    expect(result.stderr).toBe('');
-    expect(JSON.parse(result.stdout)).toEqual({
-      projects: [{ projectId: 'team-project-1', displayName: 'Team Project' }],
-    });
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({
-      method: 'GET',
-      url: '/api/workspace/projects/team',
-    });
-    expect(stub.requests[0]!.headers).toMatchObject({
-      'x-od-workspace-id': 'ws-1',
-      'x-od-workspace-member-id': 'member-1',
-    });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od workspace');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('lists workspace members through the workspace member directory API', async () => {
+  it("rejects retired Cloud command without HTTP: lists workspace members through the workspace member directory API", async () => {
     stub = await startProjectStubServer();
-
     const result = await runCli([
       'workspace',
       'members',
@@ -605,26 +563,13 @@ describe('od project CLI', () => {
       '--daemon-url',
       stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(0);
-    expect(result.stderr).toBe('');
-    expect(JSON.parse(result.stdout)).toEqual({
-      members: [{ memberId: 'member-1', displayName: 'Member One', role: 'admin' }],
-    });
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({
-      method: 'GET',
-      url: '/api/workspace/members',
-    });
-    expect(stub.requests[0]!.headers).toMatchObject({
-      'x-od-workspace-id': 'ws-1',
-      'x-od-workspace-member-id': 'member-1',
-    });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od workspace');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('rejects workspace directory commands without explicit workspace identity', async () => {
+  it("rejects retired Cloud command without HTTP: rejects workspace directory commands without explicit workspace identity", async () => {
     stub = await startProjectStubServer();
-
     const result = await runCli([
       'workspace',
       'members',
@@ -633,15 +578,13 @@ describe('od project CLI', () => {
       '--daemon-url',
       stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain('--workspace <id> and --workspace-member <id>');
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od workspace');
     expect(stub.requests).toHaveLength(0);
   });
 
-  it('sends explicit CLI workspace identity to team resource routes', async () => {
+  it("rejects retired Cloud command without HTTP: sends explicit CLI workspace identity to team resource routes", async () => {
     stub = await startProjectStubServer();
-
     const result = await runCli([
       'collab',
       'team-resources',
@@ -654,27 +597,13 @@ describe('od project CLI', () => {
       '--daemon-url',
       stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(0);
-    expect(result.stderr).toBe('');
-    expect(JSON.parse(result.stdout)).toEqual({
-      ids: ['team-skill'],
-      resources: [{ id: 'team-skill' }],
-    });
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({
-      method: 'GET',
-      url: '/api/workspace/skills/team',
-    });
-    expect(stub.requests[0]!.headers).toMatchObject({
-      'x-od-workspace-id': 'ws-1',
-      'x-od-workspace-member-id': 'member-1',
-    });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od collab');
+    expect(stub.requests).toHaveLength(0);
   });
 
-  it('sends repeatable project ids for workspace batch delete', async () => {
+  it("rejects retired Cloud command without HTTP: sends repeatable project ids for workspace batch delete", async () => {
     stub = await startProjectStubServer();
-
     const result = await runCli([
       'workspace',
       'projects',
@@ -693,20 +622,8 @@ describe('od project CLI', () => {
       '--daemon-url',
       stub.baseUrl,
     ]);
-
-    expect(result.code).toBe(0);
-    expect(result.stderr).toBe('');
-    expect(JSON.parse(result.stdout)).toEqual({ ok: true, deletedProjectIds: ['project-1', 'project-2'] });
-    expect(stub.requests).toHaveLength(1);
-    expect(stub.requests[0]).toMatchObject({
-      method: 'POST',
-      url: '/api/workspaces/ws-1/projects/batch-delete',
-      body: JSON.stringify({ projectIds: ['project-1', 'project-2'] }),
-    });
-    expect(stub.requests[0]!.headers).toMatchObject({
-      'x-od-workspace-id': 'ws-1',
-      'x-od-workspace-member-id': 'member-1',
-      'x-od-workspace-role': 'admin',
-    });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('unknown command: od workspace');
+    expect(stub.requests).toHaveLength(0);
   });
 });

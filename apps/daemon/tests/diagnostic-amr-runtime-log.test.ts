@@ -1,7 +1,12 @@
 import { appendFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+const fixtureHome = vi.hoisted(() => ({ path: '' }));
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return { ...actual, homedir: () => fixtureHome.path || actual.homedir() };
+});
 import { buildAutomaticDiagnosticSources, selectAmrRuntimeRunLines } from '../src/diagnostics-export.js';
 import { DiagnosticConsentFence } from '../src/services/diagnostic-consent.js';
 
@@ -26,13 +31,14 @@ it('selects the run and the OpenCode sessions it owns until another run takes on
 
 let root: string;
 const priorAmrHome = process.env.AMR_HOME;
-beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'amr-runtime-')); process.env.AMR_HOME = join(root, 'amr'); });
+beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'amr-runtime-')); fixtureHome.path = root; process.env.AMR_HOME = join(root, 'amr'); });
 afterEach(async () => {
+  fixtureHome.path = '';
   if (priorAmrHome === undefined) delete process.env.AMR_HOME; else process.env.AMR_HOME = priorAmrHome;
   await rm(root, { recursive: true, force: true });
 });
 
-it('collects the AMR runtime log for a run and reports AMR sources it cannot find', async () => {
+it('ignores retired AMR_HOME configuration when locating historical diagnostic receipts', async () => {
   const options = { runtime: null, projectRoot: root, runsDir: join(root, 'runs'), dataDir: join(root, 'data') };
   const missing = await buildAutomaticDiagnosticSources(options, { runId: 'run-a', agentId: 'amr' });
   expect(missing.filter((s) => s.name.startsWith('agent-cli-logs/amr/')).map((s) => [s.name, s.omitReason])).toEqual([
@@ -43,10 +49,10 @@ it('collects the AMR runtime log for a run and reports AMR sources it cannot fin
   await writeFile(join(root, 'amr', 'logs', 'agent-runtime.jsonl'), `${line({ event: 'opencode_session_created', opencodeSessionId: 'ses_1', openDesignRunId: 'run-a' })}\n`);
   const found = await buildAutomaticDiagnosticSources(options, { runId: 'run-a', agentId: 'amr' });
   const runtime = found.find((s) => s.name === 'agent-cli-logs/amr/agent-runtime.jsonl')!;
-  expect(runtime.omitReason).toBeUndefined();
-  expect(runtime.selectLines).toBeTypeOf('function');
+  expect(runtime.omitReason).toBe('source_not_found');
+  expect(runtime.absolutePath).not.toBe(join(root, 'amr', 'logs', 'agent-runtime.jsonl'));
   const baseline = await buildAutomaticDiagnosticSources(options, { agentId: '*' });
-  expect(baseline.find((s) => s.name === 'agent-cli-logs/amr/agent-runtime.jsonl')).toMatchObject({ kind: 'text' });
+  expect(baseline.find((s) => s.name === 'agent-cli-logs/amr/agent-runtime.jsonl')).toBeUndefined();
   expect(baseline.some((s) => s.omitReason)).toBe(false);
 });
 

@@ -27,9 +27,8 @@
 // `GET /api/projects/:id/workspace-scope` and prove that remote availability
 // never changes the local attribution result.
 //
-// Runs with `OD_WORKSPACE_CONTEXT_SOURCE=vela` so the membership authority is
-// live, seeded only through the daemon's real vela integration against a
-// temporary server-level mock. No source-level backdoor.
+// Saved Cloud settings point to loopback fixtures. Local attribution must not
+// contact them, whether those obsolete endpoints would succeed or fail.
 
 import { createServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -40,6 +39,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
 import { requestJson } from '@/vitest/http';
 import { createSmokeSuite } from '@/vitest/suite';
+import { readProjectSnapshot } from '@/vitest/local-workspace';
 
 type ProjectWorkspaceScope = {
   kind: 'unbound' | 'unavailable' | 'personal' | 'team';
@@ -70,16 +70,18 @@ const FOREIGN = {
   workspaceMemberId: 'mem-rec-foreign',
 };
 
-/** `/api/v1/workspaces` is the only authority used by these data-plane tests. */
+/** A saved Cloud directory must not be contacted for local attribution. */
 function startDirectoryMock(options: {
   directoryStatus?: number;
 }): Promise<{
   url: string;
   close: () => Promise<void>;
-  setDirectoryStatus: (status: number) => void;
+  requests: () => number;
 }> {
-  let directoryStatus = options.directoryStatus ?? 200;
+  const directoryStatus = options.directoryStatus ?? 200;
+  let requestCount = 0;
   const server: Server = createServer((req, res) => {
+    requestCount += 1;
     const url = req.url ?? '';
     if (url.startsWith('/api/v1/workspaces')) {
       const status = directoryStatus;
@@ -97,9 +99,7 @@ function startDirectoryMock(options: {
       resolve({
         url: `http://127.0.0.1:${address.port}`,
         close: () => new Promise<void>((done) => server.close(() => done())),
-        setDirectoryStatus: (status) => {
-          directoryStatus = status;
-        },
+        requests: () => requestCount,
       });
     });
   });
@@ -191,6 +191,7 @@ afterAll(async () => {
     unreadableAuthority.close(),
     selectionAuthority.close(),
   ]);
+  expect([readableAuthority.requests(), unreadableAuthority.requests(), selectionAuthority.requests()]).toEqual([0, 0, 0]);
 });
 
 describe('reconciling an unbound project uses explicit local attribution', () => {
@@ -258,11 +259,14 @@ describe('reconciling an unbound project uses explicit local attribution', () =>
           // Authorship is persisted from the complete explicit pair.
           const listed = await requestJson<WorkspaceProjectsBody>(
             webUrl,
-            `/api/workspaces/${encodeURIComponent(MEMBER.workspaceId)}/projects`,
+            '/api/projects',
             { headers: workspaceHeaders(MEMBER) },
           );
           const claimed = listed.projects.find((project) => project.id === legitimate);
-          expect(claimed?.createdByWorkspaceMemberId).toBe(MEMBER.workspaceMemberId);
+          expect(claimed?.id).toBe(legitimate);
+          expect(readProjectSnapshot(suite.dataDir, legitimate).binding).toMatchObject({
+            created_by_workspace_member_id: MEMBER.workspaceMemberId,
+          });
 
           // --- CASE 4: a request that asserts NOTHING must leave the binding
           // alone, and must keep working. This helper's headerless branch is only
@@ -299,7 +303,7 @@ describe('reconciling an unbound project uses explicit local attribution', () =>
   );
 
   test(
-    'an explicit request scope outranks a validated navigation switch',
+    'a retired navigation switch cannot override explicit local attribution',
     { timeout: 300_000 },
     async () => {
       const suite = await createSmokeSuite('collab-reconcile-selection-isolation');
@@ -323,7 +327,8 @@ describe('reconciling an unbound project uses explicit local attribution', () =>
               workspaceMemberId: MEMBER.workspaceMemberId,
             }),
           });
-          expect(switched.status).toBe(200);
+          expect(switched.status).toBe(410);
+          expect(await switched.json()).toMatchObject({ error: { code: 'CLOUD_FEATURES_DISABLED' } });
 
           // The next request explicitly attributes the orphan elsewhere.
           await mutate(webUrl, duplicatePath(orphan), workspaceHeaders(FOREIGN), {
@@ -362,7 +367,7 @@ describe('reconciling an unbound project uses explicit local attribution', () =>
           expect((await readScope(webUrl, project)).kind).toBe('unbound');
 
           // The asserted pair is written locally even though the directory is
-          // down; cloud operations will authorize separately when attempted.
+          // down; retired Cloud operations remain unavailable.
           await mutate(webUrl, duplicatePath(project), workspaceHeaders(MEMBER), {
             name: 'Duplicate during outage',
           });
@@ -386,9 +391,8 @@ describe('reconciling an unbound project uses explicit local attribution', () =>
 });
 
 /**
- * A vela config home guaranteed to hold no session, so the daemon's
- * `readVelaControlApiContext` config-file fallback cannot pick up the developer
- * machine's real production login.
+ * Suite-owned legacy home for the obsolete environment fixture. The zero
+ * directory-request assertion proves these old settings no longer authorize work.
  */
 async function emptyAmrHome(scratchDir: string): Promise<string> {
   const dir = join(scratchDir, 'empty-amr-home');

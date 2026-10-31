@@ -2936,7 +2936,7 @@ process.exit(127);
         expect(collected.input).toMatchObject({ codexHome: binDir,
           parentSessionId: history.parentId, taskExecutionId: fixture.taskExecutionId,
           runId, taskRunIndex: mapping.taskRunIndex, stage: mapping.inputStage });
-        expect.soft(collected.result.availability).toBe('complete');
+        expect.soft(collected.result.availability, JSON.stringify(collected.result.diagnostics)).toBe('complete');
         expect.soft(collected.result.knownChildCount).toBe(1);
         expect.soft(collected.result.observations.filter(row => row.kind === 'child_agent' && row.status === 'completed')).toHaveLength(1);
         if (mode === 'cancel') {
@@ -3188,6 +3188,7 @@ input.on('line', line => {
   const frame = JSON.parse(line);
   record(frame.method, frame.params?.threadId);
   if (frame.method === 'initialize') send({ id: frame.id, result: { userAgent: 'codex/0.147.0' } });
+  else if (frame.method === 'config/read') send({ id: frame.id, result: { config: {} } });
   else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: parentId, historyMode: 'paginated', path: parentPath } } });
   else if (frame.method === 'turn/start') {
     const now = Date.now();

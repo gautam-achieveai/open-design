@@ -97,11 +97,12 @@ function registerRoutes(app: express.Express, canMutate: (root: string, id: stri
       context: workspaceContextFromDirectoryItem({
         workspaceId: req.get('x-od-workspace-id'),
         workspaceName: 'Locked fixture workspace',
-        workspaceType: 'team',
+        workspaceType: 'personal',
         workspaceMemberId: req.get('x-od-workspace-member-id'),
         role: 'owner',
         memberStatus: 'active',
-        lifecycleState: req.get('x-od-workspace-lifecycle-state') ?? 'active',
+        // Verified local authority is independent of stale browser lifecycle hints.
+        lifecycleState: 'active',
       }),
     }),
     workspaceResources: {

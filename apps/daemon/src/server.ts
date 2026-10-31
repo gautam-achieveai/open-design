@@ -450,6 +450,7 @@ import {
 } from './memory.js';
 import { runAutoExtractionCleanup } from './memory-cleanup.js';
 import { attachAcpSession } from './agent-protocol/index.js';
+import { isHostSynthesizedAcpEmission, withAcpEmissionProvenance } from './agent-protocol/acp/emission-provenance.js';
 import { attachPiRpcSession } from './agent-protocol/index.js';
 import { attachDshProfileSession } from './agent-protocol/index.js';
 
@@ -11479,7 +11480,11 @@ export async function startServer({
         const safe = claudeOutputGuard.sanitize(data);
         if (!safe) {
           if (event !== 'error' || data?.message !== CLAUDE_OUTPUT_FAILURE) return;
-        } else data = safe;
+        } else {
+          // Sanitization copies the payload; preserve private ACP origin for diagnostics.
+          data = withAcpEmissionProvenance(safe, data && typeof data === 'object'
+            && isHostSynthesizedAcpEmission(data) ? { hostSynthesized: true } : undefined);
+        }
       }
       if (event === 'agent' && data?.type === 'usage') {
         physicalSessionUsage.observe(event, data);
@@ -14593,7 +14598,7 @@ export async function startServer({
         const consume = (guarded) => {
           const { __acpGuardTransport: transport, ...payload } = guarded;
           if (!transport || typeof transport.channel !== 'string') throw new Error('Invalid ACP output envelope.');
-          handler(transport.channel, payload, transport.meta);
+          handler(transport.channel, withAcpEmissionProvenance(payload, transport.meta), transport.meta);
         };
         return (event, data, meta) => {
           if (!acpRunTokenGuardEnabled) { handler(event, data, meta); return; }

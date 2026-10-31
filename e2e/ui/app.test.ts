@@ -78,6 +78,14 @@ for (const entry of automatedUiScenarios().filter(
 )) {
   test(`[${scenarioPriority(entry)}]${criticalScenarioTag(entry)}${mergeExtraScenarioTag(entry)} ${entry.id}: ${entry.title}`, async ({ page }) => {
     await routeMockAgents(page);
+    if (entry.flow === 'image-project-routing' || entry.flow === 'audio-project-routing') {
+      // Creation needs an independently configured media provider after Cloud removal.
+      // These flows only create projects; no provider request is sent.
+      await page.route('**/api/media/config', route => route.fulfill({ json: { providers: {
+        openai: { configured: true, apiKeyTail: 'test' },
+        elevenlabs: { configured: true, apiKeyTail: 'test' },
+      } } }));
+    }
 
     if (entry.flow === 'example-use-prompt') {
       const exampleSummary = {
@@ -270,7 +278,7 @@ for (const entry of automatedUiScenarios().filter(
   });
 }
 
-test('[P0] @critical comment attachment flow attaches preview comments to the next run as structured context', async ({ page }) => {
+test('[P0] @critical comment attachment flow attaches preview comments to the next run as structured context', async ({ page }, testInfo) => {
   test.setTimeout(75_000);
   const entry = automatedUiScenarios().find((scenario) => scenario.id === 'comment-attachment-flow');
   if (!entry?.mockArtifact) {
@@ -296,10 +304,10 @@ test('[P0] @critical comment attachment flow attaches preview comments to the ne
   await waitForLoadingToClear(page);
   await expect(artifactPreview(page)).toBeVisible();
 
-  await runCommentAttachmentFlow(page, entry);
+  await runCommentAttachmentFlow(page, entry, testInfo.outputPath('comment-run-request.json'));
 });
 
-test('[P0] sending preview comments opens the refreshed follow-up artifact', async ({ page }) => {
+test('[P0] sending preview comments opens the refreshed follow-up artifact', async ({ page }, testInfo) => {
   test.setTimeout(75_000);
   const entry = automatedUiScenarios().find((scenario) => scenario.id === 'comment-attachment-flow');
   if (!entry?.mockArtifact) {
@@ -370,8 +378,12 @@ test('[P0] sending preview comments opens the refreshed follow-up artifact', asy
     return url.pathname.startsWith('/api/runs/') && url.pathname.endsWith('/events');
   });
   await page.getByTestId('comment-side-send-claude').click();
+  await expect(page.getByTestId('staged-comment-card').first()).toBeVisible();
+  await expect(page.getByTestId('chat-send')).toBeEnabled();
+  await page.getByTestId('chat-send').click();
   const body = (await runRequest).postDataJSON() as {
     message?: string;
+    currentPrompt?: string;
     commentAttachments?: Array<{
       elementId?: string;
       comment?: string;
@@ -379,15 +391,17 @@ test('[P0] sending preview comments opens the refreshed follow-up artifact', asy
       filePath?: string;
     }>;
   };
-  expect(body.message).toContain('Make the headline more specific.');
+  await writeFile(testInfo.outputPath('comment-run-request.json'), JSON.stringify(body, null, 2));
+  expect(body.message ?? '').not.toContain('Apply selected preview comments');
+  expect(body.currentPrompt).toBe('');
   expect(body.commentAttachments).toEqual([
     expect.objectContaining({
       elementId: 'hero-title',
-      comment: '',
-      commentContext: 'query',
+      comment: 'Make the headline more specific.',
       filePath: 'commentable-artifact.html',
     }),
   ]);
+  expect(body.commentAttachments?.[0]?.commentContext).toBeUndefined();
   await runEvents;
 
   const revisedFileName = await findProjectFileContaining(page, projectId, 'Revised headline');
@@ -1097,6 +1111,7 @@ async function enterPreviewCommentMode(page: Page) {
 async function runCommentAttachmentFlow(
   page: Page,
   entry: UiScenario,
+  requestOutputPath?: string,
 ) {
   await enterPreviewCommentMode(page);
   await clickCommentTargetInPreview(page, '[data-od-id="hero-title"]');
@@ -1126,9 +1141,13 @@ async function runCommentAttachmentFlow(
     isCreateRunRequest,
   );
   await page.getByTestId('comment-side-send-claude').click();
+  await expect(page.getByTestId('staged-comment-card').first()).toBeVisible();
+  await expect(page.getByTestId('chat-send')).toBeEnabled();
+  await page.getByTestId('chat-send').click();
   const request = await runRequest;
   const body = request.postDataJSON() as {
     message?: string;
+    currentPrompt?: string;
     commentAttachments?: Array<{
       elementId?: string;
       comment?: string;
@@ -1137,16 +1156,17 @@ async function runCommentAttachmentFlow(
     }>;
   };
 
+  if (requestOutputPath) await writeFile(requestOutputPath, JSON.stringify(body, null, 2));
   expect(body.message ?? '').not.toContain('Apply selected preview comments');
-  expect(body.message).toContain('Make the headline more specific.');
+  expect(body.currentPrompt).toBe('');
   expect(body.commentAttachments).toEqual([
     expect.objectContaining({
       elementId: 'hero-title',
-      comment: '',
-      commentContext: 'query',
+      comment: 'Make the headline more specific.',
       filePath: 'commentable-artifact.html',
     }),
   ]);
+  expect(body.commentAttachments?.[0]?.commentContext).toBeUndefined();
 }
 
 async function runDeckPaginationNextPrevCorrectnessFlow(page: Page) {

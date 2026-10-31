@@ -921,6 +921,11 @@ describe('App project list across a workspace switch', () => {
       ...WORKSPACE_A_PROJECT,
       workspaceId: 'ws-a',
     };
+    const localContext = {
+      ...workspaceContext('ws-a'),
+      workspaceType: 'personal' as const,
+      providerMode: 'local_only' as const,
+    };
     const health = deferred<boolean>();
     const directory = deferred<Response>();
     let scopeReads = 0;
@@ -933,11 +938,11 @@ describe('App project list across a workspace switch', () => {
         scopeReads += 1;
         return new Response(JSON.stringify({
           scope: {
-            kind: 'team',
+            kind: 'personal',
             projectId: boundProjectA.id,
             workspaceId: 'ws-a',
-            visibility: 'team',
-            context: workspaceContext('ws-a'),
+            visibility: 'personal',
+            context: localContext,
           },
         }), {
           status: 200,

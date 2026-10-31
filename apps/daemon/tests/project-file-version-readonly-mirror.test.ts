@@ -1,41 +1,5 @@
-// A readonly member's version-history GET must not write into the project.
-//
-// Reported as "a member can still open the time machine on a readonly shared
-// project". Investigation (2026-07-27, feature-test hub, real owner/member
-// daemons) found the *entry point* is intentional — 飞书 recvq56vFjQKfT
-// deliberately un-gated it, because browsing history is a read action and the
-// restore button keeps its own `viewerOnly` gate — and the restore ENDPOINT is
-// correctly gated: a real member's headers get 403
-// WORKSPACE_PROJECT_PERMISSION_DENIED, headerless gets 401.
-//
-// What is NOT correct is what the readonly member's GET does on the way to
-// rendering that history:
-//
-//   GET /api/projects/:id/files/*/versions calls
-//   `ensureCurrentProjectFileVersion` whenever the manifest is empty, which
-//   takes a lock and CREATES a version on disk. On a member's mirror of
-//   someone else's shared project that is a write into a project whose own
-//   banner says "你可以查看和评论，但不能通过 Chat 或编辑工具修改 Artifact".
-//
-// It is also the reason the feature cannot deliver what recvq56vFjQKfT asked
-// for. `.file-versions` is in `MEMBER_MIRROR_EXCLUDED_ENTRIES`
-// (collab/vela-cli-resource-adapter.ts), so the owner's real history NEVER
-// syncs to a member. Measured live: the owner had 4 versions; the member's
-// panel showed exactly 1, labelled "Version 1", created by their own GET at
-// the moment they opened the panel. The member was not reading the owner's
-// history — they were reading a synthetic one their own read had just
-// manufactured.
-//
-// Invariant this file pins: the baseline-version bootstrap belongs to callers
-// with write authority over the project. A caller whose workspace identity
-// proves it cannot write still gets to READ the history (no 401/403 — the
-// entry stays open per recvq56vFjQKfT), it just gets the truthful empty
-// history instead of a fabricated entry, and leaves nothing behind on disk.
-//
-// A persisted Workspace binding lets the daemon derive read authority for a
-// headerless browser request. That derived read must still remain read-only:
-// absence of an explicit writer identity must neither fabricate a local
-// baseline version nor write into the mirror.
+// Retired Team mirrors must remain untouched by history reads. Personal owners
+// still receive a real baseline; denied callers must never fabricate one.
 
 import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -101,11 +65,11 @@ describe('version history on a readonly shared mirror', () => {
    * content on disk, no version manifest — `.file-versions` is in
    * `MEMBER_MIRROR_EXCLUDED_ENTRIES`, so a mirror never receives the owner's.
    */
-  async function seedTeamProject(): Promise<string> {
+  async function seedTeamProject(visibility: 'team' | 'personal' = 'team'): Promise<string> {
     const id = `readonly-mirror-${randomUUID()}`;
     const created = await fetch(`${baseUrl}/api/projects`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...memberHeaders(OWNER_MEMBER_ID, 'member') },
+      headers: { 'content-type': 'application/json', ...memberHeaders(OWNER_MEMBER_ID, 'member', visibility) },
       body: JSON.stringify({ id, name: 'Readonly mirror project' }),
     });
     expect(created.status).toBe(200);
@@ -114,8 +78,8 @@ describe('version history on a readonly shared mirror', () => {
     const dataDir = process.env.OD_DATA_DIR;
     if (!dataDir) throw new Error('OD_DATA_DIR is required for daemon route tests');
     const db = openDatabase(projectsRoot(), { dataDir });
-    expect(updateWorkspaceProject(db, WORKSPACE_ID, id, {
-      visibility: 'team',
+    expect(updateWorkspaceProject(db, visibility === 'personal' ? `${WORKSPACE_ID}-personal` : WORKSPACE_ID, id, {
+      visibility,
       syncState: 'synced',
       resourceHubResourceId: `hub-${id}`,
     })).not.toBeNull();
@@ -140,11 +104,11 @@ describe('version history on a readonly shared mirror', () => {
     })).not.toBeNull();
   }
 
-  function memberHeaders(memberId: string, role: 'owner' | 'member') {
+  function memberHeaders(memberId: string, role: 'owner' | 'member', visibility: 'team' | 'personal' = 'team') {
     return {
-      'x-od-workspace-id': WORKSPACE_ID,
+      'x-od-workspace-id': visibility === 'personal' ? `${WORKSPACE_ID}-personal` : WORKSPACE_ID,
       'x-od-workspace-member-id': memberId,
-      'x-od-workspace-type': 'team',
+      'x-od-workspace-type': visibility,
       'x-od-workspace-role': role,
       'x-od-workspace-lifecycle-state': 'active',
       'x-od-workspace-member-status': 'active',
@@ -153,12 +117,12 @@ describe('version history on a readonly shared mirror', () => {
     };
   }
 
-  async function getVersions(projectId: string, headers?: Record<string, string>) {
+  async function getVersions(projectId: string, headers?: Record<string, string>, status = 403) {
     const resp = await fetch(
       `${baseUrl}/api/projects/${projectId}/files/index.html/versions`,
       headers ? { headers } : undefined,
     );
-    expect(resp.status).toBe(200);
+    expect(resp.status).toBe(status);
     return (await resp.json()) as { versions: { id: string; label?: string | null }[] };
   }
 
@@ -168,29 +132,27 @@ describe('version history on a readonly shared mirror', () => {
 
     const body = await getVersions(projectId, memberHeaders(READER_MEMBER_ID, 'member'));
 
-    // The read still succeeds — the entry point stays open (recvq56vFjQKfT).
-    // It just reports the truth: this mirror carries no version history.
-    expect(body.versions).toEqual([]);
+    expect(body).toMatchObject({ error: { code: 'WORKSPACE_UNAVAILABLE' } });
     // And it left nothing behind in a project the member cannot write.
     expect(await versionRootExists(projectId)).toBe(false);
   });
 
   it('still bootstraps a baseline version for the member who owns the project', async () => {
-    const projectId = await seedTeamProject();
+    const projectId = await seedTeamProject('personal');
 
-    const body = await getVersions(projectId, memberHeaders(OWNER_MEMBER_ID, 'member'));
+    const body = await getVersions(projectId, memberHeaders(OWNER_MEMBER_ID, 'member', 'personal'), 200);
 
     expect(body.versions.length).toBe(1);
     expect(await versionRootExists(projectId)).toBe(true);
   });
 
-  it('derives a headerless read for a Workspace-bound project without writing', async () => {
+  it('denies headerless retired Team history without writing', async () => {
     const projectId = await seedTeamProject();
     expect(await versionRootExists(projectId)).toBe(false);
 
     const body = await getVersions(projectId);
 
-    expect(body.versions).toEqual([]);
+    expect(body).toMatchObject({ error: { code: 'WORKSPACE_UNAVAILABLE' } });
     expect(await versionRootExists(projectId)).toBe(false);
   });
 
@@ -206,16 +168,16 @@ describe('version history on a readonly shared mirror', () => {
       },
       body: JSON.stringify({ name: 'Must not land before materialization' }),
     });
-    expect(rename.status).toBe(409);
+    expect(rename.status).toBe(403);
     expect(await rename.json()).toMatchObject({
-      error: { code: 'PROJECT_MATERIALIZATION_PENDING' },
+      error: { code: 'WORKSPACE_UNAVAILABLE' },
     });
 
     const versions = await getVersions(
       projectId,
       memberHeaders(OWNER_MEMBER_ID, 'owner'),
     );
-    expect(versions.versions).toEqual([]);
+    expect(versions).toMatchObject({ error: { code: 'WORKSPACE_UNAVAILABLE' } });
     expect(await versionRootExists(projectId)).toBe(false);
   });
 });

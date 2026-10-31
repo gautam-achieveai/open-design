@@ -45,9 +45,11 @@ describe('embedded browser control contracts', () => {
       'network-list',
       'network-get',
       'network-failures',
+      'evaluate',
+      'devtools',
     ]);
     expect(BROWSER_OPERATION_NAMES.every(isBrowserOperationName)).toBe(true);
-    expect(isBrowserOperationName('evaluate')).toBe(false);
+    expect(isBrowserOperationName('unknown-operation')).toBe(false);
   });
 
   it('keeps requests and results JSON-safe', () => {

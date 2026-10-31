@@ -35,7 +35,7 @@ function dbWithFailingQuery(failOn: RegExp, rows: Array<Record<string, unknown>>
         };
       }
       return {
-        all() { return rows; },
+        all() { return /FROM\s+messages\b/i.test(sql) ? rows : []; },
         get() { return undefined; },
       };
     },

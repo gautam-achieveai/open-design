@@ -1,13 +1,12 @@
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import http from 'node:http';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type {
   DesktopExportArtifactInput,
@@ -23,6 +22,27 @@ import {
 } from '../src/db.js';
 import { startServer } from '../src/server.js';
 import { toolTokenRegistry } from '../src/tool-tokens.js';
+
+// Hold only the selected renderer handoff after validation, then perform its real read.
+const handoffRead = vi.hoisted(() => ({
+  path: '',
+  gate: null as Promise<void> | null,
+  entered: null as (() => void) | null,
+  release: null as (() => void) | null,
+}));
+vi.mock('../src/deck-export.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/deck-export.js')>();
+  return {
+    ...actual,
+    readSlideFiles: async (paths: string[]) => {
+      if (paths.includes(handoffRead.path) && handoffRead.gate) {
+        handoffRead.entered?.();
+        await handoffRead.gate;
+      }
+      return actual.readSlideFiles(paths);
+    },
+  };
+});
 
 const execFileP = promisify(execFile);
 const daemonRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -41,7 +61,6 @@ const rendererStylesheetPath = 'styles/export.css';
 const rendererImagePath = 'assets/hero.png';
 
 describe('od export run-scoped project authority', () => {
-  let authorityServer: http.Server;
   let daemonShutdown: () => Promise<void> | void;
   let daemonUrl = '';
   let lastRendererAssetUrl = '';
@@ -85,13 +104,13 @@ describe('od export run-scoped project authority', () => {
     ensureWorkspaceProject(db, {
       projectId,
       workspaceId,
-      visibility: 'team',
+      visibility: 'personal',
       createdByWorkspaceMemberId: memberId,
     });
     ensureWorkspaceProject(db, {
       projectId: foreignProjectId,
       workspaceId: 'foreign-workspace',
-      visibility: 'team',
+      visibility: 'personal',
       createdByWorkspaceMemberId: 'foreign-member',
     });
     for (const id of [projectId, foreignProjectId, unboundProjectId]) {
@@ -111,49 +130,18 @@ describe('od export run-scoped project authority', () => {
       }
     }
 
-    authorityServer = http.createServer((_req, res) => {
-      res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({
-        items: [
-          {
-            workspaceId: 'unrelated-workspace',
-            workspaceName: 'Unrelated workspace',
-            workspaceType: 'personal',
-            workspaceMemberId: 'unrelated-member',
-            role: 'owner',
-            memberStatus: 'active',
-            lifecycleState: 'active',
-          },
-          {
-            workspaceId,
-            workspaceName: 'Exact project workspace',
-            workspaceType: 'team',
-            workspaceMemberId: memberId,
-            role: 'owner',
-            memberStatus: 'active',
-            lifecycleState: 'active',
-          },
-        ],
-      }));
-    });
-    await new Promise<void>((resolve) => authorityServer.listen(0, '127.0.0.1', resolve));
-    const authorityAddress = authorityServer.address();
-    if (!authorityAddress || typeof authorityAddress === 'string') {
-      throw new Error('authority server did not bind');
-    }
-    vi.stubEnv('OD_WORKSPACE_CONTEXT_SOURCE', 'vela');
-    vi.stubEnv('VELA_CONTROL_KEY', 'test-control-key');
-    vi.stubEnv('VELA_API_URL', `http://127.0.0.1:${authorityAddress.port}`);
     vi.stubEnv('OD_API_TOKEN', daemonApiToken);
 
-    const renderer = (input: DesktopRenderSlidesInput): Promise<DesktopRenderSlidesResult> => {
+    const renderer = async (input: DesktopRenderSlidesInput): Promise<DesktopRenderSlidesResult> => {
       const pending = pendingRenderer;
       if (pending) {
         if (!input.outputDir) return Promise.resolve({ ok: false, error: 'outputDir required' });
         lastRendererAssetUrl = new URL('styles/export.css', input.baseHref).href;
         mkdirSync(input.outputDir, { recursive: true });
         rendererBlockingFile = path.join(input.outputDir, 'settled-render.png');
-        execFileSync('mkfifo', [rendererBlockingFile]);
+        writeFileSync(rendererBlockingFile, png);
+        // Match the route's canonical candidate (Windows expands short temp paths).
+        handoffRead.path = await realpath(rendererBlockingFile);
         pending.signalInvocation();
         return pending.promise;
       }
@@ -188,9 +176,20 @@ describe('od export run-scoped project authority', () => {
     vi.stubEnv('OD_API_TOKEN', 'changed-after-server-start');
   });
 
+  function resetRendererHandoff(): void {
+    pendingRenderer = null;
+    handoffRead.release?.();
+    handoffRead.gate = null;
+    handoffRead.entered = null;
+    handoffRead.release = null;
+    handoffRead.path = '';
+  }
+
+  // Vitest timeouts do not unwind a still-pending promise's finally block.
+  afterEach(resetRendererHandoff);
+
   afterAll(async () => {
     await daemonShutdown?.();
-    await new Promise<void>((resolve) => authorityServer.close(() => resolve()));
     toolTokenRegistry.clear();
     closeDatabase();
     vi.unstubAllEnvs();
@@ -218,7 +217,7 @@ describe('od export run-scoped project authority', () => {
   });
 
   it('exports the exact token-bound project without explicit workspace flags', async () => {
-    // Given: a run-scoped token for a project bound to the second directory workspace.
+    // Given: a run-scoped token for a Personal project bound to its persisted workspace and creator.
     const token = toolTokenRegistry.mint({
       projectId,
       runId: `run_${randomUUID()}`,
@@ -317,7 +316,10 @@ describe('od export run-scoped project authority', () => {
     lastRendererAssetUrl = '';
     rendererBlockingFile = '';
 
-    // When: the route observes renderer settlement, then blocks reading the FIFO handoff.
+    handoffRead.gate = new Promise<void>((resolve) => { handoffRead.release = resolve; });
+    const readEntered = new Promise<void>((resolve) => { handoffRead.entered = resolve; });
+
+    // When: the route observes renderer settlement, then blocks reading the real file handoff.
     const responsePromise = fetch(`${daemonUrl}/api/projects/${projectId}/export/image`, {
       method: 'POST',
       headers: {
@@ -326,25 +328,24 @@ describe('od export run-scoped project authority', () => {
       },
       body: JSON.stringify({ fileName: 'index.html' }),
     });
-    await invoked;
-    const settlementObserved = rendererPromise.then(() => undefined);
-    settleRenderer({
-      ok: true,
-      slideFiles: [rendererBlockingFile],
-      width: 1,
-      height: 1,
-      mode: 'page',
-    });
-    await settlementObserved;
-
     try {
+      await invoked;
+      const settlementObserved = rendererPromise.then(() => undefined);
+      settleRenderer({
+        ok: true,
+        slideFiles: [rendererBlockingFile],
+        width: 1,
+        height: 1,
+        mode: 'page',
+      });
+      await settlementObserved;
+      await readEntered;
       // Then: the renderer-only URL is already unusable before the route can finish its response.
       expect(lastRendererAssetUrl).not.toBe('');
       const revokedAssetResponse = await fetch(lastRendererAssetUrl);
       expect(revokedAssetResponse.status).toBe(404);
     } finally {
-      pendingRenderer = null;
-      await writeFile(rendererBlockingFile, png);
+      resetRendererHandoff();
     }
     const response = await responsePromise;
     const body = Buffer.from(await response.arrayBuffer());

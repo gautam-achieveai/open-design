@@ -76,9 +76,8 @@ describe('consumeInviteContinuation', () => {
         configuredEnv: { OPEN_DESIGN_AMR_PROFILE: 'feature-test' },
       });
 
-      expect(out.ok && out.context?.workspaceSettingsUrl).toBe(
-        'https://feature.example/settings?workspaceId=ws-team-1&source=open_design',
-      );
+      expect(out.ok).toBe(true);
+      expect(out.ok && out.context?.workspaceSettingsUrl).toBeUndefined();
     } finally {
       if (previousOrigins === undefined) delete process.env.OD_VELA_WEB_URLS;
       else process.env.OD_VELA_WEB_URLS = previousOrigins;

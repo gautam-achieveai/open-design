@@ -6,7 +6,6 @@ import Database from 'better-sqlite3';
 
 import {
   runVelaCommand,
-  velaCommandStdout,
 } from '../../src/integrations/vela-command.js';
 import {
   createAmrTerminalReportDeliveryService,
@@ -23,7 +22,7 @@ afterEach(() => {
 });
 
 describe('canonical Vela terminal command integration', () => {
-  it('uses the resolved fake binary, exact args/source, and preserves a failure envelope', async () => {
+  it('does not launch a saved Vela binary for terminal reporting', async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-vela-terminal-command-'));
     const logPath = path.join(tempDir, 'terminal.jsonl');
     const args = [
@@ -43,31 +42,11 @@ describe('canonical Vela terminal command integration', () => {
       maxBuffer: 64 * 1024,
     };
 
-    await expect(runVelaCommand(args, common)).resolves.toBe(
-      '{"runId":"integration-run","outcome":"failed","terminalAt":"2026-08-05T01:02:03.456Z","recorded":true}\n',
-    );
-    const successLog = JSON.parse(fs.readFileSync(logPath, 'utf8').trim()) as {
-      args: string[];
-      invocationSource: string;
-    };
-    expect(successLog).toEqual({ args, invocationSource: 'open-design' });
-
-    let failure: unknown;
-    try {
-      await runVelaCommand(args, {
-        ...common,
-        env: { ...common.env, FAKE_VELA_TERMINAL_MODE: 'unsupported' },
-      });
-    } catch (error) {
-      failure = error;
-    }
-    expect(JSON.parse(velaCommandStdout(failure))).toEqual({
-      error: 'unsupported',
-      retryable: false,
-    });
+    await expect(runVelaCommand(args, common)).rejects.toThrow('AMR runtime definition is missing');
+    expect(fs.existsSync(logPath)).toBe(false);
   });
 
-  it('uses the settings-backed Vela binary from the resolved daemon data root', async () => {
+  it('keeps undeliverable legacy reports pending without launching a saved Vela binary', async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-vela-terminal-settings-'));
     const logPath = path.join(tempDir, 'terminal.jsonl');
     fs.writeFileSync(
@@ -98,18 +77,8 @@ describe('canonical Vela terminal command integration', () => {
 
       await service.processDue();
 
-      expect(store.diagnostics()).toMatchObject({ pending: 0, delivered: 1 });
-      const log = JSON.parse(fs.readFileSync(logPath, 'utf8').trim()) as {
-        args: string[];
-        invocationSource: string;
-      };
-      expect(log).toEqual({
-        args: [
-          'run', 'terminal', '--run-id', 'settings-run', '--outcome', 'failed',
-          '--terminal-at', '2026-08-05T02:03:04.567Z', '--json',
-        ],
-        invocationSource: 'open-design',
-      });
+      expect(store.diagnostics()).toMatchObject({ pending: 1, delivered: 0 });
+      expect(fs.existsSync(logPath)).toBe(false);
     } finally {
       db.close();
     }

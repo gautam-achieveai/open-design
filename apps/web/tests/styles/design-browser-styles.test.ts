@@ -103,13 +103,16 @@ describe('design browser panel styles', () => {
     // any part of the panel — viewport switcher, browser-use menu, suggestions,
     // comment layer, etc. — turns this guard red.
     const used = new Set<string>();
-    for (const token of component.matchAll(/\b(?:design-browser|db-[a-z][a-z0-9-]*)\b/g)) {
+    // Form IDs link labels to controls; they do not imply a CSS class. Keep
+    // other occurrences so an identically named real class still stays covered.
+    const classSource = component.replace(/\b(?:id|htmlFor)="[^"]*"/g, '');
+    for (const token of classSource.matchAll(/\b(?:design-browser|db-[a-z][a-z0-9-]*)\b/g)) {
       const cls = token[0];
       // Dynamic class built from a template literal (e.g. `db-viewport-${mode}`):
       // the word boundary truncates the stem just before the interpolated `-`,
       // so the very next source char is `-`. Such classes can't be matched
       // statically — skip the stem (its static siblings are still asserted).
-      if (cls.endsWith('-') || component[token.index + cls.length] === '-') continue;
+      if (cls.endsWith('-') || classSource[token.index + cls.length] === '-') continue;
       if (STYLELESS_HOOKS.has(cls)) continue;
       used.add(cls);
     }

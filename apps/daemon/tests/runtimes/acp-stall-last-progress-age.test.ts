@@ -105,7 +105,7 @@ describe('ACP stall progress age', () => {
 
   it('reports the real silence in last_progress_age_ms when the ACP stage watchdog ends a stalled run', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-acp-stall-age-bin-'));
-    const fakeVela = await writeSilentlyStallingVela(binDir, 'vela-silent-stall');
+    const fakeVela = await writeSilentlyStallingAcp(binDir, 'vela-silent-stall');
 
     process.env.POSTHOG_KEY = 'phc_test_acp_stall';
     delete process.env.POSTHOG_HOST;
@@ -113,21 +113,19 @@ describe('ACP stall progress age', () => {
     delete process.env.LANGFUSE_SECRET_KEY;
     delete process.env.LANGFUSE_BASE_URL;
     delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-    process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-    process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
     process.env.OD_ACP_STAGE_TIMEOUT_MS = String(ACP_STAGE_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS = String(OUTER_INACTIVITY_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '0';
 
     started = await startServer({ port: 0, returnServer: true }) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: fakeVela } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: fakeVela } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
 
-    const run = await createAndWaitForAmrRun(started.url);
+    const run = await createAndWaitForAcpRun(started.url);
     expect(run.status).toBe('failed');
 
     const finished = await waitForRunFinished(run.id);
@@ -165,7 +163,7 @@ describe('ACP stall progress age', () => {
   // agent producing bytes, so they must not count as progress either.
   it('reports the real silence when the stalled turn had an open tool the failure path flushes', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-acp-stall-tool-bin-'));
-    const fakeVela = await writeSilentlyStallingVela(binDir, 'vela-silent-stall-open-tool', {
+    const fakeVela = await writeSilentlyStallingAcp(binDir, 'vela-silent-stall-open-tool', {
       openToolBeforeStall: true,
     });
 
@@ -175,21 +173,19 @@ describe('ACP stall progress age', () => {
     delete process.env.LANGFUSE_SECRET_KEY;
     delete process.env.LANGFUSE_BASE_URL;
     delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-    process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-    process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
     process.env.OD_ACP_STAGE_TIMEOUT_MS = String(ACP_STAGE_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS = String(OUTER_INACTIVITY_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '0';
 
     started = await startServer({ port: 0, returnServer: true }) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: fakeVela } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: fakeVela } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
 
-    const run = await createAndWaitForAmrRun(started.url);
+    const run = await createAndWaitForAcpRun(started.url);
     expect(run.status).toBe('failed');
 
     const finished = await waitForRunFinished(run.id);
@@ -236,7 +232,7 @@ describe('ACP stall progress age', () => {
   // daemon has given up, nothing the child says counts as progress.
   it('reports the real silence when the agent logs to stderr while shutting down', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-acp-stall-teardown-bin-'));
-    const fakeVela = await writeSilentlyStallingVela(binDir, 'vela-silent-stall-teardown-log', {
+    const fakeVela = await writeSilentlyStallingAcp(binDir, 'vela-silent-stall-teardown-log', {
       stderrOnSigterm: true,
     });
 
@@ -246,21 +242,19 @@ describe('ACP stall progress age', () => {
     delete process.env.LANGFUSE_SECRET_KEY;
     delete process.env.LANGFUSE_BASE_URL;
     delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-    process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-    process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
     process.env.OD_ACP_STAGE_TIMEOUT_MS = String(ACP_STAGE_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS = String(OUTER_INACTIVITY_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '0';
 
     started = await startServer({ port: 0, returnServer: true }) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: fakeVela } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: fakeVela } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
 
-    const run = await createAndWaitForAmrRun(started.url);
+    const run = await createAndWaitForAcpRun(started.url);
     expect(run.status).toBe('failed');
 
     const finished = await waitForRunFinished(run.id);
@@ -297,7 +291,7 @@ describe('ACP stall progress age', () => {
   // and the teardown escalated once it lands.
   it('keeps acp_stage_timeout attribution when the child outlives the first SIGTERM', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-acp-stall-linger-bin-'));
-    const fakeVela = await writeSilentlyStallingVela(binDir, 'vela-silent-stall-linger', {
+    const fakeVela = await writeSilentlyStallingAcp(binDir, 'vela-silent-stall-linger', {
       ignoreSigterm: true,
     });
 
@@ -307,8 +301,6 @@ describe('ACP stall progress age', () => {
     delete process.env.LANGFUSE_SECRET_KEY;
     delete process.env.LANGFUSE_BASE_URL;
     delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-    process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-    process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
     process.env.OD_ACP_STAGE_TIMEOUT_MS = String(ACP_STAGE_TIMEOUT_MS);
     // Deliberately just above the stage timeout: the ACP watchdog wins the race,
     // and the outer watchdog is still armed and would fire a beat later.
@@ -318,13 +310,13 @@ describe('ACP stall progress age', () => {
 
     started = await startServer({ port: 0, returnServer: true }) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: fakeVela } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: fakeVela } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
 
-    const run = await createAndWaitForAmrRun(started.url);
+    const run = await createAndWaitForAcpRun(started.url);
     expect(run.status).toBe('failed');
 
     const finished = await waitForRunFinished(run.id);
@@ -349,7 +341,7 @@ describe('ACP stall progress age', () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-acp-terminal-silence-bin-'));
     const activityFile = path.join(binDir, 'descendant-activity.log');
     const descendantPidFile = path.join(binDir, 'descendant.pid');
-    const fakeVela = await writeSilentlyStallingVela(binDir, 'vela-terminal-silence', {
+    const fakeVela = await writeSilentlyStallingAcp(binDir, 'vela-terminal-silence', {
       descendantActivityFile: activityFile,
       descendantPidFile,
     });
@@ -360,8 +352,6 @@ describe('ACP stall progress age', () => {
     delete process.env.LANGFUSE_SECRET_KEY;
     delete process.env.LANGFUSE_BASE_URL;
     delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-    process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-    process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
     process.env.OD_ACP_STAGE_TIMEOUT_MS = String(ACP_STAGE_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS = String(OUTER_INACTIVITY_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '0';
@@ -369,13 +359,13 @@ describe('ACP stall progress age', () => {
 
     started = await startServer({ port: 0, returnServer: true }) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: fakeVela } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: fakeVela } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
 
-    const run = await createAndWaitForAmrRun(started.url);
+    const run = await createAndWaitForAcpRun(started.url);
     expect(run.status).toBe('failed');
     await waitForRunFinished(run.id);
 
@@ -406,7 +396,7 @@ describe('ACP stall progress age', () => {
   // this attempt's clocks.
   it('keeps acp_stage_timeout attribution when the child keeps logging and refuses to die', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-acp-stall-chatty-bin-'));
-    const fakeVela = await writeSilentlyStallingVela(binDir, 'vela-silent-stall-chatty-linger', {
+    const fakeVela = await writeSilentlyStallingAcp(binDir, 'vela-silent-stall-chatty-linger', {
       ignoreSigterm: true,
       stderrOnSigterm: true,
     });
@@ -417,8 +407,6 @@ describe('ACP stall progress age', () => {
     delete process.env.LANGFUSE_SECRET_KEY;
     delete process.env.LANGFUSE_BASE_URL;
     delete process.env.OPEN_DESIGN_TELEMETRY_RELAY_URL;
-    process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
-    process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
     process.env.OD_ACP_STAGE_TIMEOUT_MS = String(ACP_STAGE_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_INACTIVITY_TIMEOUT_MS = String(LINGER_INACTIVITY_TIMEOUT_MS);
     process.env.OD_CHAT_RUN_FIRST_OUTPUT_TIMEOUT_MS = '0';
@@ -426,13 +414,13 @@ describe('ACP stall progress age', () => {
 
     started = await startServer({ port: 0, returnServer: true }) as StartedServer;
     await putConfig(started.url, {
-      agentId: 'amr',
-      agentCliEnv: { amr: { VELA_BIN: fakeVela } },
+      agentId: 'hermes',
+      agentCliEnv: { hermes: { HERMES_BIN: fakeVela } },
       telemetry: { metrics: true, content: false, artifactManifest: false },
       privacyDecisionAt: Date.now(),
     });
 
-    const run = await createAndWaitForAmrRun(started.url);
+    const run = await createAndWaitForAcpRun(started.url);
     expect(run.status).toBe('failed');
 
     const finished = await waitForRunFinished(run.id);
@@ -519,7 +507,7 @@ async function waitForRunFinished(runId: string): Promise<Record<string, any>> {
   throw new Error(`no run_finished analytics event for run ${runId}`);
 }
 
-async function writeSilentlyStallingVela(
+async function writeSilentlyStallingAcp(
   dir: string,
   name: string,
   options: {
@@ -530,16 +518,23 @@ async function writeSilentlyStallingVela(
     descendantPidFile?: string;
   } = {},
 ): Promise<string> {
-  const bin = path.join(dir, name);
-  await writeFile(bin, `#!/bin/sh
-if [ "$1" = "agent" ] && [ "$2" = "run" ]; then
+  const bin = path.join(dir, process.platform === 'win32' ? name + '.cmd' : name);
+  const script = `#!/bin/sh
+if [ "$1" = "acp" ]; then
   export FAKE_VELA_STALL_AFTER_PROMPT=1
   export FAKE_VELA_TEXT_BEFORE_STALL=1
   export FAKE_VELA_STALL_HEARTBEAT_MS=0
   export FAKE_VELA_REQUIRE_SET_MODEL=0
 ${options.openToolBeforeStall ? '  export FAKE_VELA_OPEN_TOOL_BEFORE_STALL=1\n' : ''}${options.stderrOnSigterm ? '  export FAKE_VELA_STDERR_ON_SIGTERM=1\n' : ''}${options.ignoreSigterm ? '  export FAKE_VELA_IGNORE_SIGTERM=1\n' : ''}${options.descendantActivityFile ? `  export FAKE_VELA_DESCENDANT_ACTIVITY_FILE=${JSON.stringify(options.descendantActivityFile)}\n` : ''}${options.descendantPidFile ? `  export FAKE_VELA_DESCENDANT_PID_FILE=${JSON.stringify(options.descendantPidFile)}\n` : ''}fi
+if [ "$1" = "acp" ]; then set -- agent run; fi
 exec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_VELA)} "$@"
-`, 'utf8');
+`;
+  const windowsEnv = script.split(/\r?\n/).filter(line => line.trim().startsWith('export '))
+    .map(line => 'set "' + line.trim().slice(7).replace(/="(.*)"$/, '=$1') + '"');
+  const command = '"' + process.execPath + '" "' + FAKE_VELA + '"';
+  await writeFile(bin, process.platform === 'win32'
+    ? ['@echo off', ...windowsEnv, 'if "%~1"=="acp" (' , command + ' agent run', ') else (', command + ' %*', ')'].join('\r\n')
+    : script, 'utf8');
   await chmod(bin, 0o755);
   return bin;
 }
@@ -570,7 +565,7 @@ async function putConfig(url: string, patch: Record<string, unknown>): Promise<v
   expect(response.status).toBe(200);
 }
 
-async function createAndWaitForAmrRun(url: string): Promise<RunStatus> {
+async function createAndWaitForAcpRun(url: string): Promise<RunStatus> {
   const projectId = `acp_stall_age_${randomUUID()}`;
   const projectResponse = await fetch(`${url}/api/projects`, {
     method: 'POST',
@@ -585,21 +580,8 @@ async function createAndWaitForAmrRun(url: string): Promise<RunStatus> {
   expect(projectResponse.status).toBe(200);
   const projectBody = await projectResponse.json() as { conversationId: string };
 
-  // AMR Cloud runs are workspace-scoped; adopt the project into a personal
-  // workspace first so the run carries an explicit scope (same shape as
-  // tests/run-retry-runtime.test.ts).
-  const personalWorkspaceId = `acp_stall_personal_${projectId}`;
-  const workspaceHeaders: Record<string, string> = {
-    'x-od-workspace-id': personalWorkspaceId,
-    'x-od-workspace-type': 'personal',
-    'x-od-workspace-member-id': 'acp-stall-personal-owner',
-    'x-od-workspace-role': 'owner',
-  };
-  const adoptionResponse = await fetch(
-    `${url}/api/workspaces/${encodeURIComponent(personalWorkspaceId)}/projects?view=all`,
-    { headers: workspaceHeaders },
-  );
-  expect(adoptionResponse.status).toBe(200);
+  // A local ACP runtime exercises the same watchdog without Cloud adoption.
+  const workspaceHeaders: Record<string, string> = {};
 
   const prompt = 'refine this design system from the uploaded screenshots';
   const runResponse = await fetch(`${url}/api/runs`, {
@@ -616,7 +598,7 @@ async function createAndWaitForAmrRun(url: string): Promise<RunStatus> {
       conversationId: projectBody.conversationId,
       assistantMessageId: `assistant_acp_stall_${randomUUID()}`,
       clientRequestId: `client_acp_stall_${randomUUID()}`,
-      agentId: 'amr',
+      agentId: 'hermes',
       message: prompt,
       currentPrompt: prompt,
     }),

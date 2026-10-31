@@ -38,7 +38,7 @@ beforeAll(async () => {
     if (visibility) {
       ensureWorkspaceProject(db, {
         projectId,
-        workspaceId: 'snapshot-workspace',
+        workspaceId: visibility === 'team' ? 'snapshot-team-workspace' : 'snapshot-workspace',
         visibility,
         resourceState: 'active',
         createdByWorkspaceMemberId: 'snapshot-owner',
@@ -99,7 +99,7 @@ describe('applied plugin snapshot workspace isolation', () => {
     expect(await canon.text()).not.toContain('personal-private-input');
   });
 
-  it('allows the Personal creator and every active Team member on a Team snapshot', async () => {
+  it('allows the Personal creator while denying retired Team snapshots', async () => {
     const personal = await fetch(
       `${baseUrl}/api/applied-plugins/${snapshotId('snapshot-personal-project')}`,
       { headers: headers('snapshot-owner') },
@@ -109,7 +109,7 @@ describe('applied plugin snapshot workspace isolation', () => {
       { headers: headers('snapshot-member') },
     );
     expect(personal.status).toBe(200);
-    expect(team.status).toBe(200);
+    expect(team.status).toBe(403);
   });
 
   it('derives project authority when a bound snapshot read has no Workspace headers', async () => {
@@ -121,12 +121,12 @@ describe('applied plugin snapshot workspace isolation', () => {
     );
 
     expect(personal.status).toBe(200);
-    expect(team.status).toBe(200);
+    expect(team.status).toBe(403);
     expect(await personal.text()).toContain('personal-private-input');
-    expect(await team.text()).toContain('team-private-input');
+    expect(await team.text()).not.toContain('team-private-input');
   });
 
-  it('filters the global list by exact Workspace/member while retaining Team snapshots', async () => {
+  it('filters the local global list by exact Personal Workspace/member', async () => {
     const owner = await fetch(`${baseUrl}/api/applied-plugins`, {
       headers: headers('snapshot-owner'),
     });
@@ -135,9 +135,10 @@ describe('applied plugin snapshot workspace isolation', () => {
     });
     const ownerBody = await owner.json() as { snapshots: Array<{ inputs: Record<string, string> }> };
     const memberBody = await member.json() as { snapshots: Array<{ inputs: Record<string, string> }> };
-    expect(ownerBody.snapshots).toHaveLength(2);
-    expect(memberBody.snapshots).toHaveLength(1);
-    expect(memberBody.snapshots[0]?.inputs.secretPrompt).toBe('team-private-input');
+    expect(ownerBody.snapshots).toHaveLength(1);
+    expect(memberBody.snapshots).toHaveLength(0);
+    expect(ownerBody.snapshots[0]?.inputs.secretPrompt).toBe('personal-private-input');
+    expect(JSON.stringify(ownerBody)).not.toContain('team-private-input');
   });
 
   it('keeps the headerless compatibility list limited to provably unbound projects', async () => {
@@ -161,8 +162,8 @@ describe('applied plugin snapshot workspace isolation', () => {
     });
     expect(owner.status).toBe(200);
     expect(member.status).toBe(200);
-    await expect(owner.json()).resolves.toMatchObject({ snapshots: { total: 2 } });
-    await expect(member.json()).resolves.toMatchObject({ snapshots: { total: 1 } });
+    await expect(owner.json()).resolves.toMatchObject({ snapshots: { total: 1 } });
+    await expect(member.json()).resolves.toMatchObject({ snapshots: { total: 0 } });
   });
 
   it('does not count Workspace-bound snapshots in headerless statistics', async () => {

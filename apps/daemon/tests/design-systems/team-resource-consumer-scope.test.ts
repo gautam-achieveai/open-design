@@ -76,7 +76,7 @@ async function writeDesignSystem(dir: string, workspaceId: string, content: stri
 }
 
 describe('Team resource consumers use explicit Workspace scope', () => {
-  it('reads A and B copies of identical skill/design-system ids without changing legacy Personal reads', async () => {
+  it('omits retired Team catalog entries without changing legacy Personal skill reads', async () => {
     const fixture = await createFixture();
     const personalSkillDir = path.join(fixture.userSkills, 'same-skill');
     const personalDesignSystemDir = path.join(fixture.userDesignSystems, 'same-design-system');
@@ -142,48 +142,21 @@ describe('Team resource consumers use explicit Workspace scope', () => {
       fixture.services.listAllSkills({ workspaceId: 'workspace-b' }),
       fixture.services.listAllSkills(),
     ]);
-    expect(skills.findSkillById(skillsA, 'same-skill')?.body).toContain('team-skill-a');
-    expect(skills.findSkillById(skillsB, 'same-skill')?.body).toContain('team-skill-b');
+    expect(JSON.stringify(skillsA)).not.toContain('team-skill-a');
+    expect(JSON.stringify(skillsB)).not.toContain('team-skill-b');
     expect(skills.findSkillById(legacySkills, 'same-skill')?.body).toContain('personal-skill');
-    await expect(
-      fixture.services.validateProjectSkillId('same-skill', {
-        workspaceId: 'workspace-a',
-      }),
-    ).resolves.toEqual({ ok: true, id: 'same-skill' });
-    await expect(
-      fixture.services.validateProjectSkillId('same-skill', {
-        workspaceId: 'workspace-b',
-      }),
-    ).resolves.toEqual({ ok: true, id: 'same-skill' });
+    for (const workspaceId of ['workspace-a', 'workspace-b']) {
+      await expect(fixture.services.listAllDesignSystems({ workspaceId, exactTeam: true })).resolves.toEqual([]);
+      await expect(fixture.services.readAvailableDesignSystem('user:same-design-system', {
+        workspaceId, exactTeam: true,
+      })).resolves.toBeNull();
+    }
+    await expect(readFile(path.join(personalSkillDir, 'SKILL.md'), 'utf8')).resolves.toContain('personal-skill');
+    await expect(readFile(path.join(personalDesignSystemDir, 'DESIGN.md'), 'utf8')).resolves.toContain('personal-design-system');
 
-    await expect(
-      fixture.services.readAvailableDesignSystem('user:same-design-system', {
-        workspaceId: 'workspace-a',
-      }),
-    ).resolves.toContain('team-design-system-a');
-    await expect(
-      fixture.services.readAvailableDesignSystem('user:same-design-system', {
-        workspaceId: 'workspace-b',
-      }),
-    ).resolves.toContain('team-design-system-b');
-    await expect(
-      fixture.services.readAvailableDesignSystem('user:same-design-system'),
-    ).resolves.toContain('personal-design-system');
-    await expect(
-      fixture.services.validateProjectDesignSystemId(
-        'user:same-design-system',
-        { workspaceId: 'workspace-a' },
-      ),
-    ).resolves.toEqual({ ok: true, id: 'user:same-design-system' });
-    await expect(
-      fixture.services.validateProjectDesignSystemId(
-        'user:same-design-system',
-        { workspaceId: 'workspace-b' },
-      ),
-    ).resolves.toEqual({ ok: true, id: 'user:same-design-system' });
   });
 
-  it('drops a Team design system after local reconciliation tombstones its binding', async () => {
+  it('keeps retired Team systems hidden before and after a local tombstone', async () => {
     const fixture = await createFixture();
     const workspaceId = 'workspace-a';
     const designSystemId = 'user:reconciled-away';
@@ -212,9 +185,7 @@ describe('Team resource consumers use explicit Workspace scope', () => {
     await expect(fixture.services.listAllDesignSystems({
       workspaceId,
       exactTeam: true,
-    })).resolves.toEqual([
-      expect.objectContaining({ id: designSystemId, teamSynced: true }),
-    ]);
+    })).resolves.toEqual([]);
 
     updateWorkspaceResource(fixture.db, 'design_system', workspaceId, bindingId, {
       resourceState: 'deleted',

@@ -43,7 +43,8 @@ vi.mock('../../src/collab/workspace-events', () => ({
   }),
 }));
 
-vi.mock('../../src/router', () => ({
+vi.mock('../../src/router', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/router')>(),
   navigate: vi.fn(),
   useRoute: () => ({ kind: 'home' as const, view: 'design-systems' as const }),
 }));

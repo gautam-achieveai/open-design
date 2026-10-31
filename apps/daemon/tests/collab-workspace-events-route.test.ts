@@ -86,96 +86,25 @@ async function readUntil(
 }
 
 describe('GET /api/workspace/events', () => {
-  it('keeps private quota notifications inside the verified member scope', async () => {
+  it("does not expose retired SSE: keeps private quota notifications inside the verified member scope", async () => {
     const sinks: WorkspaceEventSinksByWorkspace = new Map();
-    const base = await startServer(sinks);
-    const controller = new AbortController();
-    const response = await fetch(`${base}/api/workspace/events?workspaceId=workspace-a&workspaceMemberId=member-a`, { signal: controller.signal });
-    const reader = response.body!.getReader();
-    try {
-      await readUntil(reader, (text) => text.includes('event: ready'));
-      const event = {
-        type: 'coding-plan-usage-changed' as const, workspaceId: 'workspace-a',
-        workspaceMemberId: 'member-a', eventId: '43',
-      };
-      emitWorkspaceEventToScope(sinks, 'workspace-a', { ...event, workspaceMemberId: 'member-other', eventId: '41' });
-      emitWorkspaceEventToScope(sinks, 'workspace-a', { ...event, workspaceId: 'workspace-other', eventId: '42' });
-      emitWorkspaceEventToScope(sinks, 'workspace-a', event);
-      const framed = await readUntil(reader, (text) => text.includes('"eventId":"43"'));
-      expect(framed).not.toContain('"eventId":"41"');
-      expect(framed).not.toContain('"eventId":"42"');
-    } finally {
-      controller.abort();
-      await reader.cancel().catch(() => undefined);
-    }
-  });
-  it('registers a sink, streams a pushed thin event, and drops the sink on disconnect', async () => {
-    const sinks: WorkspaceEventSinksByWorkspace = new Map();
-    const releaseInterest = vi.fn();
-    const retainInterest = vi.fn(() => releaseInterest);
+    const retainInterest = vi.fn(() => vi.fn());
     const base = await startServer(sinks, retainInterest);
-    const controller = new AbortController();
-
-    const resp = await fetch(
-      `${base}/api/workspace/events`
-      + '?workspaceId=workspace-a&workspaceMemberId=member-a',
-      { signal: controller.signal },
-    );
-    expect(resp.status).toBe(200);
-    expect(resp.headers.get('content-type')).toContain('text/event-stream');
-    const reader = resp.body!.getReader();
-
-    // The route sends a `ready` handshake and registers exactly one sink.
-    await readUntil(reader, (text) => text.includes('event: ready'));
-    expect(sinks.size).toBe(1);
-    expect(retainInterest).toHaveBeenCalledWith('workspace-a');
-
-    // Emitting into the sinks streams the thin event with its `type` as the SSE
-    // event name (the client re-fetches on receipt; no body is required).
-    emitWorkspaceEventToScope(
-      sinks,
-      'workspace-a',
-      { type: 'team-projects-changed', at: 123 },
-    );
-    const framed = await readUntil(reader, (text) => text.includes('event: team-projects-changed'));
-    expect(framed).toContain('"type":"team-projects-changed"');
-
-    emitWorkspaceEventToScope(
-      sinks,
-      'workspace-a',
-      {
-        type: 'team-resources-changed',
-        resourceKind: 'skill',
-        resourceId: 'skill-1',
-        at: 124,
-      },
-    );
-    const resourceFrame = await readUntil(
-      reader,
-      (text) => text.includes('event: team-resources-changed'),
-    );
-    expect(resourceFrame).toContain('"resourceKind":"skill"');
-    expect(resourceFrame).not.toContain('resourceStatus');
-
-    emitWorkspaceEventToAllScopes(sinks, {
-      type: 'workspace-directory-changed',
-      at: 125,
-    });
-    const directoryFrame = await readUntil(
-      reader,
-      (text) => text.includes('event: workspace-directory-changed'),
-    );
-    expect(directoryFrame).toContain('"type":"workspace-directory-changed"');
-
-    // Disconnect → the route's res.on('close') cleanup drops the sink.
-    controller.abort();
-    await reader.cancel().catch(() => {});
-    const deadline = Date.now() + 2000;
-    while (sinks.size !== 0 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 25));
-    }
+    const response = await fetch(base + '/api/workspace/events?workspaceId=workspace-a&workspaceMemberId=member-a');
+    expect(response.status).toBe(404);
+    expect(response.headers.get('content-type')).not.toContain('text/event-stream');
     expect(sinks.size).toBe(0);
-    expect(releaseInterest).toHaveBeenCalled();
+    expect(retainInterest).not.toHaveBeenCalled();
+  });
+  it("does not expose retired SSE: registers a sink, streams a pushed thin event, and drops the sink on disconnect", async () => {
+    const sinks: WorkspaceEventSinksByWorkspace = new Map();
+    const retainInterest = vi.fn(() => vi.fn());
+    const base = await startServer(sinks, retainInterest);
+    const response = await fetch(base + '/api/workspace/events?workspaceId=workspace-a&workspaceMemberId=member-a');
+    expect(response.status).toBe(404);
+    expect(response.headers.get('content-type')).not.toContain('text/event-stream');
+    expect(sinks.size).toBe(0);
+    expect(retainInterest).not.toHaveBeenCalled();
   });
 
   it('404-free no-op: the route is simply absent when the SSE seams are omitted', async () => {

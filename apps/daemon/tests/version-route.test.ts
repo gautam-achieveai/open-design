@@ -94,18 +94,11 @@ describe('/api/version', () => {
     expect(health).toEqual({
       ok: true,
       version: version.version?.version,
-      amrTerminalReporter: {
-        status: 'active',
-        pending: 0,
-        delivered: 0,
-        unsupported: 0,
-        terminalFailed: 0,
-        oldestPendingAgeMs: null,
-      },
+
     });
   });
 
-  it('exposes uncached terminal-report aggregate health without per-Run details', async () => {
+  it('keeps retired terminal reports out of health while preserving historical rows', async () => {
     const dataDir = process.env.OD_DATA_DIR;
     if (!dataDir) throw new Error('OD_DATA_DIR is required by the daemon test harness');
     const db = openDatabase(process.cwd(), { dataDir });
@@ -137,32 +130,18 @@ describe('/api/version', () => {
 
       expect(res.status).toBe(200);
       expect(res.headers.get('cache-control')).toBe('no-store');
-      expect(health.amrTerminalReporter).toEqual({
-        status: 'active',
-        pending: 1,
-        delivered: 1,
-        unsupported: 1,
-        terminalFailed: 1,
-        oldestPendingAgeMs: expect.any(Number),
-      });
-      expect(health.amrTerminalReporter).not.toHaveProperty('reports');
-      expect(Number(health.amrTerminalReporter?.oldestPendingAgeMs)).toBeGreaterThanOrEqual(10_000);
+      expect(health.amrTerminalReporter).toBeUndefined();
+      expect(JSON.stringify(health)).not.toContain('health-pending-run');
+      expect(db.prepare('SELECT run_id FROM amr_terminal_report_outbox WHERE run_id IN (?, ?, ?, ?) ORDER BY run_id').all(...runIds))
+        .toEqual([...runIds].sort().map(run_id => ({ run_id })));
     } finally {
       db.prepare(`DELETE FROM amr_terminal_report_outbox WHERE run_id IN (?, ?, ?, ?)`).run(...runIds);
     }
   });
 
-  it('keeps detailed terminal-report counts on local-authorized diagnostics', async () => {
+  it('does not expose the retired AMR terminal-report diagnostics route', async () => {
     const allowed = await fetch(`${baseUrl}/api/diagnostics/amr-terminal-reports`);
-    expect(allowed.status).toBe(200);
-    await expect(allowed.json()).resolves.toEqual({
-      pending: 0,
-      delivered: 0,
-      unsupported: 0,
-      terminalFailed: 0,
-      oldestPendingAgeMs: null,
-      reports: [],
-    });
+    expect(allowed.status).toBe(404);
 
     const denied = await fetch(`${baseUrl}/api/diagnostics/amr-terminal-reports`, {
       headers: { origin: 'https://example.com' },

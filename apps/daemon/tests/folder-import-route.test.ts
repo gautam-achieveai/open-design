@@ -5,6 +5,7 @@ import { chmod, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
+import { openDatabase } from '../src/db.js';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -160,26 +161,14 @@ describe('POST /api/import/folder', () => {
       },
     });
 
-    const workspaceA = await fetch(
-      `${baseUrl}/api/workspaces/workspace-folder-a/projects?view=drafts`,
-      { headers: headersA },
-    );
-    expect(workspaceA.status).toBe(200);
-    const projectsA = (await workspaceA.json()) as {
-      projects: Array<{ project: { id: string } }>;
-    };
-    expect(projectsA.projects.map((item) => item.project.id)).toContain(body.project.id);
+    const db = openDatabase(process.cwd(), { dataDir: process.env.OD_DATA_DIR! });
+    expect(db.prepare('SELECT workspace_id, created_by_workspace_member_id FROM workspace_projects WHERE project_id = ?').all(body.project.id))
+      .toEqual([{ workspace_id: 'workspace-folder-a', created_by_workspace_member_id: 'member-folder-a' }]);
+    for (const workspaceId of ['workspace-folder-a', 'workspace-folder-b']) {
+      const retired = await fetch(baseUrl + '/api/workspaces/' + workspaceId + '/projects?view=drafts', { headers: headersA });
+      expect(retired.status).toBe(410);
+    }
 
-    const headersB = workspaceHeaders('workspace-folder-b', 'member-folder-b');
-    const workspaceB = await fetch(
-      `${baseUrl}/api/workspaces/workspace-folder-b/projects?view=drafts`,
-      { headers: headersB },
-    );
-    expect(workspaceB.status).toBe(200);
-    const projectsB = (await workspaceB.json()) as {
-      projects: Array<{ project: { id: string } }>;
-    };
-    expect(projectsB.projects.map((item) => item.project.id)).not.toContain(body.project.id);
   });
 
   it('validates an imported project skill inside the exact request workspace before inserting rows', async () => {

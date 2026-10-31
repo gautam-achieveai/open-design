@@ -101,54 +101,10 @@ describe('handleHubWorkspaceAccessRevoked', () => {
 // already have their own handling and must not gain a redundant immediate
 // poll trigger as a side effect of this change (or of some later edit next to
 // it) — each keeps costing exactly the requests its own case already made.
-describe('hub events onEvent switch (source boundary)', () => {
-  const serverSourcePath = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    '../../src/server.ts',
-  );
-  const source = fs.readFileSync(serverSourcePath, 'utf8');
-
-  function extractOnEventSwitchBody(): string {
-    const anchor = 'onEvent: (event, connection) => {';
-    const start = source.indexOf(anchor);
-    expect(start, 'expected to find the hub events onEvent handler in server.ts').toBeGreaterThan(-1);
-    const switchStart = source.indexOf('switch (event.type) {', start);
-    expect(switchStart, 'expected a switch(event.type) right after onEvent').toBeGreaterThan(-1);
-    // Walk brace depth from the switch's opening `{` to find its matching close.
-    let depth = 0;
-    let i = switchStart + 'switch (event.type) {'.length - 1; // position of the opening brace
-    for (; i < source.length; i += 1) {
-      if (source[i] === '{') depth += 1;
-      else if (source[i] === '}') {
-        depth -= 1;
-        if (depth === 0) break;
-      }
-    }
-    expect(depth, 'expected the switch braces to balance').toBe(0);
-    return source.slice(switchStart, i + 1);
-  }
-
-  it('calls the immediate poll trigger only for context and roster authority changes', () => {
-    const switchBody = extractOnEventSwitchBody();
-    const cases = switchBody.split(/(?=case '[a-z-]+':)/g).filter((chunk) => chunk.startsWith("case '"));
-    expect(cases.length).toBeGreaterThanOrEqual(7);
-
-    const casesCallingPoll = cases.filter((chunk) => /handleHubWorkspaceContextChanged|workspaceInvalidationPoller\.pollOnce\(/.test(chunk));
-    const caseNames = casesCallingPoll.map((chunk) => chunk.match(/^case '([a-z-]+)':/)?.[1]);
-
-    expect(caseNames).toEqual([
-      'workspace-context-changed',
-      'workspace-members-changed',
-    ]);
-  });
-
-  it('preserves the renamed project id and metadata kind on the workspace invalidation', () => {
-    const switchBody = extractOnEventSwitchBody();
-    const metadataCase = switchBody
-      .split(/(?=case '[a-z-]+':)/g)
-      .find((chunk) => chunk.startsWith("case 'project-metadata-changed':"));
-
-    expect(metadataCase).toContain('projectId: event.projectId');
-    expect(metadataCase).toContain("kind: 'metadata'");
+describe('retired hub wiring (source boundary)', () => {
+  it('does not start Cloud subscribers or forward their context and metadata changes', () => {
+    const source = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../src/server.ts'), 'utf8');
+    expect(source).not.toContain('onEvent: (event, connection) => {');
+    expect(source).not.toMatch(/startHubEventsSubscriber\s*\(/);
   });
 });

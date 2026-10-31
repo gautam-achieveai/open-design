@@ -1,9 +1,8 @@
 import { expect, test } from '@/playwright/suite';
 import type { Page } from '@playwright/test';
 
-import { gotoEntryHome, mockAmrPersonalWorkspace, seedBrowserConfig } from '@/playwright/amr';
-import { applyStandardMocks, routeAgents, routeSuccessfulRuns, suppressWhatsNew } from '@/playwright/mock-factory';
-import { mockSignedInVelaAccount } from '@/playwright/visual';
+import { gotoEntryHome } from '@/playwright/amr';
+import { applyStandardMocks, routeSuccessfulRuns, suppressWhatsNew } from '@/playwright/mock-factory';
 import { T } from '@/timeouts';
 
 /*
@@ -38,29 +37,6 @@ const SELECTORS = {
   designFilesReloading: '[data-testid="design-files-reloading"]',
   userMessage: '[data-testid="chat-log"] .msg.user',
 } as const;
-
-const AMR_AGENT = {
-  id: 'amr',
-  name: 'OpenDesign AMR',
-  bin: 'vela',
-  available: true,
-  version: 'test',
-  models: [{ id: 'glm-5', label: 'glm-5' }],
-};
-
-const AMR_CONFIG = {
-  mode: 'daemon',
-  apiKey: '',
-  baseUrl: 'https://api.anthropic.com',
-  model: 'claude-sonnet-4-5',
-  agentId: 'amr',
-  skillId: null,
-  designSystemId: null,
-  onboardingCompleted: true,
-  agentModels: {},
-  privacyDecisionAt: 1,
-  telemetry: { metrics: false, content: false, artifactManifest: false },
-};
 
 /**
  * In-page paint log: one entry per presence flip of each watched selector. A
@@ -177,24 +153,27 @@ test('[P0] a local-agent send from Home shows one loading state until the first 
   await expectSingleLoadingSequence(page);
 });
 
-test('[P0] an AMR send from Home shows one loading state until the first turn is on screen', async ({ page }) => {
-  await seedBrowserConfig(page, AMR_CONFIG);
-  await page.route('**/api/app-config', async (route) => {
-    if (route.request().method() !== 'GET') {
-      await route.continue();
-      return;
+test('[P0] delayed transcript loading keeps the Home handoff until the first turn paints', async ({ page }) => {
+  await applyStandardMocks(page);
+  await routeSuccessfulRuns(page, { runId: 'home-single-loading-delayed-transcript' });
+  let releaseMessages!: () => void;
+  const messagesGate = new Promise<void>(resolve => { releaseMessages = resolve; });
+  let held = false;
+  await page.route('**/api/projects/*/conversations/*/messages**', async route => {
+    if (route.request().method() === 'GET' && new URL(route.request().url()).pathname.endsWith('/messages')) {
+      held = true;
+      await messagesGate;
     }
-    await route.fulfill({ json: { config: AMR_CONFIG } });
+    await route.continue();
   });
-  await routeAgents(page, [AMR_AGENT]);
-  await mockSignedInVelaAccount(page, { balanceUsd: '20.00' });
-  await mockAmrPersonalWorkspace(page, undefined, {
-    accountBalanceUsd: '20.00',
-    accountCredits: 2_000,
-    accountPlan: 'free',
-  });
-  await routeSuccessfulRuns(page, { runId: 'home-single-loading-amr' });
-  await gotoEntryHome(page);
-  await sendFromHome(page, 'Gamified habit app: draft the streak screen.');
-  await expectSingleLoadingSequence(page);
+  try {
+    await gotoEntryHome(page);
+    await sendFromHome(page, 'Draft a local dashboard while the transcript loads.');
+    await expect.poll(() => held, { timeout: T.long }).toBe(true);
+    await expect(page.locator(SELECTORS.handoffView).or(page.locator(SELECTORS.handoffChat)).first()).toBeVisible();
+    releaseMessages();
+    await expectSingleLoadingSequence(page);
+  } finally {
+    releaseMessages();
+  }
 });

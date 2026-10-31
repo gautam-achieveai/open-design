@@ -1,74 +1,20 @@
 // @vitest-environment node
-
-import { join } from 'node:path';
-
-import { describe, expect, test } from 'vitest';
-
-import { writeFakeVelaBin } from '@/amr';
-import { AMR_TEST_WORKSPACE_HEADERS, createAmrProject, putAmrAppConfig } from '@/vitest/amr';
-import { listMessages } from '@/vitest/messages';
-import { readRunEvents, startRun, waitForRunTerminal } from '@/vitest/runs';
+import { expect, test } from 'vitest';
 import { createSmokeSuite } from '@/vitest/suite';
+import { createLocalProject } from '@/vitest/local-workspace';
 
-describe('AMR insufficient balance run failures', () => {
-  test('fails the run with a recharge-facing AMR error when fake vela reports insufficient balance', { timeout: 180_000 }, async () => {
-    const suite = await createSmokeSuite('amr-insufficient-balance');
-
-    await suite.with.toolsDev(async ({ webUrl }) => {
-      const velaBin = await writeFakeVelaBin(join(suite.scratchDir, 'fake-vela-balance'), {
-        endpoints: suite.amr,
-        failBalanceAtPrompt: true,
-        requireLoginConfig: false,
-        requireSetModel: false,
-      });
-
-      await putAmrAppConfig(webUrl, {
-        agentId: 'amr',
-        agentCliEnv: {
-          amr: {
-            VELA_BIN: velaBin,
-            ...suite.amr.runtimeEnv(),
-          },
-        },
-      });
-
-      const project = await createAmrProject(webUrl, 'AMR insufficient balance');
-      const assistantMessageId = `assistant-${Date.now()}`;
-      const run = await startRun(webUrl, {
-        agentId: 'amr',
-        assistantMessageId,
-        clientRequestId: `req-${Date.now()}`,
-        conversationId: project.conversationId,
-        designSystemId: null,
-        message: 'This should surface a recharge link.',
-        model: 'default',
-        projectId: project.project.id,
-        reasoning: 'default',
-        skillId: null,
-      }, { ...AMR_TEST_WORKSPACE_HEADERS });
-
-      const terminal = await waitForRunTerminal(webUrl, run.runId, {
-        headers: { ...AMR_TEST_WORKSPACE_HEADERS },
-        timeoutMs: 20_000,
-      });
-      expect(terminal.status).toBe('failed');
-
-      const events = await readRunEvents(webUrl, run.runId, {
-        headers: { ...AMR_TEST_WORKSPACE_HEADERS },
-      });
-      expect(events).toContain('AMR_INSUFFICIENT_BALANCE');
-      expect(events).toContain(
-        'https://open-design.ai/cloud/dashboard?source=open_design',
-      );
-
-      const messages = await listMessages(
-        webUrl,
-        project.project.id,
-        project.conversationId,
-        { ...AMR_TEST_WORKSPACE_HEADERS },
-      );
-      const assistant = messages.find((message) => message.id === assistantMessageId);
-      expect(assistant?.runStatus).toBe('failed');
+test('[P1] obsolete Cloud selection directs users to local agents rather than recharge', { timeout: 180_000 }, async () => {
+  const suite = await createSmokeSuite('cloud-no-recharge');
+  await suite.with.toolsDev(async ({ webUrl }) => {
+    const project = await createLocalProject(webUrl, 'No recharge path');
+    const response = await fetch(new URL('/api/runs', webUrl), {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'amr', projectId: project.project.id, conversationId: project.conversationId,
+        message: 'Stale paid Cloud model', model: 'deepseek-v4-flash' }),
     });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toMatchObject({ error: { code: 'AGENT_UNAVAILABLE', message: expect.stringContaining('local agent') } });
+    expect(JSON.stringify(body)).not.toMatch(/https?:|AMR_INSUFFICIENT_BALANCE|recharge|checkout/i);
   });
 });

@@ -160,15 +160,19 @@ describe('Plugin preview and asset Workspace authority', () => {
   });
 
   it.each(['workspace-removed', 'workspace-outage'] as const)(
-    'does not consult remote authority for %s and never serves another Workspace bytes',
+    'honors local authority denial for %s without serving Workspace bytes',
     async (workspaceId) => {
       const baseUrl = await fixture();
       const response = await fetch(
         `${baseUrl}/api/plugins/same-plugin/asset/assets/secret.txt?workspaceId=${workspaceId}&workspaceMemberId=member-a`,
       );
 
-      expect(response.status).toBe(404);
-      expect(await response.json()).toMatchObject({ error: 'plugin not found' });
+      expect(response.status).toBe(workspaceId === 'workspace-removed' ? 403 : 503);
+      const body = await response.text();
+      expect(body).toContain(workspaceId === 'workspace-removed'
+        ? 'WORKSPACE_ACCESS_DENIED' : 'WORKSPACE_AUTHORITY_UNAVAILABLE');
+      expect(body).not.toContain('workspace-a-bytes');
+      expect(body).not.toContain('workspace-b-bytes');
     },
   );
 

@@ -43,7 +43,7 @@ describe('Task-owned feedback', () => {
   });
 
   it('uses the same Task relay even when Vela credentials are configured', async () => {
-    expect(readFeedbackTelemetrySinkConfig()?.kind).toBe('vela');
+    expect(readFeedbackTelemetrySinkConfig()?.kind).toBe('relay');
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 202 }));
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'od-task-feedback-'));
     try {

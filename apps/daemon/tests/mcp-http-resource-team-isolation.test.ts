@@ -13,7 +13,7 @@ import { McpToolRegistry } from '../src/mcp-http/registry.js';
 import { createMcpHttpResources } from '../src/mcp-http/resources.js';
 import { ToolTokenRegistry } from '../src/tool-tokens.js';
 
-it('does not substitute another member’s same-id Personal body when the observed Team file disappears', async () => {
+it('does not substitute another member’s same-id Personal body for an unavailable legacy Team resource', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'od-resource-team-isolation-'));
   const db = new Database(':memory:');
   const tokenRegistry = new ToolTokenRegistry();
@@ -64,8 +64,8 @@ it('does not substitute another member’s same-id Personal body when the observ
       grant: { kind: 'run', runId: run.id, projectId: 'project', credentialId: null, name: null, allowedOperations: ['catalog/design-systems:read'] },
       request, signal: undefined,
     })).rejects.toThrow('Resource unavailable for this credential');
-    expect(snapshot?.entries).toEqual([expect.objectContaining({ id, teamSynced: true })]);
-    expect(snapshot?.revalidate([id])).toBe(true);
+    expect(snapshot?.entries).toEqual([]);
+    expect(snapshot?.revalidate([id])).toBe(false);
   } finally {
     tokenRegistry.clear(); db.close();
     await rm(root, { recursive: true, force: true });

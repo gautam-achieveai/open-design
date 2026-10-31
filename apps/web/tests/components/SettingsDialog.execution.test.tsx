@@ -4050,15 +4050,6 @@ describe('SettingsDialog notifications interactions', () => {
 // also formally overturns the NON-ALIGNMENT #9 note that had argued for keeping
 // the segmented control as the last "follow system" entry point. The document
 // theme/accent teardown went with them — nothing here writes those any more.
-// What survives is the AMR draft-reconciliation coverage that merely happened
-// to live in this block.
-describe('SettingsDialog draft reconciliation', () => {
-  afterEach(() => {
-    cleanup();
-  });
-
-});
-
 describe('SettingsDialog pets interactions', () => {
   const clipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'clipboard');
 

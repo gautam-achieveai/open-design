@@ -1,7 +1,29 @@
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const fixtureProcess = vi.hoisted(() => ({ bin: '' }));
+// Synthetic local seams retain the real process stdout/stderr decoding checks.
+// They do not register the retired provider in the application.
+vi.mock('@open-design/platform', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@open-design/platform')>();
+  return { ...actual, createCommandInvocation: (input: Parameters<typeof actual.createCommandInvocation>[0]) =>
+    actual.createCommandInvocation({ ...input, command: process.execPath, args: [fixtureProcess.bin, ...(input.args ?? [])] }) };
+});
+vi.mock('../src/runtimes/registry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/runtimes/registry.js')>();
+  return { ...actual, getAgentDef: (id: string) => actual.getAgentDef(id === 'amr' ? 'hermes' : id) };
+});
+vi.mock('../src/runtimes/launch.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/runtimes/launch.js')>();
+  return { ...actual, resolveAgentLaunch: () => ({ launchPath: fixtureProcess.bin, selectedPath: fixtureProcess.bin, childPathPrepend: [] }) };
+});
+vi.mock('../src/runtimes/env.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/runtimes/env.js')>();
+  return { ...actual, spawnEnvForAgent: (_id: string, env: NodeJS.ProcessEnv, configured: Record<string, string>) =>
+    actual.spawnEnvForAgent('hermes', env, configured) };
+});
 import {
   runVelaCommand,
   velaCommandStderr,
@@ -25,9 +47,10 @@ let binDir: string;
 
 /** A stand-in `vela` that reproduces the real CLI's failure protocol. */
 function writeFakeVela(body: string): string {
-  const path = join(binDir, 'vela');
+  const path = join(binDir, 'synthetic-media.mjs');
   writeFileSync(path, body, 'utf8');
   chmodSync(path, 0o755);
+  fixtureProcess.bin = path;
   return path;
 }
 
@@ -67,10 +90,10 @@ afterEach(() => {
   rmSync(binDir, { recursive: true, force: true });
 });
 
-describe('a real vela process that refuses and exits non-zero', () => {
+describe('a synthetic local process that refuses and exits non-zero', () => {
 	it('preserves stderr separately from the exec error message', async () => {
 		const bin = writeFakeVela(
-			'#!/bin/sh\necho "Error: perform media request GET /api/v1/media/images/tasks/mit_process_timeout: operation timed out" >&2\nexit 1\n',
+			'process.stderr.write("media task mit_process_timeout: operation timed out"); process.exit(1);',
 		);
 		const thrown = await runVelaCommand(['image', 'gen'], {
 			env: { ...process.env, VELA_BIN: bin },
@@ -90,7 +113,7 @@ describe('a real vela process that refuses and exits non-zero', () => {
 			},
 		});
 		const bin = writeFakeVela(
-			`#!/bin/sh\ncat <<'JSON'\n${providerTask}\nJSON\nexit 1\n`,
+			`process.stdout.write(${JSON.stringify(providerTask)}); process.exit(1);`,
 		);
 
 		const thrown = await renderVelaImage(imageInput(), (args, options) =>
@@ -106,7 +129,7 @@ describe('a real vela process that refuses and exits non-zero', () => {
     // stdout carries the task; stderr carries the human line; exit is 1 --
     // exactly the real CLI's shape.
     const bin = writeFakeVela(
-      `#!/bin/sh\ncat <<'JSON'\n${safetyTaskJson('prompt')}\nJSON\necho "image task mit_process_test failed: safety_rejection" >&2\nexit 1\n`,
+      `process.stdout.write(${JSON.stringify(safetyTaskJson('prompt'))}); process.stderr.write('image task failed: safety_rejection'); process.exit(1);`,
     );
 
     const thrown = await renderVelaImage(imageInput(), (args, options) =>
@@ -122,7 +145,7 @@ describe('a real vela process that refuses and exits non-zero', () => {
 
   it('reports no subject when the supplier proved none', async () => {
     const bin = writeFakeVela(
-      `#!/bin/sh\ncat <<'JSON'\n${safetyTaskJson()}\nJSON\nexit 1\n`,
+      `process.stdout.write(${JSON.stringify(safetyTaskJson())}); process.exit(1);`,
     );
 
     const thrown = await renderVelaImage(imageInput(), (args, options) =>
@@ -137,7 +160,7 @@ describe('a real vela process that refuses and exits non-zero', () => {
   // any task must not acquire a policy verdict from nowhere.
   it('leaves a crash with no task output as an ordinary failure', async () => {
     const bin = writeFakeVela(
-      `#!/bin/sh\necho "vela: could not reach the control plane" >&2\nexit 3\n`,
+      'process.stderr.write("provider unavailable"); process.exit(3);',
     );
 
     const thrown = await renderVelaImage(imageInput(), (args, options) =>

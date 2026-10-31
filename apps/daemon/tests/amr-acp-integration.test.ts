@@ -139,13 +139,8 @@ async function waitForExit(child: ChildProcess): Promise<void> {
 }
 
 describe('AMR runtime def', () => {
-  it('is registered with the expected ACP wiring', () => {
-    const def = getAgentDef('amr');
-    expect(def).toBeTruthy();
-    expect(def?.id).toBe('amr');
-    expect(def?.name).toBe('AMR');
-    expect(def?.bin).toBe('vela');
-    expect(def?.streamFormat).toBe('acp-json-rpc');
+  it('keeps the legacy definition out of the active runtime registry', () => {
+    expect(getAgentDef('amr')).toBeNull();
   });
 
   it('builds the documented `vela agent run` argv', () => {

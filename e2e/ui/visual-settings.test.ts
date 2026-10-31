@@ -2,14 +2,12 @@ import type { Locator } from '@playwright/test';
 
 import { expect, test } from '@/playwright/suite';
 import { T } from '@/timeouts';
-import { mockAmrPersonalWorkspace } from '@/playwright/amr';
 import {
   captureVisual,
   captureVisualTarget,
   configureVisualPage,
   gotoVisualHome,
   gotoVisualWorkspace,
-  mockSignedInVelaAccount,
   prepareVisualSettingsDialog,
   VISUAL_AMR_AGENT,
   VISUAL_CLI_AGENTS,
@@ -51,39 +49,25 @@ test('[P2] captures the settings execution surface', async ({ page }) => {
   await captureVisual(page, 'visual-settings-execution');
 });
 
-test('[P1] captures the settings OpenDesign account balance surface', async ({ page }) => {
-  test.setTimeout(T.xlong);
-
+test('[P1] settings keeps local execution available and omits retired Cloud account controls', async ({ page }) => {
   await configureVisualPage(page, {
     agents: [VISUAL_AMR_AGENT, ...VISUAL_CLI_AGENTS],
-    config: {
-      agentId: 'amr',
-      agentModels: { amr: { model: 'deepseek-v4-flash', reasoning: 'default' } },
-      agentCliEnv: { amr: { OPEN_DESIGN_AMR_PROFILE: 'test' } },
-    },
+    config: { agentId: 'codex', agentModels: { codex: { model: 'default', reasoning: 'default' } } },
   });
-  await mockSignedInVelaAccount(page);
-  // A signed-in Vela account is not sufficient for the upgrade entry: billing
-  // permissions come from the selected Workspace. Use the same exact Personal
-  // Workspace identity as the AMR runtime tests so directory bootstrap and the
-  // subsequent scoped context lookup agree.
-  await mockAmrPersonalWorkspace(page, undefined, {
-    accountPlan: 'plus',
-    accountBalanceUsd: '247.51',
-    accountCredits: 2_475_100,
+  const requests: string[] = [];
+  page.on('request', request => {
+    if (request.url().includes('/api/integrations/vela/')) requests.push(request.url());
   });
   await gotoVisualHome(page);
   await gotoVisualWorkspace(page);
-
   const dialog = await prepareVisualSettingsDialog(page);
-  const amrCard = dialog.getByTestId('settings-agent-card-amr');
-  await expect(amrCard).toContainText('OpenDesign');
-  await expect(amrCard).toContainText('plus');
-  await expect(amrCard).toContainText('$247.51');
-  await expect(dialog.getByTestId('settings-agent-card-amr-upgrade')).toBeVisible();
+  await expect(dialog.getByTestId('settings-agent-card-codex')).toBeVisible();
+  await expect(dialog.getByTestId('settings-agent-card-amr')).toHaveCount(0);
+  await expect(dialog.getByTestId('settings-agent-card-amr-upgrade')).toHaveCount(0);
+  await expect(dialog.getByRole('tab', { name: /API providers/i })).toBeVisible();
   await waitForVisualFonts(page);
-
-  await captureVisual(page, 'visual-settings-open-design-account');
+  expect(requests).toEqual([]);
+  await captureVisual(page, 'visual-settings-local-without-cloud');
 });
 
 test('[P2] captures the settings local CLI surface', async ({ page }) => {

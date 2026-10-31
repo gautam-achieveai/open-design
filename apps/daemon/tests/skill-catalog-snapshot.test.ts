@@ -88,11 +88,11 @@ function holdSkillRead(file: string) {
 }
 
 describe('skill catalog pre-discovery binding inventory', () => {
-  it.each(['personal', 'team'])('denies %s binding changes after real old bytes were read', async (kind) => {
+  it('denies Personal binding changes after real old bytes were read', async () => {
     const f = await fixture();
-    const dir = kind === 'team' ? await f.team('user:team') : await f.write('personal');
-    const id = kind === 'team' ? 'user:team' : 'personal';
-    if (kind === 'personal') f.bind(id);
+    const dir = await f.write('personal');
+    const id = 'personal';
+    f.bind(id);
     const control = await f.services.listAllSkillsSnapshot(f.scope);
     expect(control.revalidate([id])).toBe(true);
     const barrier = holdSkillRead(path.join(dir, 'SKILL.md'));
@@ -108,6 +108,15 @@ describe('skill catalog pre-discovery binding inventory', () => {
       const fresh = await f.services.listAllSkillsSnapshot(f.scope);
       expect(fresh.revalidate([id])).toBe(true);
     } finally { barrier.restore(); }
+  });
+
+  it('excludes legacy Team bytes from the catalog without erasing them', async () => {
+    const f = await fixture();
+    const dir = await f.team('user:team');
+    const snapshot = await f.services.listAllSkillsSnapshot(f.scope);
+    expect(snapshot.entries).toEqual([]);
+    expect(snapshot.revalidate(['user:team'])).toBe(false);
+    expect(await fs.readFile(path.join(dir, 'SKILL.md'), 'utf8')).toContain('Team body');
   });
 
   const changes = [
@@ -170,7 +179,7 @@ describe('skill catalog pre-discovery binding inventory', () => {
     expect((await f.withoutDb().listAllSkillsSnapshot(f.scope)).revalidate([])).toBe(false);
   });
 
-  it('preserves real built-in, creator, Team, derived and explicit-null visibility', async () => {
+  it('preserves built-in, creator, derived and explicit-null visibility while hiding Team resources', async () => {
     const f = await fixture();
     const personal = await f.write('personal'); f.bind('personal');
     await fs.mkdir(path.join(personal, 'examples'));
@@ -180,9 +189,9 @@ describe('skill catalog pre-discovery binding inventory', () => {
     await f.team('user:team'); await f.team('foreign', 'w2'); await f.team('tombstone', 'w1', 'deleted');
     const snapshot = await f.services.listAllSkillsSnapshot(f.scope);
     const entries = new Map(snapshot.entries.map(entry => [entry.id, entry]));
-    expect([...entries.keys()].sort()).toEqual(['bundled', 'personal', 'personal:card', 'private', 'user:team']);
+    expect([...entries.keys()].sort()).toEqual(['bundled', 'personal', 'personal:card', 'private']);
     expect(entries.get('private')?.source).toBe('built-in');
-    expect(entries.get('user:team')?.teamSynced).toBe(true);
+    expect(entries.has('user:team')).toBe(false);
     expect(snapshot.revalidate([...entries.keys()])).toBe(true);
     const other = await f.services.listAllSkillsSnapshot({ workspaceId: 'w1', workspaceMemberId: 'bob' });
     expect(other.entries.find(entry => entry.id === 'private')?.source).toBe('user');

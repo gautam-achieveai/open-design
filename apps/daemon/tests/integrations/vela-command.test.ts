@@ -1,13 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
+  localProcessFixture,
   execFileMock,
   listProcessSnapshotsMock,
   stopProcessesMock,
 } = vi.hoisted(() => ({
+  localProcessFixture: { enabled: false },
   execFileMock: vi.fn(),
   listProcessSnapshotsMock: vi.fn(),
   stopProcessesMock: vi.fn(),
@@ -19,6 +18,23 @@ vi.mock('@open-design/platform', async (importOriginal) => ({
   listProcessSnapshots: listProcessSnapshotsMock,
   stopProcesses: stopProcessesMock,
 }));
+
+// The retired runtime remains unavailable. These synthetic local seams retain
+// the command helper's deadline/abort/process-tree contracts without registering AMR.
+vi.mock('../../src/runtimes/registry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/runtimes/registry.js')>();
+  return { ...actual, getAgentDef: (id: string) => localProcessFixture.enabled && id === 'amr'
+    ? actual.getAgentDef('hermes') : actual.getAgentDef(id) };
+});
+vi.mock('../../src/runtimes/launch.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/runtimes/launch.js')>();
+  return { ...actual, resolveAgentLaunch: () => ({ launchPath: process.execPath, selectedPath: process.execPath, childPathPrepend: [] }) };
+});
+vi.mock('../../src/runtimes/env.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/runtimes/env.js')>();
+  return { ...actual, spawnEnvForAgent: (id: string, env: NodeJS.ProcessEnv, configured: Record<string, string>) =>
+    actual.spawnEnvForAgent(localProcessFixture.enabled && id === 'amr' ? 'hermes' : id, env, configured) };
+});
 
 import * as diagnosticEvidence from '../../src/services/diagnostics-evidence.js';
 import { runVelaCommand } from '../../src/integrations/vela-command.js';
@@ -48,7 +64,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-describe('runVelaCommand', () => {
+describe('retired command boundary and synthetic local process lifecycle', () => {
   it('records team-list failures with the actual child proxy environment without changing the rejection', async () => {
     const record = vi.spyOn(diagnosticEvidence, 'recordDiagnosticFailure').mockImplementation(() => undefined);
     const failure = Object.assign(new Error('upstream failed'), { code: 'ETIMEDOUT' });
@@ -65,6 +81,7 @@ describe('runVelaCommand', () => {
   });
 
   beforeEach(() => {
+    localProcessFixture.enabled = true;
     execFileMock.mockReset();
     listProcessSnapshotsMock.mockReset();
     stopProcessesMock.mockReset();
@@ -89,26 +106,14 @@ describe('runVelaCommand', () => {
     vi.unstubAllEnvs();
   });
 
-  it('uses the configured AMR binary and feature-test login profile', async () => {
-    const stdout = await runVelaCommand(['resource', 'head', 'project-1'], {
-      env: {
-        ...process.env,
-        VELA_BIN: process.execPath,
-        OPEN_DESIGN_AMR_PROFILE: 'feature-test',
-        OD_DATA_DIR: '',
-      },
-    });
-
-    expect(stdout).toBe('{"ok":true}\n');
-    const [command, args, options] = execFileMock.mock.calls[0] as [
-      string,
-      string[],
-      { env: NodeJS.ProcessEnv },
-    ];
-    expect(command).toBe(process.execPath);
-    expect(args).toEqual(['resource', 'head', 'project-1']);
-    expect(options.env.VELA_PROFILE).toBe('feature-test');
-    expect(options.env.AMR_CLIENT_SOURCE).toBe('open_design');
+  it("rejects retired runtime configuration: uses the configured AMR binary and feature-test login profile", async () => {
+    localProcessFixture.enabled = false;
+    await expect(runVelaCommand(['resource', 'pull', 'project-1'], {
+      env: { VELA_BIN: process.execPath, VELA_CONTROL_KEY: 'legacy-test-only', OD_DATA_DIR: '' },
+      configuredEnv: { VELA_BIN: process.execPath, OPEN_DESIGN_AMR_PROFILE: 'legacy' },
+    })).rejects.toThrow('AMR runtime definition is missing');
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(stopProcessesMock).not.toHaveBeenCalled();
   });
 
   it('delivers successful stderr diagnostics without changing stdout', async () => {
@@ -199,41 +204,24 @@ describe('runVelaCommand', () => {
     expect(options.env.VELA_WORKSPACE_ID).toBe('workspace-1');
   });
 
-  it('keeps the Settings-backed AMR binary authoritative over inherited VELA_BIN', async () => {
-    const dataDir = mkdtempSync(path.join(tmpdir(), 'od-vela-command-'));
-    try {
-      writeFileSync(
-        path.join(dataDir, 'app-config.json'),
-        JSON.stringify({
-          agentCliEnv: { amr: { VELA_BIN: process.execPath } },
-        }),
-      );
-
-      await runVelaCommand(['team-projects', 'list'], {
-        env: {
-          ...process.env,
-          VELA_BIN: '/missing/inherited/vela',
-          OD_DATA_DIR: dataDir,
-        },
-      });
-
-      expect(execFileMock.mock.calls[0]?.[0]).toBe(process.execPath);
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
+  it("rejects retired runtime configuration: keeps the Settings-backed AMR binary authoritative over inherited VELA_BIN", async () => {
+    localProcessFixture.enabled = false;
+    await expect(runVelaCommand(['resource', 'pull', 'project-1'], {
+      env: { VELA_BIN: process.execPath, VELA_CONTROL_KEY: 'legacy-test-only', OD_DATA_DIR: '' },
+      configuredEnv: { VELA_BIN: process.execPath, OPEN_DESIGN_AMR_PROFILE: 'legacy' },
+    })).rejects.toThrow('AMR runtime definition is missing');
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(stopProcessesMock).not.toHaveBeenCalled();
   });
 
-  it('lets explicit per-command configuration override inherited resolution', async () => {
-    await runVelaCommand(['billing', 'summary'], {
-      env: {
-        ...process.env,
-        VELA_BIN: '/missing/inherited/vela',
-        OD_DATA_DIR: '',
-      },
-      configuredEnv: { VELA_BIN: process.execPath },
-    });
-
-    expect(execFileMock.mock.calls[0]?.[0]).toBe(process.execPath);
+  it("rejects retired runtime configuration: lets explicit per-command configuration override inherited resolution", async () => {
+    localProcessFixture.enabled = false;
+    await expect(runVelaCommand(['resource', 'pull', 'project-1'], {
+      env: { VELA_BIN: process.execPath, VELA_CONTROL_KEY: 'legacy-test-only', OD_DATA_DIR: '' },
+      configuredEnv: { VELA_BIN: process.execPath, OPEN_DESIGN_AMR_PROFILE: 'legacy' },
+    })).rejects.toThrow('AMR runtime definition is missing');
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(stopProcessesMock).not.toHaveBeenCalled();
   });
 
   it('hard-terminates an ignored-SIGTERM process tree before rejecting a deadline', async () => {

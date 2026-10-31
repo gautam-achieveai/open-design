@@ -192,8 +192,8 @@ describe('design-system workspace projects preserve exact Workspace scope', () =
     return { designSystemId: personal.id, logoBytes, personalProjectId };
   }
 
-  it('opens the exact Team copy without mutating a same-id Personal project and preserves binary logo bytes', async () => {
-    const { designSystemId, logoBytes, personalProjectId } =
+  it('refuses the retired Team copy without mutating a same-id Personal project', async () => {
+    const { designSystemId, personalProjectId } =
       await seedSameIdPersonalAndTeamSystems();
     const ensureScoped = services.ensureUserDesignSystemWorkspaceProject as unknown as (
       dbHandle: typeof db,
@@ -206,9 +206,7 @@ describe('design-system workspace projects preserve exact Workspace scope', () =
       workspaceMemberId: 'team-member',
     });
 
-    expect(workspace).not.toBeNull();
-    expect(workspace?.project.id).not.toBe(personalProjectId);
-    expect(workspace?.project.name).toBe('Team Shopify');
+    expect(workspace).toBeNull();
     expect(getProject(db, personalProjectId)?.name).toBe('Personal Shopify Project');
     await expect(
       readProjectFile(
@@ -219,20 +217,7 @@ describe('design-system workspace projects preserve exact Workspace scope', () =
       ).then((file) => file.buffer.toString('utf8')),
     ).resolves.toBe('# Personal project sentinel\n');
 
-    const mirroredLogo = await readProjectFile(
-      projectsDir,
-      workspace!.project.id,
-      'assets/shopify.png',
-      workspace!.project.metadata,
-    );
-    expect(mirroredLogo.buffer.equals(logoBytes)).toBe(true);
-    const mirroredDesign = await readProjectFile(
-      projectsDir,
-      workspace!.project.id,
-      'DESIGN.md',
-      workspace!.project.metadata,
-    );
-    expect(mirroredDesign.buffer.toString('utf8')).toContain('Team-only body');
+
   });
 
   it('fails closed when a scoped Team operation has no verified member identity', async () => {
